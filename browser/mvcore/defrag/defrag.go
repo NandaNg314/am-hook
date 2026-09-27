@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"sort"
 
 	"github.com/itouakirai/mp4ff/mp4"
@@ -123,7 +124,9 @@ func defragmentMP4(in io.ReadSeeker, out io.Writer, ftypOverride *mp4.FtypBox) e
 	// go-mp4tag reads box sizes as signed 32-bit values and does not
 	// support largesize, so media data is split across mdat boxes that
 	// each stay below 2 GiB.
-	mdatPayloadSizes, err := planMdats(tracks)
+	order := writeOrder(tracks)
+
+	mdatPayloadSizes, err := planMdats(tracks, order)
 	if err != nil {
 		return fmt.Errorf("plan output mdat boxes: %w", err)
 	}
@@ -133,6 +136,7 @@ func defragmentMP4(in io.ReadSeeker, out io.Writer, ftypOverride *mp4.FtypBox) e
 		compatibleFtyp.Size(),
 		moov,
 		tracks,
+		order,
 	); err != nil {
 		return fmt.Errorf("calculate output chunk offsets: %w", err)
 	}
@@ -143,6 +147,7 @@ func defragmentMP4(in io.ReadSeeker, out io.Writer, ftypOverride *mp4.FtypBox) e
 		compatibleFtyp,
 		moov,
 		tracks,
+		order,
 		mdatPayloadSizes,
 	); err != nil {
 		return fmt.Errorf("write progressive MP4: %w", err)
@@ -166,13 +171,23 @@ type sourceRange struct {
 
 // outputChunk describes one chunk in the progressive output.
 //
-// Each fragmented trun becomes one progressive chunk.
+// Each fragmented trun becomes one or more progressive chunks of at most
+// maxChunkDuration, so that tracks can be interleaved by time.
 type outputChunk struct {
 	Source sourceRange
 
 	SampleCount uint32
 	SampleDesc  uint32
+
+	// Decode time of the first sample in the track's mdhd timescale.
+	Time uint64
 }
+
+// maxChunkDuration bounds a chunk's duration in seconds. Chunks of all
+// tracks are written in decode-time order, so players reading the file
+// sequentially find audio, video and captions for the same moment close
+// together instead of one whole track after another.
+const maxChunkDuration = 1
 
 // trackData contains everything needed to construct one progressive trak.
 type trackData struct {
@@ -187,6 +202,8 @@ type trackData struct {
 
 	// Total media duration in this track's mdhd timescale.
 	Duration uint64
+
+	Timescale uint32
 }
 
 type sampleGroupRun struct {
@@ -242,10 +259,18 @@ func collectTrackData(f *mp4.File) ([]*trackData, error) {
 			)
 		}
 
+		if trak.Mdia.Mdhd.Timescale == 0 {
+			return nil, fmt.Errorf(
+				"track %d has zero media timescale",
+				trak.Tkhd.TrackID,
+			)
+		}
+
 		byTrackID[trak.Tkhd.TrackID] = &trackData{
-			TrackID: trak.Tkhd.TrackID,
-			Samples: make([]mp4.Sample, 0, 4096),
-			Chunks:  make([]outputChunk, 0, 256),
+			TrackID:   trak.Tkhd.TrackID,
+			Samples:   make([]mp4.Sample, 0, 4096),
+			Chunks:    make([]outputChunk, 0, 256),
+			Timescale: trak.Mdia.Mdhd.Timescale,
 		}
 	}
 
@@ -396,7 +421,7 @@ func collectFragment(
 				)
 			}
 
-			var chunkSize uint64
+			var trunSize uint64
 
 			for i := range samples {
 				s := samples[i]
@@ -410,16 +435,14 @@ func collectFragment(
 					)
 				}
 
-				chunkSize += uint64(s.Size)
-				td.Samples = append(td.Samples, s)
-				td.Duration += uint64(s.Dur)
+				trunSize += uint64(s.Size)
 			}
 
 			// Validate that the complete trun lies inside its mdat.
 			if err := validateMdatRange(
 				frag.Mdat,
 				sourceOffset,
-				chunkSize,
+				trunSize,
 			); err != nil {
 				return fmt.Errorf(
 					"track %d trun %d: %w",
@@ -429,15 +452,36 @@ func collectFragment(
 				)
 			}
 
-			td.Chunks = append(td.Chunks, outputChunk{
+			// Split the trun's contiguous samples into chunks of at most
+			// maxChunkDuration. Every chunk holds at least one sample.
+			limit := uint64(td.Timescale) * maxChunkDuration
+			chunk := outputChunk{
 				Source: sourceRange{
 					Mdat:   frag.Mdat,
 					Offset: sourceOffset,
-					Size:   chunkSize,
 				},
-				SampleCount: uint32(len(samples)),
-				SampleDesc:  descIndex,
-			})
+				SampleDesc: descIndex,
+				Time:       td.Duration,
+			}
+
+			for i, s := range samples {
+				chunk.Source.Size += uint64(s.Size)
+				chunk.SampleCount++
+				td.Samples = append(td.Samples, s)
+				td.Duration += uint64(s.Dur)
+
+				if i == len(samples)-1 || td.Duration-chunk.Time >= limit {
+					td.Chunks = append(td.Chunks, chunk)
+					chunk = outputChunk{
+						Source: sourceRange{
+							Mdat:   frag.Mdat,
+							Offset: chunk.Source.Offset + chunk.Source.Size,
+						},
+						SampleDesc: descIndex,
+						Time:       td.Duration,
+					}
+				}
+			}
 		}
 
 		if traf.Sbgp != nil {
@@ -1612,30 +1656,71 @@ const mdatHeaderSize = uint64(8)
 // box size go-mp4tag can parse.
 var maxMdatPayload = uint64(1<<31-1) - mdatHeaderSize
 
+// chunkRef identifies chunk Chunk of tracks[Track].
+type chunkRef struct {
+	Track, Chunk int
+}
+
+// writeOrder returns every output chunk in the order it is written: by
+// decode time in seconds, then by track order in moov. Each track's own
+// chunks keep their order.
+func writeOrder(tracks []*trackData) []chunkRef {
+	var order []chunkRef
+
+	for t, tr := range tracks {
+		for i := range tr.Chunks {
+			order = append(order, chunkRef{t, i})
+		}
+	}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		ta, tb := tracks[a.Track], tracks[b.Track]
+
+		// Compare Time/Timescale exactly as a.Time*tb.Timescale vs
+		// b.Time*ta.Timescale in 128 bits.
+		ah, al := bits.Mul64(ta.Chunks[a.Chunk].Time, uint64(tb.Timescale))
+		bh, bl := bits.Mul64(tb.Chunks[b.Chunk].Time, uint64(ta.Timescale))
+
+		if ah != bh {
+			return ah < bh
+		}
+
+		if al != bl {
+			return al < bl
+		}
+
+		return a.Track < b.Track
+	})
+
+	return order
+}
+
 // planMdats groups output chunks, in write order, into consecutive mdat
 // boxes and returns each box's payload size. A chunk never spans two boxes.
-func planMdats(tracks []*trackData) ([]uint64, error) {
+func planMdats(tracks []*trackData, order []chunkRef) ([]uint64, error) {
 	var sizes []uint64
 	var current uint64
 
-	for _, tr := range tracks {
-		for i, ch := range tr.Chunks {
-			if ch.Source.Size > maxMdatPayload {
-				return nil, fmt.Errorf(
-					"track %d chunk %d size %d exceeds the mdat size limit",
-					tr.TrackID,
-					i,
-					ch.Source.Size,
-				)
-			}
+	for _, ref := range order {
+		tr := tracks[ref.Track]
+		ch := tr.Chunks[ref.Chunk]
 
-			if current > 0 && current+ch.Source.Size > maxMdatPayload {
-				sizes = append(sizes, current)
-				current = 0
-			}
-
-			current += ch.Source.Size
+		if ch.Source.Size > maxMdatPayload {
+			return nil, fmt.Errorf(
+				"track %d chunk %d size %d exceeds the mdat size limit",
+				tr.TrackID,
+				ref.Chunk,
+				ch.Source.Size,
+			)
 		}
+
+		if current > 0 && current+ch.Source.Size > maxMdatPayload {
+			sizes = append(sizes, current)
+			current = 0
+		}
+
+		current += ch.Source.Size
 	}
 
 	if current == 0 {
@@ -1649,6 +1734,7 @@ func installOutputChunkOffsets(
 	ftypSize uint64,
 	moov *mp4.MoovBox,
 	tracks []*trackData,
+	order []chunkRef,
 ) error {
 	// stco size depends on its number of entries. Populate the final
 	// entry count before writing moov.
@@ -1679,7 +1765,7 @@ func installOutputChunkOffsets(
 		stbl.Stco.ChunkOffset = make([]uint32, len(tr.Chunks))
 	}
 
-	offsets, maxOffset := computeChunkOffsets(ftypSize, moov, tracks)
+	offsets, maxOffset := computeChunkOffsets(ftypSize, moov, tracks, order)
 
 	if maxOffset > stcoOffsetLimit {
 		// co64 entries are twice as large, so moov grows and every
@@ -1688,7 +1774,7 @@ func installOutputChunkOffsets(
 			useCo64(findStbl(moov, tr.TrackID), len(tr.Chunks))
 		}
 
-		offsets, _ = computeChunkOffsets(ftypSize, moov, tracks)
+		offsets, _ = computeChunkOffsets(ftypSize, moov, tracks, order)
 
 		for t, tr := range tracks {
 			copy(findStbl(moov, tr.TrackID).Co64.ChunkOffset, offsets[t])
@@ -1719,6 +1805,7 @@ func computeChunkOffsets(
 	ftypSize uint64,
 	moov *mp4.MoovBox,
 	tracks []*trackData,
+	order []chunkRef,
 ) ([][]uint64, uint64) {
 	// ftyp + moov + mdat header, because the output layout is:
 	// ftyp, moov, mdat[, mdat...]. Chunks are grouped into mdat boxes
@@ -1731,20 +1818,22 @@ func computeChunkOffsets(
 
 	for t, tr := range tracks {
 		offsets[t] = make([]uint64, len(tr.Chunks))
+	}
 
-		for i, ch := range tr.Chunks {
-			if currentMdat > 0 && currentMdat+ch.Source.Size > maxMdatPayload {
-				payloadOffset += mdatHeaderSize
-				currentMdat = 0
-			}
-			currentMdat += ch.Source.Size
+	for _, ref := range order {
+		ch := tracks[ref.Track].Chunks[ref.Chunk]
 
-			offsets[t][i] = payloadOffset
-			if payloadOffset > maxOffset {
-				maxOffset = payloadOffset
-			}
-			payloadOffset += ch.Source.Size
+		if currentMdat > 0 && currentMdat+ch.Source.Size > maxMdatPayload {
+			payloadOffset += mdatHeaderSize
+			currentMdat = 0
 		}
+		currentMdat += ch.Source.Size
+
+		offsets[ref.Track][ref.Chunk] = payloadOffset
+		if payloadOffset > maxOffset {
+			maxOffset = payloadOffset
+		}
+		payloadOffset += ch.Source.Size
 	}
 
 	return offsets, maxOffset
@@ -1790,6 +1879,7 @@ func writeProgressiveMP4(
 	ftyp *mp4.FtypBox,
 	moov *mp4.MoovBox,
 	tracks []*trackData,
+	order []chunkRef,
 	mdatPayloadSizes []uint64,
 ) error {
 	w := bufio.NewWriterSize(
@@ -1810,74 +1900,76 @@ func writeProgressiveMP4(
 	// 3. mdat boxes and media data.
 	//
 	// Each output chunk corresponds to one contiguous source range.
-	// Therefore we don't seek for every sample. A new mdat header is
+	// Chunks are written in writeOrder's interleaved order; we seek once
+	// per chunk, not for every sample. A new mdat header is
 	// written whenever the planned payload of the current one is used up.
 	nextMdat := 0
 	var mdatRemaining uint64
 
-	for _, tr := range tracks {
-		for chunkIndex, chunk := range tr.Chunks {
-			if mdatRemaining == 0 {
-				if nextMdat >= len(mdatPayloadSizes) {
-					return errors.New("media data exceeds planned mdat boxes")
-				}
+	for _, ref := range order {
+		tr, chunkIndex := tracks[ref.Track], ref.Chunk
+		chunk := tr.Chunks[chunkIndex]
 
-				mdatRemaining = mdatPayloadSizes[nextMdat]
-				nextMdat++
-
-				if err := writeMdatHeader(
-					w,
-					mdatRemaining+mdatHeaderSize,
-					false,
-				); err != nil {
-					return fmt.Errorf("write mdat header: %w", err)
-				}
+		if mdatRemaining == 0 {
+			if nextMdat >= len(mdatPayloadSizes) {
+				return errors.New("media data exceeds planned mdat boxes")
 			}
 
-			if chunk.Source.Size > mdatRemaining {
-				return fmt.Errorf(
-					"track %d chunk %d does not fit its planned mdat box",
-					tr.TrackID,
-					chunkIndex,
-				)
-			}
-			mdatRemaining -= chunk.Source.Size
+			mdatRemaining = mdatPayloadSizes[nextMdat]
+			nextMdat++
 
-			if chunk.Source.Mdat == nil {
-				return fmt.Errorf(
-					"track %d chunk %d has nil source mdat",
-					tr.TrackID,
-					chunkIndex,
-				)
-			}
-
-			n, err := chunk.Source.Mdat.CopyData(
-				int64(chunk.Source.Offset),
-				int64(chunk.Source.Size),
-				in,
+			if err := writeMdatHeader(
 				w,
+				mdatRemaining+mdatHeaderSize,
+				false,
+			); err != nil {
+				return fmt.Errorf("write mdat header: %w", err)
+			}
+		}
+
+		if chunk.Source.Size > mdatRemaining {
+			return fmt.Errorf(
+				"track %d chunk %d does not fit its planned mdat box",
+				tr.TrackID,
+				chunkIndex,
 			)
+		}
+		mdatRemaining -= chunk.Source.Size
 
-			if err != nil {
-				return fmt.Errorf(
-					"copy track %d chunk %d [%d,%d): %w",
-					tr.TrackID,
-					chunkIndex,
-					chunk.Source.Offset,
-					chunk.Source.Offset+chunk.Source.Size,
-					err,
-				)
-			}
+		if chunk.Source.Mdat == nil {
+			return fmt.Errorf(
+				"track %d chunk %d has nil source mdat",
+				tr.TrackID,
+				chunkIndex,
+			)
+		}
 
-			if uint64(n) != chunk.Source.Size {
-				return fmt.Errorf(
-					"copy track %d chunk %d: expected %d bytes, wrote %d",
-					tr.TrackID,
-					chunkIndex,
-					chunk.Source.Size,
-					n,
-				)
-			}
+		n, err := chunk.Source.Mdat.CopyData(
+			int64(chunk.Source.Offset),
+			int64(chunk.Source.Size),
+			in,
+			w,
+		)
+
+		if err != nil {
+			return fmt.Errorf(
+				"copy track %d chunk %d [%d,%d): %w",
+				tr.TrackID,
+				chunkIndex,
+				chunk.Source.Offset,
+				chunk.Source.Offset+chunk.Source.Size,
+				err,
+			)
+		}
+
+		if uint64(n) != chunk.Source.Size {
+			return fmt.Errorf(
+				"copy track %d chunk %d: expected %d bytes, wrote %d",
+				tr.TrackID,
+				chunkIndex,
+				chunk.Source.Size,
+				n,
+			)
 		}
 	}
 
