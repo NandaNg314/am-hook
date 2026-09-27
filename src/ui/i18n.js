@@ -124,6 +124,7 @@
       'dl.busy': '该音质正在下载',
       'dl.preparing': '正在准备下载…',
       'dl.progress': '浏览器解密下载中 {pct}% · {done} / {total}',
+      'dl.defrag': '正在整理为标准 MP4…',
       'dl.done': '解密完成，已交给浏览器保存（{size}）',
       'dl.cancelled': '已取消下载',
       'dl.failed': '下载失败：{msg}',
@@ -162,6 +163,7 @@
       'lyrics.failed': '歌词加载失败，请稍后重试',
 
       'err.worker': '解密 Worker 出错',
+      'err.defrag': '解碎片失败：{msg}',
       'err.template': '获取解密模板失败：{msg}',
       'err.m3u8Http': '获取 media m3u8 失败（HTTP {status}）',
       'err.m3u8Map': 'media m3u8 缺少 EXT-X-MAP BYTERANGE',
@@ -280,6 +282,7 @@
       'dl.busy': 'This quality is already downloading',
       'dl.preparing': 'Preparing download…',
       'dl.progress': 'Decrypting in browser {pct}% · {done} / {total}',
+      'dl.defrag': 'Converting to progressive MP4…',
       'dl.done': 'Decrypted and handed to the browser to save ({size})',
       'dl.cancelled': 'Download cancelled',
       'dl.failed': 'Download failed: {msg}',
@@ -318,6 +321,7 @@
       'lyrics.failed': 'Failed to load lyrics. Try again later.',
 
       'err.worker': 'Decryption worker error',
+      'err.defrag': 'Defragmentation failed: {msg}',
       'err.template': 'Failed to get the decryption template: {msg}',
       'err.m3u8Http': 'Failed to fetch media m3u8 (HTTP {status})',
       'err.m3u8Map': 'media m3u8 has no EXT-X-MAP BYTERANGE',

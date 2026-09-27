@@ -1,0 +1,12 @@
+[package]
+name = "am-media-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Browser (wasm32-unknown-unknown) build of am-media, used by media-worker.js"
+
+# 构建：scripts/build-wasm.sh -> src/ui/media.wasm
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+am-media = { path = "../am-media" }

@@ -59,7 +59,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 - Video and audio tracks appear in separate columns. The highest bitrate video and its group's default audio are selected; changing the video updates the recommended audio, and audio can also be chosen manually.
 - Playback uses MediaSource with seeking and bounded buffering. Unsupported codecs remain downloadable; pick AVC/AAC for broader playback compatibility.
 - Independent CEA-608 caption tracks are decoded into native browser text tracks. The first one is shown by default; use the video's subtitle menu to switch or disable captions.
-- Downloads decrypt segment by segment and write time-interleaved fragments to an OPFS temporary file, never holding the whole MV in memory. The Worker then rewrites that file as a standard (progressive) MP4 with `moov` before the media data. Every track is cut into chunks of at most one second and written in time order, so audio, video and captions for the same moment sit together and players can read the file front to back. This step took under a second for a 644 MB 4K MV in testing. No transcoding or tag writing is done. Both files exist briefly during this step, so OPFS needs about twice the MV size.
+- Downloads decrypt segment by segment and write time-interleaved fragments to an OPFS temporary file, never holding the whole MV in memory. The Worker then rewrites that file as a standard (progressive) MP4 with `moov` before the media data. Every track is cut into chunks of at most one second and written in time order, so audio, video and captions for the same moment sit together and players can read the file front to back. No transcoding or tag writing is done. Both files exist briefly during this step, so OPFS needs about twice the MV size.
 - CEA-608 caption tracks are kept in the download. Apple starts them with a malformed empty sample that recent FFmpeg rejects (mpv-based players stop shortly after starting); it is rewritten as a valid empty caption sample of the same size.
 - Completion triggers a save and exposes a "Save MP4" link. Cancellation and failure remove temporary files; leaving the page attempts to remove the finished file. Files left by a closed or crashed tab are removed the next time an MV page is opened (without Web Locks, once they are 24 hours old).
 
@@ -73,7 +73,7 @@ In the browser (`src/ui/decrypt.js`):
 2. The first fragment uses the fixed template embedded in the wasm (`skd://itunes.apple.com/P000000000/s1/e1`); the rest use the track template from `/key`.
 3. Fragments are fetched with Range requests and decrypted in place by a Worker pool (one `hook.wasm` instance per Worker). The decryption code is shared with the server (`crates/am-mp4`), so the output is byte-identical to `--hook` mode.
 4. **Playback**: decrypted fragments feed MSE when the original codec is supported. If ALAC is unavailable but FLAC-in-MP4 is, the on-demand `flac.wasm` losslessly converts ALAC packets to FLAC frames and remuxes them into small fMP4 fragments. EC-3 uses MSE when supported, otherwise the on-demand `ec3.wasm` decoder plays 5.1/7.1 PCM through Web Audio (no Atmos object rendering). Seeking jumps to the matching source fragment.
-5. **Download**: 4 lanes fetch and decrypt concurrently and write each result at its original offset into an OPFS temporary file, which is handed to the browser to save. Without OPFS it falls back to in-memory Blobs.
+5. **Download**: 4 lanes fetch and decrypt concurrently and write each result at its original offset into an OPFS temporary file, which is then converted to a progressive MP4 like the reference downloader's `DefragmentMP4` (`M4A ` ftyp, `moov` before the media data) and handed to the browser to save. Without OPFS it falls back to in-memory Blobs.
 
 Both browser `hook.wasm` and server `--hook` repair identifiable ALAC end-tag damage after decryption (for example, song `1691044818`). The init segment's track and sample description identify complete uncompressed mono/stereo packets; a missing or damaged 3-bit `TYPE_END` is restored to `111`. PCM, sample lengths and Range offsets stay unchanged. Compressed packets, truncated PCM and packets without room for the tag are left untouched; FLAC transcoding keeps its fallback that can append a missing tag byte.
 
@@ -109,7 +109,7 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 - `/parse/mv/<adamId>` gets the master URL from wrapper-lite `/webplayback`, fetches it with `User-Agent: AM`, and returns the playlist text and final CDN URL.
 - `/mv/webplayback/<adamId>` and `/mv/license` relay to wrapper-lite `/webplayback` and `/license` (PlayReady only; license errors are shown without falling back to another DRM).
 - Metadata (iTunes Lookup), track playlists and media segments are fetched by the browser directly from Apple.
-- Challenge building, license parsing, CENC/CBCS decryption, caption repair, fragmented MP4 muxing and conversion to a progressive MP4 run in a Worker with `mv-core.wasm` (Go, see [browser/mvcore](browser/mvcore/README.md)). `--hook` does not proxy MV resources.
+- Challenge building, license parsing, CENC/CBCS decryption, caption repair, fragmented MP4 muxing and conversion to a progressive MP4 run in a Worker with `media.wasm` (Rust, see [crates/am-media](crates/am-media/README.md)). `--hook` does not proxy MV resources.
 - Live playlists, discontinuities and changing initialization segments are not supported.
 
 ## Server Endpoints
@@ -151,8 +151,7 @@ The binary is written to `target/release/am-hook` (`am-hook.exe` on Windows). Al
 
 | Asset | Source | Rebuild |
 |---|---|---|
-| `hook.wasm`, `flac.wasm` | `crates/am-wasm`, `crates/am-flac-wasm` (and `am-mp4`, `am-alac`, `temari`) | `rustup target add wasm32-unknown-unknown`, then `scripts/build-wasm.sh` |
-| `mv-core.wasm`, `mv-go.js` | `browser/mvcore` | `python scripts/build-mv-wasm.py` (Go 1.22+) |
+| `hook.wasm`, `flac.wasm`, `media.wasm` | `crates/am-wasm`, `crates/am-flac-wasm`, `crates/am-media-wasm` (and `am-mp4`, `am-alac`, `temari`, `am-media`) | `rustup target add wasm32-unknown-unknown`, then `scripts/build-wasm.sh` |
 | `mv-cea608.mjs` | `browser/cea608` | `node scripts/build-cea608.cjs <path-to-typescript-package>` |
 | `lyrics/amll-core.mjs`, `lyrics/amll.css` | `@applemusic-like-lyrics/core`, see [browser/amll](browser/amll/README.md) | `node scripts/build-amll.cjs <node_modules>` |
 | `ec3.wasm`, `ec3-runtime.mjs` | `@mediabunny/ac3` 1.59.1 | `node scripts/extract-ec3.mjs`, see [EC3-SOURCE.md](src/ui/EC3-SOURCE.md) |
@@ -163,14 +162,13 @@ The binary is written to `target/release/am-hook` (`am-hook.exe` on Windows). Al
 cargo test --workspace
 ```
 
-Unit tests cover URL parsing, m3u8 rewriting, MP4 box patching (including that the in-place wasm path matches the parallel path), range parsing, cache deduplication and the MV endpoints. End-to-end tests run against the live CDN and wrapper-lite (default `http://127.0.0.1:12340`, override with `AM_HOOK_WRAPPER`) and verify decrypted fragments, cross-fragment ranges, and that the proxy is refused without `--hook`.
+Unit tests cover the browser media core (PlayReady license decryption, CENC/CBCS, caption repair, defragmentation), URL parsing, m3u8 rewriting, MP4 box patching (including that the in-place wasm path matches the parallel path), range parsing, cache deduplication and the MV endpoints. End-to-end tests run against the live CDN and wrapper-lite (default `http://127.0.0.1:12340`, override with `AM_HOOK_WRAPPER`) and verify decrypted fragments, cross-fragment ranges, and that the proxy is refused without `--hook`.
 
 Browser-side tests are plain Node scripts:
 
 | Kind | Command |
 |---|---|
 | Offline, Node only | `node --test tests/player_*.cjs`, `node tests/mv_hls.cjs`, `node tests/mv_captions.cjs` |
-| Offline, Go (MV core) | `go test ./...` in `browser/mvcore` (caption repair, defragmentation, read-ahead) |
 | Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>` |
 | Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`) |
 
@@ -201,17 +199,18 @@ src/
     ec3.wasm / ec3-runtime.mjs / ec3-decode-worker.js      EC-3 PCM fallback
     lyrics/            Lyrics view (bundled AMLL, see browser/amll; ttml.mjs parses TTML, panel.mjs wires it to the player)
     mv-page.mjs        MV page logic
-    mv-hls.mjs / mv-engine.mjs / mv-worker.js             MV playlist parsing, playback, download, Worker
-    mv-core.wasm / mv-go.js                               Build output of browser/mvcore
+    mv-hls.mjs / mv-engine.mjs                            MV playlist parsing, playback, download
+    media-worker.js / media.wasm                          Worker for MVs and song defragmentation; build output of crates/am-media-wasm
     mv-captions.mjs / mv-cea608.mjs                       CEA-608 captions
 crates/
   am-mp4/              ISOBMFF parsing, box patching, sample decryption (shared by server and wasm); embeds the fixed first-fragment template
   am-alac/             Conservative ALAC end-tag repair
   am-wasm/             Browser C ABI exports of am-mp4 (wasm32-unknown-unknown)
   am-flac-wasm/        ALAC packet decoder and FLAC frame writer for the browser
+  am-media/            Browser media core: PlayReady, CENC/CBCS, caption repair, MP4 muxing and defragmentation
+  am-media-wasm/       Browser C ABI exports of am-media
   temari/              Vendored Temari FairPlay decryption library
 browser/
-  mvcore/              Go source of the MV core (PlayReady, CENC/CBCS, MP4 muxing and defragmentation)
   cea608/              Vendored hls.js CEA-608 parser
   amll/                AMLL lyric player bundle entry and build notes
 scripts/               WASM / asset build scripts
@@ -222,4 +221,4 @@ tests/                 Rust integration tests and Node browser tests
 
 am-hook is licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (AGPL-3.0-only), because the web UI embeds the AGPL-licensed [AMLL](https://github.com/amll-dev/applemusic-like-lyrics) lyric player. If you run a modified version as a network service, you must offer its users the corresponding source.
 
-Bundled third-party components keep their own licenses: `crates/temari` (MIT), the hls.js CEA-608 parser (Apache-2.0, `browser/cea608/LICENSE`), Go and mp4ff in the MV core (BSD-3-Clause / MIT, `browser/mvcore/*LICENSE`), `@mediabunny/ac3` (MPL-2.0, `src/ui/EC3-LICENSE.txt`) and AMLL with its dependencies (AGPL-3.0-only, `browser/amll`).
+Bundled third-party components keep their own licenses: `crates/temari` (MIT), the hls.js CEA-608 parser (Apache-2.0, `browser/cea608/LICENSE`), `@mediabunny/ac3` (MPL-2.0, `src/ui/EC3-LICENSE.txt`) and AMLL with its dependencies (AGPL-3.0-only, `browser/amll`).

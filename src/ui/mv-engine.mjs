@@ -3,7 +3,7 @@ import { BrowserCaptions } from './captions.mjs';
 
 export class Core {
   constructor() {
-    this.worker = new Worker('/assets/mv/worker.js'); this.pending = new Map(); this.next = 0;
+    this.worker = new Worker('/assets/media-worker.js'); this.pending = new Map(); this.next = 0;
     this.worker.onmessage = ({ data }) => {
       const p = this.pending.get(data.id); if (!p) return;
       this.pending.delete(data.id); data.error ? p.reject(new Error(data.error)) : p.resolve(data.result);

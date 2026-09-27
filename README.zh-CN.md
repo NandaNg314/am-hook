@@ -59,7 +59,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 - 视频、音频规格分列显示，默认选择最高码率视频和其音频组中的默认音轨；切换视频会更新推荐音轨，也可手动选择音频。
 - 播放使用 MediaSource，支持进度跳转和有限缓冲。不支持的编码仍可下载；可选择 AVC/AAC 轨道获得更好的播放兼容性。
 - 视频内独立的 CEA-608 字幕轨由前端解码为浏览器原生字幕，默认显示首条字幕，可通过视频字幕菜单切换或关闭。
-- 下载逐段解密、按时间交错写入 OPFS 临时文件，不在内存中拼接整部 MV。随后 Worker 把它改写为标准（progressive）MP4，`moov` 位于媒体数据之前；每条轨道切成不超过 1 秒的 chunk 并按时间顺序写入，同一时刻的音频、视频和字幕相邻存放，播放器可以从头到尾顺序读取。这一步在测试中处理 644 MB 的 4K MV 不到 1 秒。不进行转码或写 tag。改写期间两份文件同时存在，OPFS 需要约两倍于 MV 的空间。
+- 下载逐段解密、按时间交错写入 OPFS 临时文件，不在内存中拼接整部 MV。随后 Worker 把它改写为标准（progressive）MP4，`moov` 位于媒体数据之前；每条轨道切成不超过 1 秒的 chunk 并按时间顺序写入，同一时刻的音频、视频和字幕相邻存放，播放器可以从头到尾顺序读取。不进行转码或写 tag。改写期间两份文件同时存在，OPFS 需要约两倍于 MV 的空间。
 - 下载保留 CEA-608 字幕轨。Apple 的字幕轨以一个格式错误的空 sample 开头，新版 FFmpeg 会拒绝它（基于 mpv 的播放器会在播放不久后退出）；下载时会把它原位改写为等长的合法空字幕 sample。
 - 完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件，离开页面时尝试清理已完成文件。标签页关闭或崩溃留下的文件会在下次打开 MV 页面时删除（浏览器不支持 Web Locks 时，文件超过 24 小时才会删除）。
 
@@ -73,7 +73,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 2. 首个分片使用内嵌在 wasm 中的固定模板（`skd://itunes.apple.com/P000000000/s1/e1`），其余分片使用经 `/key` 获取的轨道模板。
 3. 分片用 Range 请求拉取，交给 Worker 池（每个 Worker 一个 `hook.wasm` 实例）原地解密；解密逻辑与服务端共用 `crates/am-mp4`，产物与 `--hook` 模式逐字节一致。
 4. **播放**：浏览器支持原编码时，解密后的分片直接喂给 MSE。不支持 ALAC 但支持 FLAC-in-MP4 时，按需加载 `flac.wasm`，把 ALAC packet 无损转成 FLAC frame 并重新封装成较小的 fMP4 fragment。EC-3 在 MSE 支持时直接播放，否则按需加载 `ec3.wasm`，通过 Web Audio 播放 5.1/7.1 声道 PCM（不渲染 Atmos 对象）。拖动时直接定位到对应原始分片。
-5. **下载**：4 路并发拉取和解密，结果按原始偏移写入 OPFS 临时文件，完成后交给浏览器保存。不支持 OPFS 时退回内存 Blob。
+5. **下载**：4 路并发拉取和解密，结果按原始偏移写入 OPFS 临时文件，完成后像参考下载器的 `DefragmentMP4` 那样转为 progressive MP4（`M4A ` ftyp，`moov` 位于媒体数据之前），再交给浏览器保存。不支持 OPFS 时退回内存 Blob。
 
 浏览器 `hook.wasm` 和服务端 `--hook` 都会在解密后修复可确认的 ALAC 包尾错误（如歌曲 `1691044818`）：根据 init 中的轨道与 sample description，定位 PCM 完整的未压缩单声道／立体声包，将缺失或损坏的 3-bit `TYPE_END` 恢复为 `111`。修复不改变 PCM、sample 长度或 Range 偏移。压缩包、PCM 截断及没有足够尾部空间的包不做原地修复；转 FLAC 时仍保留可追加结束标记的兜底。
 
@@ -109,7 +109,7 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 - `/parse/mv/<adamId>` 从 wrapper-lite `/webplayback` 获取 master 地址，再以 `User-Agent: AM` 获取内容，返回播放列表文本和最终 CDN 地址。
 - `/mv/webplayback/<adamId>` 和 `/mv/license` 分别转发到 wrapper-lite `/webplayback` 和 `/license`（只使用 PlayReady；许可证失败会显示错误，不切换其他 DRM）。
 - 展示信息（iTunes Lookup）、音视频轨道 m3u8 和分片均由浏览器直连 Apple 获取。
-- challenge 构建、license 解析、CENC/CBCS 解密、字幕修复、fragmented MP4 合并以及转为 progressive MP4 在 Worker 中由 `mv-core.wasm` 完成（Go 实现，见 [browser/mvcore](browser/mvcore/README.md)）。`--hook` 不提供 MV 资源代理。
+- challenge 构建、license 解析、CENC/CBCS 解密、字幕修复、fragmented MP4 合并以及转为 progressive MP4 在 Worker 中由 `media.wasm` 完成（Rust 实现，见 [crates/am-media](crates/am-media/README.md)）。`--hook` 不提供 MV 资源代理。
 - 暂不支持直播、discontinuity 或中途更换初始化段的清单。
 
 ## 服务端接口
@@ -151,8 +151,7 @@ cargo build --release
 
 | 产物 | 源码 | 重新生成 |
 |---|---|---|
-| `hook.wasm`、`flac.wasm` | `crates/am-wasm`、`crates/am-flac-wasm`（及 `am-mp4`、`am-alac`、`temari`） | `rustup target add wasm32-unknown-unknown` 后运行 `scripts/build-wasm.sh` |
-| `mv-core.wasm`、`mv-go.js` | `browser/mvcore` | `python scripts/build-mv-wasm.py`（Go 1.22+） |
+| `hook.wasm`、`flac.wasm`、`media.wasm` | `crates/am-wasm`、`crates/am-flac-wasm`、`crates/am-media-wasm`（及 `am-mp4`、`am-alac`、`temari`、`am-media`） | `rustup target add wasm32-unknown-unknown` 后运行 `scripts/build-wasm.sh` |
 | `mv-cea608.mjs` | `browser/cea608` | `node scripts/build-cea608.cjs <typescript 包路径>` |
 | `lyrics/amll-core.mjs`、`lyrics/amll.css` | `@applemusic-like-lyrics/core`，见 [browser/amll](browser/amll/README.md) | `node scripts/build-amll.cjs <node_modules 路径>` |
 | `ec3.wasm`、`ec3-runtime.mjs` | `@mediabunny/ac3` 1.59.1 | `node scripts/extract-ec3.mjs`，见 [EC3-SOURCE.md](src/ui/EC3-SOURCE.md) |
@@ -163,14 +162,13 @@ cargo build --release
 cargo test --workspace
 ```
 
-单元测试覆盖 URL 解析、m3u8 改写、MP4 box 修补（含 wasm 原地解密路径与并行路径结果一致）、Range 解析、缓存去重和 MV 接口。端到端测试连接真实 CDN 与 wrapper-lite（默认 `http://127.0.0.1:12340`，可用环境变量 `AM_HOOK_WRAPPER` 覆盖），验证解密后的分片、跨分片 Range，以及未开启 `--hook` 时代理请求被拒绝。
+单元测试覆盖浏览器媒体核心（PlayReady license 解密、CENC/CBCS、字幕修复、defrag）、URL 解析、m3u8 改写、MP4 box 修补（含 wasm 原地解密路径与并行路径结果一致）、Range 解析、缓存去重和 MV 接口。端到端测试连接真实 CDN 与 wrapper-lite（默认 `http://127.0.0.1:12340`，可用环境变量 `AM_HOOK_WRAPPER` 覆盖），验证解密后的分片、跨分片 Range，以及未开启 `--hook` 时代理请求被拒绝。
 
 浏览器端测试是普通的 Node 脚本：
 
 | 类型 | 命令 |
 |---|---|
 | 离线，仅需 Node | `node --test tests/player_*.cjs`、`node tests/mv_hls.cjs`、`node tests/mv_captions.cjs` |
-| 离线，Go（MV 核心） | 在 `browser/mvcore` 中运行 `go test ./...`（字幕修复、defrag、read-ahead） |
 | 离线，Playwright + Chrome 与本地 fixture | `node tests/ui_layout.cjs <playwright>`、`node tests/lyrics_ui.cjs <playwright>`、`node tests/mv_ui.cjs <playwright>` |
 | 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`） |
 
@@ -201,17 +199,18 @@ src/
     ec3.wasm / ec3-runtime.mjs / ec3-decode-worker.js      EC-3 PCM 回退
     lyrics/            歌词界面（打包好的 AMLL，见 browser/amll；ttml.mjs 解析 TTML，panel.mjs 接入播放器）
     mv-page.mjs        MV 页面逻辑
-    mv-hls.mjs / mv-engine.mjs / mv-worker.js             MV 清单解析、播放、下载与 Worker
-    mv-core.wasm / mv-go.js                               browser/mvcore 的编译产物
+    mv-hls.mjs / mv-engine.mjs                            MV 清单解析、播放与下载
+    media-worker.js / media.wasm                          MV 与歌曲 defrag 共用的 Worker；crates/am-media-wasm 的编译产物
     mv-captions.mjs / mv-cea608.mjs                       CEA-608 字幕
 crates/
   am-mp4/              ISOBMFF 解析、box 修补、sample 解密（服务端与 wasm 共用）；内嵌首段固定模板
   am-alac/             保守的 ALAC 包尾修复
   am-wasm/             am-mp4 的浏览器端 C ABI 导出（wasm32-unknown-unknown）
   am-flac-wasm/        浏览器端 ALAC 解码与 FLAC frame 写入
+  am-media/            浏览器媒体核心：PlayReady、CENC/CBCS、字幕修复、MP4 合并与 defrag
+  am-media-wasm/       am-media 的浏览器端 C ABI 导出
   temari/              内置的 Temari FairPlay 解密库
 browser/
-  mvcore/              MV 核心的 Go 源码（PlayReady、CENC/CBCS、MP4 合并与 defrag）
   cea608/              来自 hls.js 的 CEA-608 解析器
   amll/                AMLL 歌词播放器的打包入口与构建说明
 scripts/               WASM / 资源构建脚本
@@ -222,4 +221,4 @@ tests/                 Rust 集成测试与 Node 浏览器测试
 
 am-hook 以 [GNU Affero 通用公共许可证 v3.0（仅此版本）](LICENSE)（AGPL-3.0-only）发布，因为 Web 界面内嵌了以 AGPL 授权的 [AMLL](https://github.com/amll-dev/applemusic-like-lyrics) 歌词播放器。如果将修改后的版本作为网络服务运行，需要向其用户提供对应的源代码。
 
-内置的第三方组件保留各自的许可证：`crates/temari`（MIT）、hls.js CEA-608 解析器（Apache-2.0，`browser/cea608/LICENSE`）、MV 核心中的 Go 与 mp4ff（BSD-3-Clause / MIT，`browser/mvcore/*LICENSE`）、`@mediabunny/ac3`（MPL-2.0，`src/ui/EC3-LICENSE.txt`），以及 AMLL 及其依赖（AGPL-3.0-only，`browser/amll`）。
+内置的第三方组件保留各自的许可证：`crates/temari`（MIT）、hls.js CEA-608 解析器（Apache-2.0，`browser/cea608/LICENSE`）、`@mediabunny/ac3`（MPL-2.0，`src/ui/EC3-LICENSE.txt`），以及 AMLL 及其依赖（AGPL-3.0-only，`browser/amll`）。

@@ -318,6 +318,7 @@
         const result = await AmDecrypt.download(track, fileName, {
           signal: job.ctl.signal,
           onProgress: (done) => { job.done = done; renderDownload(id); },
+          onDefrag: () => { job.defrag = true; renderDownload(id); },
         });
         toast(t('dl.done', { size: formatSize(result.size) }));
       } catch (err) {
@@ -338,7 +339,9 @@
       if (!job) return;
       const ratio = job.total ? job.done / job.total : 0;
       r.progressFill.style.width = `${ratio * 100}%`;
-      r.progressText.textContent = job.total
+      r.progressText.textContent = job.defrag
+        ? t('dl.defrag')
+        : job.total
         ? t('dl.progress', { pct: Math.floor(ratio * 100), done: formatSize(job.done), total: formatSize(job.total) })
         : t('dl.preparing');
     }

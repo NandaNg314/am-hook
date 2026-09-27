@@ -42,9 +42,6 @@ pub async fn mv_asset_handler(
         "engine.mjs" => ("text/javascript", include_bytes!("ui/mv-engine.mjs")),
         "captions.mjs" => ("text/javascript", include_bytes!("ui/mv-captions.mjs")),
         "cea608.mjs" => ("text/javascript", include_bytes!("ui/mv-cea608.mjs")),
-        "worker.js" => ("text/javascript", include_bytes!("ui/mv-worker.js")),
-        "go.js" => ("text/javascript", include_bytes!("ui/mv-go.js")),
-        "core.wasm" => ("application/wasm", include_bytes!("ui/mv-core.wasm")),
         "style.css" => ("text/css", include_bytes!("ui/mv.css")),
         _ => return bad_request("Unknown MV asset"),
     };
@@ -223,6 +220,16 @@ pub async fn ec3_wasm_handler(headers: HeaderMap) -> Response<Body> {
 /// 浏览器端解密核心（crates/am-wasm 编译产物，见 scripts/build-wasm.sh）
 pub async fn wasm_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "application/wasm", include_bytes!("ui/hook.wasm"))
+}
+
+/// MV 与歌曲下载共用的媒体 Worker：PlayReady、CENC/CBCS 解密、合并与 defrag
+pub async fn media_worker_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/media-worker.js"))
+}
+
+/// 媒体核心（crates/am-media-wasm 编译产物，见 scripts/build-wasm.sh）
+pub async fn media_wasm_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "application/wasm", include_bytes!("ui/media.wasm"))
 }
 
 /// 歌词界面（src/ui/lyrics/）：TTML 解析、接入播放器的 panel.mjs 与打包好的 AMLL（见 browser/amll）

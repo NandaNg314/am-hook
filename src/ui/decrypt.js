@@ -6,13 +6,16 @@
  *   - 解密在 Worker 池中由 hook.wasm（crates/am-wasm）完成，不阻塞页面；
  *   - 下载时解密结果按原始偏移写入 OPFS 文件，完成后以磁盘文件交给浏览器保存，
  *     大文件也不会占用大量内存；不支持 OPFS 时退回内存 Blob。
- * 解密不改变字节长度，产物与服务端 --hook 模式的 media file 完全一致。
+ * 解密不改变字节长度，解密结果与服务端 --hook 模式的 media file 完全一致；
+ * 下载最后再像参考实现 rip.go 那样用 DefragmentMP4 解碎片为普通 MP4（ftyp, moov, mdat）。
  */
 (function (global) {
   'use strict';
 
   const FIXED_KEY_URI = 'skd://itunes.apple.com/P000000000/s1/e1';
   const WORKER_URL = '/assets/hook-worker.js';
+  /** 媒体 Worker（media.wasm，crates/am-media），与 MV 共用，其中含移植自参考实现的 defrag */
+  const MEDIA_WORKER_URL = '/assets/media-worker.js';
   const OPFS_DIR = 'am-hook-downloads';
   const DOWNLOAD_CONCURRENCY = 4;
   /** 保存完成后 OPFS 临时文件保留多久（浏览器需要时间把它复制到下载目录） */
@@ -293,14 +296,37 @@
 
     async finish() {
       await this.worker.call('file-close');
+      this.closeWorker();
+    }
+
+    closeWorker() {
+      if (!this.worker) return;
       this.worker.terminate();
+      this.worker = null;
+    }
+
+    /** 把 fMP4 解碎片到同目录新文件并删除 fMP4，返回最终 File */
+    async defrag(signal) {
+      const input = this.name;
+      this.output = input.replace(/\.m4a$/, '-defrag.m4a');
+      try {
+        await defragInWorker([input, this.output, OPFS_DIR], signal);
+      } finally {
+        await removeOpfsFile(input);
+      }
+      this.name = this.output;
+      this.output = null;
       return (await (await opfsDir()).getFileHandle(this.name)).getFile();
     }
 
     async abort() {
-      try { await this.worker.call('file-close'); } catch {}
-      this.worker.terminate();
+      if (this.worker) {
+        try { await this.worker.call('file-close'); } catch {}
+        this.closeWorker();
+      }
       await removeOpfsFile(this.name);
+      // 被终止的 Worker 可能尚未释放句柄，删不掉的留给 cleanupStale
+      if (this.output) await removeOpfsFile(this.output);
     }
 
     cleanup() {
@@ -321,11 +347,20 @@
 
     finish() {
       this.parts.sort((a, b) => a[0] - b[0]);
-      return new Blob(this.parts.map((p) => p[1]), { type: 'audio/mp4' });
+      this.blob = new Blob(this.parts.map((p) => p[1]), { type: 'audio/mp4' });
+      this.parts = [];
+    }
+
+    /** 无 OPFS 时 Worker 直接读 Blob、返回新 Blob */
+    defrag(signal) {
+      const blob = this.blob;
+      this.blob = null;
+      return defragInWorker([blob], signal);
     }
 
     abort() {
       this.parts = [];
+      this.blob = null;
     }
 
     cleanup() {}
@@ -353,10 +388,31 @@
   }
 
   /**
-   * 下载并解密整条轨道，完成后触发浏览器保存。
-   * onProgress(doneBytes, totalBytes)；返回 { storage: 'opfs' | 'memory', size }。
+   * 在媒体 Worker 中运行参考实现的 DefragmentMP4（歌曲用法：M4A ftyp、每个 trun 一个 chunk、
+   * 不做 MV 那样的按时间交错）。args 为 [输入文件名, 输出文件名, OPFS 目录] 或 [Blob]；取消时直接终止 Worker。
    */
-  async function download(track, fileName, { signal, onProgress } = {}) {
+  function defragInWorker(args, signal) {
+    signal.throwIfAborted();
+    const worker = new Worker(MEDIA_WORKER_URL);
+    let onAbort;
+    return new Promise((resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      worker.onmessage = ({ data }) => (data.error ? reject(new Error(t('err.defrag', { msg: data.error }))) : resolve(data.result));
+      worker.onerror = (e) => reject(new Error(t('err.defrag', { msg: e.message || t('err.worker') })));
+      worker.postMessage({ id: 1, method: 'defragSong', args });
+    }).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+      worker.terminate();
+    });
+  }
+
+  /**
+   * 下载并解密整条轨道，解碎片后触发浏览器保存。
+   * onProgress(doneBytes, totalBytes)；onDefrag() 在开始解碎片时调用；
+   * 返回 { storage: 'opfs' | 'memory', size }（size 为最终文件大小）。
+   */
+  async function download(track, fileName, { signal, onProgress, onDefrag } = {}) {
     const ctl = new AbortController();
     const onAbort = () => ctl.abort(signal.reason);
     if (signal) {
@@ -384,9 +440,11 @@
         ctl.abort(err);
         throw err;
       })));
-      const file = await sink.finish();
+      await sink.finish();
+      if (onDefrag) onDefrag();
+      const file = await sink.defrag(ctl.signal);
       saveFile(file, fileName, () => sink.cleanup());
-      return { storage: sink.kind, size: track.size };
+      return { storage: sink.kind, size: file.size };
     } catch (err) {
       ctl.abort(err);
       await sink.abort();
