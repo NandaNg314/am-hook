@@ -1,4 +1,4 @@
-import { behavior, displayRows, currentRow, emphasized, validTokens, easeScroll } from './timeline.mjs';
+import { behavior, displayRows, currentRow, emphasized, validTokens } from './timeline.mjs';
 
 const node = (tag, className, text) => {
   const element=document.createElement(tag);
@@ -26,8 +26,9 @@ export class LyricView {
     this.abort=new AbortController();
     const listen=(event,handler)=>container.addEventListener(event,handler,{passive:true,signal:this.abort.signal});
     const intent=()=>{this.intentUntil=performance.now()+behavior.scrollIntentWindow;};
-    listen('wheel',intent);
-    listen('touchstart',()=>{this.touching=true;});
+    // A user scroll takes over from any follow animation still in flight.
+    listen('wheel',()=>{this.settleScroll();intent();});
+    listen('touchstart',()=>{this.settleScroll();this.touching=true;});
     listen('touchmove',()=>{if(this.touching) intent();});
     listen('touchend',()=>{this.touching=false;});
     listen('scroll',()=>{
@@ -44,7 +45,7 @@ export class LyricView {
     clearTimeout(this.resumeTimer);
     clearTimeout(this.optionTimer);
     clearTimeout(this.initialTimer);
-    cancelAnimationFrame(this.scrollFrame);
+    this.settleScroll();
     this.song=song;
     this.element.lang=song.language;
     this.rows=displayRows(song);
@@ -52,13 +53,13 @@ export class LyricView {
     this.time=0;
     this.activations=new Map();
     this.dotRow=-1;
-    this.element.replaceChildren();
+    // Follow scrolling animates this wrapper's transform on the compositor.
+    this.content=node('div','lyric-content');
+    this.element.replaceChildren(this.content);
     this.top=node('div','top-spacer');
-    this.element.append(this.top);
     this.dom=this.rows.map((row,index)=>this.createRow(row,index));
-    this.element.append(...this.dom.map(item=>item.element));
     this.bottom=node('div','bottom-spacer');
-    this.element.append(this.bottom);
+    this.content.append(this.top,...this.dom.map(item=>item.element),this.bottom);
     this.element.scrollTop=0;
     this.setFollow(true);
     this.setOptions({translation:this.translation,pronunciation:this.pronunciation},false);
@@ -214,22 +215,43 @@ export class LyricView {
 
   scrollTarget(index=this.index) {
     const rect=this.dom[index].element.getBoundingClientRect();
-    return rect.y-this.top.getBoundingClientRect().height-behavior.scrollMargin+this.element.scrollTop;
+    return rect.y-this.scrollShift()-this.top.getBoundingClientRect().height-behavior.scrollMargin+this.element.scrollTop;
+  }
+
+  /** Offset the in-flight follow animation still adds on top of scrollTop. */
+  scrollShift() {
+    if (!this.scrollAnimation) return 0;
+    return new DOMMatrixReadOnly(getComputedStyle(this.content).transform).m42;
+  }
+
+  /** Ends a follow animation, keeping the lines where they are on screen. */
+  settleScroll() {
+    const animation=this.scrollAnimation;
+    if (!animation) return;
+    const position=this.element.scrollTop-this.scrollShift();
+    this.scrollAnimation=null;
+    animation.cancel();
+    this.element.scrollTop=position;
   }
 
   scrollToCurrent(instant=false,target=this.index>=0?this.scrollTarget():0) {
     const item=this.dom[this.index];
     if (!item) return;
+    this.settleScroll();
     const start=this.element.scrollTop;
-    if (instant) {this.element.scrollTop=target;return;}
-    cancelAnimationFrame(this.scrollFrame);
-    const begin=performance.now();
-    const animate=now=>{
-      const progress=Math.min(1,(now-begin)/behavior.scrollDuration);
-      this.element.scrollTop=start+(target-start)*easeScroll(progress);
-      if (progress<1) this.scrollFrame=requestAnimationFrame(animate);
-    };
-    this.scrollFrame=requestAnimationFrame(animate);
+    this.element.scrollTop=target;
+    if (instant) return;
+    // Jump to the target at once and let a transform carry the lines from the
+    // old position. The compositor runs it, so a busy main thread cannot drop
+    // scroll frames. The curve is the CSS form of timeline.mjs easeScroll.
+    const shift=this.element.scrollTop-start;
+    if (!shift) return;
+    const animation=this.content.animate(
+      [{transform:`translateY(${shift}px)`},{transform:'translateY(0)'}],
+      {duration:behavior.scrollDuration,easing:'cubic-bezier(.455,.03,.515,.955)'},
+    );
+    this.scrollAnimation=animation;
+    animation.onfinish=()=>{if (this.scrollAnimation===animation) this.scrollAnimation=null;};
   }
 
   setPlaying(playing) {this.playing=playing;this.updateDots();}
@@ -285,7 +307,7 @@ export class LyricView {
 
   stopAnimations() {cancelAnimationFrame(this.animationFrame);this.animationFrame=0;}
   destroy() {
-    this.stopAnimations();cancelAnimationFrame(this.scrollFrame);
+    this.stopAnimations();this.settleScroll();
     clearTimeout(this.optionTimer);clearTimeout(this.resumeTimer);clearTimeout(this.initialTimer);this.abort.abort();
   }
 }

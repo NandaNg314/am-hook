@@ -237,6 +237,8 @@ pub async fn lyrics_asset_handler(
         "timeline.mjs" => (JS, include_bytes!("ui/lyrics/timeline.mjs")),
         "lyric-view.mjs" => (JS, include_bytes!("ui/lyrics/lyric-view.mjs")),
         "backdrop.mjs" => (JS, include_bytes!("ui/lyrics/backdrop.mjs")),
+        "backdrop-render.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-render.mjs")),
+        "backdrop-worker.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-worker.mjs")),
         "lyrics.css" => ("text/css; charset=utf-8", include_bytes!("ui/lyrics/lyrics.css")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
