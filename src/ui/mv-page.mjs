@@ -1,5 +1,5 @@
 import { parseMaster, recommendedAudio } from './hls.mjs';
-import { fetchMaster, Playback, downloadMV, mime } from './engine.mjs';
+import { fetchMaster, Playback, downloadMV, mime, collectGarbage } from './engine.mjs';
 const $ = id => document.getElementById(id), { t } = AmI18n;
 // 与 song 页一致：/https://music.apple.com/{cc}/music-video/{slug}/{id}
 const [, country = 'us', id] = location.pathname.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/music-video\/[^/]+\/(\d+)\/?$/) || [];
@@ -7,7 +7,7 @@ let master, selectedVideo, selectedAudio, playback, downloadController, result, 
 let statusKey = 'mv.loading', statusVars, title = `MV ${id || ''}`, artist = '', busy = false;
 const pageController = new AbortController();
 // 状态点颜色：进行中闪烁，完成为绿色，失败为红色
-const STATES = { 'mv.loading': 'loading', 'mv.license': 'busy', 'mv.buffering': 'busy', 'mv.downloading': 'busy',
+const STATES = { 'mv.loading': 'loading', 'mv.license': 'busy', 'mv.buffering': 'busy', 'mv.downloading': 'busy', 'mv.defrag': 'busy',
   'mv.ready': 'idle', 'mv.playing': 'ok', 'mv.pressPlay': 'ok', 'mv.complete': 'ok', 'mv.failed': 'error' };
 function status(key, vars) {
   statusKey = key; statusVars = vars; $('status').textContent = t(key, vars);
@@ -156,7 +156,7 @@ $('download').onclick = async () => {
   try {
     result = await downloadMV(id, selectedVideo, selectedAudio, { signal: downloadController.signal, onProgress: (value, bytes) => {
       $('progress').value = value; status('mv.downloading', { percent: Math.round(value * 100), size: (bytes / 1048576).toFixed(1) });
-    } });
+    }, onDefrag: () => { $('progress').removeAttribute('value'); status('mv.defrag'); } });
     resultUrl = URL.createObjectURL(result.file); $('save').href = resultUrl;
     $('save').download = `${title} (${id}).mp4`.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
     $('save').hidden = false; $('save').click(); status('mv.complete');
@@ -169,6 +169,7 @@ window.addEventListener('pagehide', () => { pageController.abort(); downloadCont
 AmI18n.onChange(() => { renderTracks(); status(statusKey, statusVars); });
 AmI18n.apply(); status(statusKey);
 async function load() {
+  void collectGarbage();
   if (!id) throw new Error('Invalid music video ID');
   $('title').textContent = title; void metadata();
   $('meta').replaceChildren(badge(`ID ${id}`));

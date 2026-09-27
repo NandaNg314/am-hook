@@ -8,9 +8,17 @@ runtime. The checked-in assets were built with Go 1.22.1.
 The worker builds PlayReady challenges, parses licenses, decrypts CENC/CBCS
 fragments, normalizes decode timestamps and merges initialization metadata.
 JavaScript downloads CDN resources directly, feeds MediaSource or writes
-interleaved fragments to OPFS. Working memory is bounded by current fragments
-and the playback buffer. No defragmentation, transcoding or tag writing is done.
+interleaved fragments to OPFS. After muxing, the worker defragments that OPFS
+file into a progressive MP4 (`ftyp`, `moov`, `mdat`) through synchronous
+access handles: only sample tables are held in memory and sample data is
+streamed from the fragmented file. Working memory is otherwise bounded by
+current fragments and the playback buffer. No transcoding or tag writing is done.
 Only the two wrapper control requests go through Rust.
+
+Each download holds a Web Lock named after its `am-hook-mv-<uuid>` OPFS files
+until they are disposed. When the MV page loads and before each download, any
+such file whose lock is not held (tab closed or crashed, worker killed during
+defrag) is deleted. Without Web Locks, only files untouched for 24 hours are.
 
 ## Sources
 
@@ -25,6 +33,8 @@ Only the two wrapper control requests go through Rust.
   `internal/widevine-rip/decrypt.go` and `internal/media/mv/mux.go` in
   <https://github.com/itouakirai/apple-music-downloader>, commit
   `487f705cdb693b194fe8dfedafd1064ea6570d05`. The wrapper uses only PlayReady.
+- `defrag/defrag.go` is adapted from `internal/media/defrag/defrag.go` at the
+  same commit, with file-system IO replaced by `io.ReadSeeker` / `io.Writer`.
 - Go's runtime notice is in `GO-LICENSE`.
 - The Apple Music reference page uses MusicKit's `apple-music-video-player`.
   This implementation uses the browser's native accessible video controls and

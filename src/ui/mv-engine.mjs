@@ -169,11 +169,42 @@ function moofCount(bytes) {
   }
   return count;
 }
-export async function downloadMV(id, video, audio, { signal, onProgress }) {
+const PREFIX = 'am-hook-mv-', STALE_MS = 24 * 3600e3;
+// Each download holds a Web Lock named after its files until they are disposed. The browser
+// drops the lock when the tab closes or crashes, so an unlocked entry is garbage.
+function hold(uuid) {
+  if (!navigator.locks) return Promise.resolve(() => {});
+  let release; const held = new Promise(r => { release = r; });
+  return new Promise(resolve => {
+    navigator.locks.request(PREFIX + uuid, () => { resolve(release); return held; }).catch(() => resolve(() => {}));
+  });
+}
+// Removes OPFS files left by closed tabs, killed workers or an unfinished pagehide cleanup.
+// Without Web Locks, only entries untouched for a day are removed.
+export async function collectGarbage() {
+  if (!navigator.storage?.getDirectory) return;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const held = navigator.locks ? new Set((await navigator.locks.query()).held.map(l => l.name)) : null;
+    const garbage = [];
+    for await (const [name, handle] of root.entries()) {
+      const match = name.match(/^am-hook-mv-(.+?)\.f?mp4$/);
+      if (!match || held?.has(PREFIX + match[1])) continue;
+      if (!held && Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
+      garbage.push(name);
+    }
+    // Delete after iterating: mutating a directory while iterating it is unspecified.
+    for (const name of garbage) await root.removeEntry(name).catch(() => {});
+  } catch { /* best effort */ }
+}
+export async function downloadMV(id, video, audio, { signal, onProgress, onDefrag }) {
   if (!navigator.storage?.getDirectory) throw new Error('OPFS requires HTTPS or localhost and a supported browser');
+  await collectGarbage();
   const root = await navigator.storage.getDirectory();
-  const name = `am-hook-mv-${crypto.randomUUID()}.mp4`;
-  const handle = await root.getFileHandle(name, { create: true });
+  const uuid = crypto.randomUUID(), fragmented = `${PREFIX}${uuid}.fmp4`, name = `${PREFIX}${uuid}.mp4`;
+  const unlock = await hold(uuid);
+  let handle;
+  try { handle = await root.getFileHandle(fragmented, { create: true }); } catch (e) { unlock(); throw e; }
   const core = new Core(); let writer, complete = false;
   const abort = () => core.close(); signal.addEventListener('abort', abort, { once: true });
   try {
@@ -192,11 +223,16 @@ export async function downloadMV(id, video, audio, { signal, onProgress }) {
       onProgress(++done / queue.length, bytes);
     }
     signal.throwIfAborted(); await writer.close(); writer = null;
-    const file = await handle.getFile(); complete = true;
-    return { file, dispose: () => root.removeEntry(name).catch(() => {}) };
+    // Rewrite the interleaved fragments as a progressive MP4 (ftyp, moov, mdat).
+    onDefrag?.();
+    await core.call('defrag', fragmented, name);
+    signal.throwIfAborted();
+    const file = await (await root.getFileHandle(name)).getFile(); complete = true;
+    return { file, dispose: () => root.removeEntry(name).catch(() => {}).finally(unlock) };
   } finally {
     signal.removeEventListener('abort', abort); core.close();
     if (writer) await writer.abort().catch(() => {});
-    if (!complete) await root.removeEntry(name).catch(() => {});
+    await root.removeEntry(fragmented).catch(() => {});
+    if (!complete) { await root.removeEntry(name).catch(() => {}); unlock(); }
   }
 }

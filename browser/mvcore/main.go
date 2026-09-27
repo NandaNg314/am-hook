@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall/js"
 
+	"am-hook/mvcore/defrag"
 	pr "git.gay/itouakirai/puppyready"
 	"github.com/itouakirai/mp4ff/mp4"
 )
@@ -37,6 +38,78 @@ func encode(v interface{ Encode(io.Writer) error }) ([]byte, error) {
 	err := v.Encode(&b)
 	return b.Bytes(), err
 }
+
+// syncFile adapts a FileSystemSyncAccessHandle-like object (read/write with
+// {at}) to Go IO. Reads are served from a read-ahead window to keep the number
+// of JS calls small while lazy mdat parsing issues many tiny reads.
+type syncFile struct {
+	h         js.Value
+	pos, size int64
+	buf       []byte
+	start     int64
+	js        js.Value
+}
+
+func newSyncFile(h js.Value) *syncFile {
+	return &syncFile{h: h, size: int64(h.Call("getSize").Float())}
+}
+func (f *syncFile) view(n int) js.Value {
+	if f.js.IsUndefined() || f.js.Length() < n {
+		f.js = js.Global().Get("Uint8Array").New(n)
+	}
+	return f.js.Call("subarray", 0, n)
+}
+func (f *syncFile) Read(p []byte) (int, error) {
+	if f.pos >= f.size {
+		return 0, io.EOF
+	}
+	if f.pos < f.start || f.pos >= f.start+int64(len(f.buf)) {
+		n := int64(1 << 20)
+		if int64(len(p)) > n {
+			n = int64(len(p))
+		}
+		if n > f.size-f.pos {
+			n = f.size - f.pos
+		}
+		v := f.view(int(n))
+		got := f.h.Call("read", v, map[string]interface{}{"at": float64(f.pos)}).Int()
+		if got <= 0 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		if cap(f.buf) < got {
+			f.buf = make([]byte, got)
+		}
+		f.buf = f.buf[:got]
+		js.CopyBytesToGo(f.buf, v.Call("subarray", 0, got))
+		f.start = f.pos
+	}
+	n := copy(p, f.buf[f.pos-f.start:])
+	f.pos += int64(n)
+	return n, nil
+}
+func (f *syncFile) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekCurrent:
+		offset += f.pos
+	case io.SeekEnd:
+		offset += f.size
+	}
+	if offset < 0 {
+		return 0, fmt.Errorf("negative seek")
+	}
+	f.pos = offset
+	return offset, nil
+}
+func (f *syncFile) Write(p []byte) (int, error) {
+	v := f.view(len(p))
+	js.CopyBytesToJS(v, p)
+	if n := f.h.Call("write", v, map[string]interface{}{"at": float64(f.pos)}).Int(); n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	f.pos += int64(len(p))
+	return len(p), nil
+}
+
 func register(name string, fn func([]js.Value) (interface{}, error)) {
 	js.Global().Set(name, js.FuncOf(func(_ js.Value, a []js.Value) (result interface{}) {
 		defer func() {
@@ -259,6 +332,15 @@ func main() {
 		}
 		b, e := encode(merged)
 		return output(b), e
+	})
+	register("mvDefrag", func(a []js.Value) (interface{}, error) {
+		out := newSyncFile(a[1])
+		if out.size != 0 {
+			return nil, fmt.Errorf("defrag output is not empty")
+		}
+		// Same progressive layout and brands as the reference mv.Mux output.
+		e := defrag.DefragmentWithFtyp(newSyncFile(a[0]), out, "isom", 0x200, []string{"isom", "iso4"})
+		return float64(out.pos), e
 	})
 	register("mvRelease", func(a []js.Value) (interface{}, error) { delete(streams, a[0].String()); return nil, nil })
 	js.Global().Set("mvCoreReady", true)
