@@ -52,7 +52,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
   - 仅 `--hook` 模式：通过服务器下载；**外部播放器**宫格（VLC、PotPlayer、mpv、IINA、Infuse、nPlayer、MX Player 等 14 款，链接协议与 OpenList 相同），用服务端解密的 media m3u8 播放任意音质，当前平台可用的排在前面；**复制地址**，可选 M3U8（播放器用）或 media file（IDM 等下载工具用）。播放器需已安装并注册链接协议，例如桌面版 VLC 默认不注册 `vlc://`。
   - 页面顶部的「外部播放」按钮直接打开最高音质的外部播放器宫格。
 - 内置播放器：MSE 加浏览器端解密。浏览器不支持 ALAC 时通过 FLAC-in-MP4 无损播放；EC-3 的 MSE 不可用时回退为多声道 PCM，并提示空间音频限制。下载保留原始编码；`--hook` 模式下其他编码可走原生 HLS 或直连 media file。支持空格 / 方向键和系统媒体控制。
-- 歌词：歌曲有歌词时，播放条上出现「歌词」按钮。歌词视图来自 am-ttml：逐词 / 逐行高亮、和声、对唱、翻译与发音、间奏圆点，点击任意一行即可跳转。背景由专辑封面生成流动效果，Esc 收起。
+- 歌词：歌曲有歌词时，播放条上出现「歌词」按钮。歌词视图由 [AMLL（Apple Music-like Lyrics）](https://github.com/amll-dev/applemusic-like-lyrics) 渲染：逐词 / 逐行高亮与弹簧滚动、和声、对唱、翻译与发音、间奏圆点，点击任意一行即可跳转。背景是 AMLL 由专辑封面生成的流动网格渐变，Esc 收起。
 
 ### MV
 
@@ -152,6 +152,7 @@ cargo build --release
 | `hook.wasm`、`flac.wasm` | `crates/am-wasm`、`crates/am-flac-wasm`（及 `am-mp4`、`am-alac`、`temari`） | `rustup target add wasm32-unknown-unknown` 后运行 `scripts/build-wasm.sh` |
 | `mv-core.wasm`、`mv-go.js` | `browser/mvcore` | `python scripts/build-mv-wasm.py`（Go 1.22+） |
 | `mv-cea608.mjs` | `browser/cea608` | `node scripts/build-cea608.cjs <typescript 包路径>` |
+| `lyrics/amll-core.mjs`、`lyrics/amll.css` | `@applemusic-like-lyrics/core`，见 [browser/amll](browser/amll/README.md) | `node scripts/build-amll.cjs <node_modules 路径>` |
 | `ec3.wasm`、`ec3-runtime.mjs` | `@mediabunny/ac3` 1.59.1 | `node scripts/extract-ec3.mjs`，见 [EC3-SOURCE.md](src/ui/EC3-SOURCE.md) |
 
 ## 测试
@@ -195,7 +196,7 @@ src/
     hook.wasm          crates/am-wasm 的编译产物
     flac.wasm / flac-transcode-worker.js / flac-init.bin   ALAC 转 FLAC 播放
     ec3.wasm / ec3-runtime.mjs / ec3-decode-worker.js      EC-3 PCM 回退
-    lyrics/            歌词界面（来自 am-ttml 的 ES module；panel.mjs 接入播放器）
+    lyrics/            歌词界面（打包好的 AMLL，见 browser/amll；ttml.mjs 解析 TTML，panel.mjs 接入播放器）
     mv-page.mjs        MV 页面逻辑
     mv-hls.mjs / mv-engine.mjs / mv-worker.js             MV 清单解析、播放、下载与 Worker
     mv-core.wasm / mv-go.js                               browser/mvcore 的编译产物
@@ -209,6 +210,13 @@ crates/
 browser/
   mvcore/              MV 核心的 Go 源码（PlayReady、CENC/CBCS、MP4 合并）
   cea608/              来自 hls.js 的 CEA-608 解析器
+  amll/                AMLL 歌词播放器的打包入口与构建说明
 scripts/               WASM / 资源构建脚本
 tests/                 Rust 集成测试与 Node 浏览器测试
 ```
+
+## 许可证
+
+am-hook 以 [GNU Affero 通用公共许可证 v3.0（仅此版本）](LICENSE)（AGPL-3.0-only）发布，因为 Web 界面内嵌了以 AGPL 授权的 [AMLL](https://github.com/amll-dev/applemusic-like-lyrics) 歌词播放器。如果将修改后的版本作为网络服务运行，需要向其用户提供对应的源代码。
+
+内置的第三方组件保留各自的许可证：`crates/temari`（MIT）、hls.js CEA-608 解析器（Apache-2.0，`browser/cea608/LICENSE`）、MV 核心中的 Go 与 mp4ff（BSD-3-Clause / MIT，`browser/mvcore/*LICENSE`）、`@mediabunny/ac3`（MPL-2.0，`src/ui/EC3-LICENSE.txt`），以及 AMLL 及其依赖（AGPL-3.0-only，`browser/amll`）。

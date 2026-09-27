@@ -52,7 +52,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
   - `--hook` only: download through the server; an **external players** grid (14 players including VLC, PotPlayer, mpv, IINA, Infuse, nPlayer and MX Player, using the same link schemes as OpenList) that plays any variant from the server-decrypted media m3u8, current-platform players first; and **Copy URL**, as M3U8 (for players) or media file (for download managers such as IDM). Players must be installed and register their link scheme; desktop VLC, for example, registers no `vlc://` handler by default.
   - The "External player" button at the top opens the player grid for the highest quality.
 - Built-in player: MSE with browser-side decryption. ALAC plays losslessly via FLAC-in-MP4 when the browser lacks ALAC support. EC-3 falls back to multichannel PCM when MSE is unavailable, with a notice about the spatial-audio limitation. Downloads keep the original codec. In `--hook` mode, other codecs may use native HLS or a direct media file. Space, arrow keys and system media controls are supported.
-- Lyrics: when a song has lyrics, a Lyrics button appears on the player bar. The view comes from am-ttml: word- and line-synced highlighting, background vocals, duets, translation and pronunciation, instrumental dots, and click-to-seek. Its moving background is generated from the artwork. Esc closes it.
+- Lyrics: when a song has lyrics, a Lyrics button appears on the player bar. The view is rendered by [AMLL (Apple Music-like Lyrics)](https://github.com/amll-dev/applemusic-like-lyrics): word- and line-synced highlighting with spring scrolling, background vocals, duets, translation and pronunciation, interlude dots, and click-to-seek. Its flowing background is AMLL's mesh gradient generated from the artwork. Esc closes it.
 
 ### Music Videos
 
@@ -152,6 +152,7 @@ The binary is written to `target/release/am-hook` (`am-hook.exe` on Windows). Al
 | `hook.wasm`, `flac.wasm` | `crates/am-wasm`, `crates/am-flac-wasm` (and `am-mp4`, `am-alac`, `temari`) | `rustup target add wasm32-unknown-unknown`, then `scripts/build-wasm.sh` |
 | `mv-core.wasm`, `mv-go.js` | `browser/mvcore` | `python scripts/build-mv-wasm.py` (Go 1.22+) |
 | `mv-cea608.mjs` | `browser/cea608` | `node scripts/build-cea608.cjs <path-to-typescript-package>` |
+| `lyrics/amll-core.mjs`, `lyrics/amll.css` | `@applemusic-like-lyrics/core`, see [browser/amll](browser/amll/README.md) | `node scripts/build-amll.cjs <node_modules>` |
 | `ec3.wasm`, `ec3-runtime.mjs` | `@mediabunny/ac3` 1.59.1 | `node scripts/extract-ec3.mjs`, see [EC3-SOURCE.md](src/ui/EC3-SOURCE.md) |
 
 ## Testing
@@ -195,7 +196,7 @@ src/
     hook.wasm          Build output of crates/am-wasm
     flac.wasm / flac-transcode-worker.js / flac-init.bin   ALAC-to-FLAC playback
     ec3.wasm / ec3-runtime.mjs / ec3-decode-worker.js      EC-3 PCM fallback
-    lyrics/            Lyrics view (ES modules from am-ttml; panel.mjs wires it to the player)
+    lyrics/            Lyrics view (bundled AMLL, see browser/amll; ttml.mjs parses TTML, panel.mjs wires it to the player)
     mv-page.mjs        MV page logic
     mv-hls.mjs / mv-engine.mjs / mv-worker.js             MV playlist parsing, playback, download, Worker
     mv-core.wasm / mv-go.js                               Build output of browser/mvcore
@@ -209,6 +210,13 @@ crates/
 browser/
   mvcore/              Go source of the MV core (PlayReady, CENC/CBCS, MP4 muxing)
   cea608/              Vendored hls.js CEA-608 parser
+  amll/                AMLL lyric player bundle entry and build notes
 scripts/               WASM / asset build scripts
 tests/                 Rust integration tests and Node browser tests
 ```
+
+## License
+
+am-hook is licensed under the [GNU Affero General Public License v3.0 only](LICENSE) (AGPL-3.0-only), because the web UI embeds the AGPL-licensed [AMLL](https://github.com/amll-dev/applemusic-like-lyrics) lyric player. If you run a modified version as a network service, you must offer its users the corresponding source.
+
+Bundled third-party components keep their own licenses: `crates/temari` (MIT), the hls.js CEA-608 parser (Apache-2.0, `browser/cea608/LICENSE`), Go and mp4ff in the MV core (BSD-3-Clause / MIT, `browser/mvcore/*LICENSE`), `@mediabunny/ac3` (MPL-2.0, `src/ui/EC3-LICENSE.txt`) and AMLL with its dependencies (AGPL-3.0-only, `browser/amll`).
