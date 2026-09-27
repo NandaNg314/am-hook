@@ -59,7 +59,9 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 - Video and audio tracks appear in separate columns. The highest bitrate video and its group's default audio are selected; changing the video updates the recommended audio, and audio can also be chosen manually.
 - Playback uses MediaSource with seeking and bounded buffering. Unsupported codecs remain downloadable; pick AVC/AAC for broader playback compatibility.
 - Independent CEA-608 caption tracks are decoded into native browser text tracks. The first one is shown by default; use the video's subtitle menu to switch or disable captions.
-- Downloads stream decrypted, interleaved fragments to OPFS without holding the whole MV in memory, producing fragmented MP4 (no defragmentation, transcoding or tag writing). Completion triggers a save and exposes a "Save MP4" link. Cancellation and failure remove partial files; leaving the page attempts to remove the finished temporary file. A browser crash may leave files in site storage.
+- Downloads decrypt segment by segment and write time-interleaved fragments to an OPFS temporary file, never holding the whole MV in memory. The Worker then rewrites that file as a standard (progressive) MP4 with `moov` before the media data. Every track is cut into chunks of at most one second and written in time order, so audio, video and captions for the same moment sit together and players can read the file front to back. This step took under a second for a 644 MB 4K MV in testing. No transcoding or tag writing is done. Both files exist briefly during this step, so OPFS needs about twice the MV size.
+- CEA-608 caption tracks are kept in the download. Apple starts them with a malformed empty sample that recent FFmpeg rejects (mpv-based players stop shortly after starting); it is rewritten as a valid empty caption sample of the same size.
+- Completion triggers a save and exposes a "Save MP4" link. Cancellation and failure remove temporary files; leaving the page attempts to remove the finished file. Files left by a closed or crashed tab are removed the next time an MV page is opened (without Web Locks, once they are 24 hours old).
 
 ## How It Works
 
@@ -107,7 +109,7 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 - `/parse/mv/<adamId>` gets the master URL from wrapper-lite `/webplayback`, fetches it with `User-Agent: AM`, and returns the playlist text and final CDN URL.
 - `/mv/webplayback/<adamId>` and `/mv/license` relay to wrapper-lite `/webplayback` and `/license` (PlayReady only; license errors are shown without falling back to another DRM).
 - Metadata (iTunes Lookup), track playlists and media segments are fetched by the browser directly from Apple.
-- Challenge building, license parsing, CENC/CBCS decryption and fragmented MP4 muxing run in a Worker with `mv-core.wasm` (Go, see [browser/mvcore](browser/mvcore/README.md)). `--hook` does not proxy MV resources.
+- Challenge building, license parsing, CENC/CBCS decryption, caption repair, fragmented MP4 muxing and conversion to a progressive MP4 run in a Worker with `mv-core.wasm` (Go, see [browser/mvcore](browser/mvcore/README.md)). `--hook` does not proxy MV resources.
 - Live playlists, discontinuities and changing initialization segments are not supported.
 
 ## Server Endpoints
@@ -168,6 +170,7 @@ Browser-side tests are plain Node scripts:
 | Kind | Command |
 |---|---|
 | Offline, Node only | `node --test tests/player_*.cjs`, `node tests/mv_hls.cjs`, `node tests/mv_captions.cjs` |
+| Offline, Go (MV core) | `go test ./...` in `browser/mvcore` (caption repair, defragmentation, read-ahead) |
 | Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>` |
 | Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`) |
 
@@ -208,7 +211,7 @@ crates/
   am-flac-wasm/        ALAC packet decoder and FLAC frame writer for the browser
   temari/              Vendored Temari FairPlay decryption library
 browser/
-  mvcore/              Go source of the MV core (PlayReady, CENC/CBCS, MP4 muxing)
+  mvcore/              Go source of the MV core (PlayReady, CENC/CBCS, MP4 muxing and defragmentation)
   cea608/              Vendored hls.js CEA-608 parser
   amll/                AMLL lyric player bundle entry and build notes
 scripts/               WASM / asset build scripts

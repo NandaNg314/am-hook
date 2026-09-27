@@ -59,7 +59,9 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 - 视频、音频规格分列显示，默认选择最高码率视频和其音频组中的默认音轨；切换视频会更新推荐音轨，也可手动选择音频。
 - 播放使用 MediaSource，支持进度跳转和有限缓冲。不支持的编码仍可下载；可选择 AVC/AAC 轨道获得更好的播放兼容性。
 - 视频内独立的 CEA-608 字幕轨由前端解码为浏览器原生字幕，默认显示首条字幕，可通过视频字幕菜单切换或关闭。
-- 下载逐段解密、按时间交错写入 OPFS，不在内存中拼接整部 MV，输出 fragmented MP4（不进行 defrag、转码或写 tag）。完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件，离开页面时尝试清理已完成文件。浏览器崩溃可能留下 OPFS 文件，可通过清理站点数据删除。
+- 下载逐段解密、按时间交错写入 OPFS 临时文件，不在内存中拼接整部 MV。随后 Worker 把它改写为标准（progressive）MP4，`moov` 位于媒体数据之前；每条轨道切成不超过 1 秒的 chunk 并按时间顺序写入，同一时刻的音频、视频和字幕相邻存放，播放器可以从头到尾顺序读取。这一步在测试中处理 644 MB 的 4K MV 不到 1 秒。不进行转码或写 tag。改写期间两份文件同时存在，OPFS 需要约两倍于 MV 的空间。
+- 下载保留 CEA-608 字幕轨。Apple 的字幕轨以一个格式错误的空 sample 开头，新版 FFmpeg 会拒绝它（基于 mpv 的播放器会在播放不久后退出）；下载时会把它原位改写为等长的合法空字幕 sample。
+- 完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件，离开页面时尝试清理已完成文件。标签页关闭或崩溃留下的文件会在下次打开 MV 页面时删除（浏览器不支持 Web Locks 时，文件超过 24 小时才会删除）。
 
 ## 工作原理
 
@@ -107,7 +109,7 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 - `/parse/mv/<adamId>` 从 wrapper-lite `/webplayback` 获取 master 地址，再以 `User-Agent: AM` 获取内容，返回播放列表文本和最终 CDN 地址。
 - `/mv/webplayback/<adamId>` 和 `/mv/license` 分别转发到 wrapper-lite `/webplayback` 和 `/license`（只使用 PlayReady；许可证失败会显示错误，不切换其他 DRM）。
 - 展示信息（iTunes Lookup）、音视频轨道 m3u8 和分片均由浏览器直连 Apple 获取。
-- challenge 构建、license 解析、CENC/CBCS 解密和 fragmented MP4 合并在 Worker 中由 `mv-core.wasm` 完成（Go 实现，见 [browser/mvcore](browser/mvcore/README.md)）。`--hook` 不提供 MV 资源代理。
+- challenge 构建、license 解析、CENC/CBCS 解密、字幕修复、fragmented MP4 合并以及转为 progressive MP4 在 Worker 中由 `mv-core.wasm` 完成（Go 实现，见 [browser/mvcore](browser/mvcore/README.md)）。`--hook` 不提供 MV 资源代理。
 - 暂不支持直播、discontinuity 或中途更换初始化段的清单。
 
 ## 服务端接口
@@ -168,6 +170,7 @@ cargo test --workspace
 | 类型 | 命令 |
 |---|---|
 | 离线，仅需 Node | `node --test tests/player_*.cjs`、`node tests/mv_hls.cjs`、`node tests/mv_captions.cjs` |
+| 离线，Go（MV 核心） | 在 `browser/mvcore` 中运行 `go test ./...`（字幕修复、defrag、read-ahead） |
 | 离线，Playwright + Chrome 与本地 fixture | `node tests/ui_layout.cjs <playwright>`、`node tests/lyrics_ui.cjs <playwright>`、`node tests/mv_ui.cjs <playwright>` |
 | 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`） |
 
@@ -208,7 +211,7 @@ crates/
   am-flac-wasm/        浏览器端 ALAC 解码与 FLAC frame 写入
   temari/              内置的 Temari FairPlay 解密库
 browser/
-  mvcore/              MV 核心的 Go 源码（PlayReady、CENC/CBCS、MP4 合并）
+  mvcore/              MV 核心的 Go 源码（PlayReady、CENC/CBCS、MP4 合并与 defrag）
   cea608/              来自 hls.js 的 CEA-608 解析器
   amll/                AMLL 歌词播放器的打包入口与构建说明
 scripts/               WASM / 资源构建脚本
