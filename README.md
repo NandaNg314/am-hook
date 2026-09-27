@@ -34,7 +34,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 ### Requirements
 
 - Rust 2021 edition toolchain
-- A running wrapper-lite key server (default `http://127.0.0.1:12340`)
+- A running [wrapper-lite](https://github.com/WorldObservationLog/wrapper) key server (default `http://127.0.0.1:12340`)
 - A modern browser with Web Workers and WebAssembly. Playback uses MediaSource (EC-3 PCM fallback uses Web Audio); MV downloads need OPFS.
 
 > OPFS is only available in a secure context: HTTPS, or `localhost` / `127.0.0.1`. Over `http://<LAN IP>`, song downloads fall back to in-memory Blobs (large files use more RAM) and MV downloads are unavailable. Playback is unaffected.
@@ -42,7 +42,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 ## Web UI
 
 - Chinese and English UI; the top-right button switches instantly (remembered; the first visit follows the browser language). Playback and downloads in progress are not interrupted.
-- The home page shows wrapper-lite status and recently opened songs and MVs.
+- The home page shows wrapper-lite status and recently opened songs and MVs; its footer links to this GitHub repository and credits the projects am-hook builds on.
 
 ### Songs
 

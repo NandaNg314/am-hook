@@ -48,6 +48,8 @@
       'status.down': 'wrapper-lite 不可用',
       'footer.tagline': 'am-hook · 浏览器端解密',
       'footer.note': '仅供个人学习使用',
+      'footer.github': '在 GitHub 上查看',
+      'footer.thanks': '致谢以下开源项目：',
       'nav.home': '主页',
 
       'home.intro': '粘贴 Apple Music 歌曲或音乐视频链接，解析，在浏览器里播放与下载。',
@@ -201,6 +203,8 @@
       'status.down': 'wrapper-lite unavailable',
       'footer.tagline': 'am-hook · in-browser decryption',
       'footer.note': 'For personal study only',
+      'footer.github': 'View on GitHub',
+      'footer.thanks': 'Thanks to these open-source projects:',
       'nav.home': 'Home',
 
       'home.intro': 'Paste an Apple Music song or music video link, parse it, then play or download right in your browser.',

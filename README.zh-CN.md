@@ -34,7 +34,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 ### 环境要求
 
 - Rust 2021 edition 工具链
-- 运行中的 wrapper-lite 密钥服务（默认 `http://127.0.0.1:12340`）
+- 运行中的 [wrapper-lite](https://github.com/WorldObservationLog/wrapper) 密钥服务（默认 `http://127.0.0.1:12340`）
 - 支持 Web Worker 和 WebAssembly 的现代浏览器。播放使用 MediaSource（EC-3 PCM 回退使用 Web Audio）；MV 下载需要 OPFS。
 
 > OPFS 只在安全上下文中可用，也就是 HTTPS 或 `localhost` / `127.0.0.1`。通过 `http://<局域网 IP>` 访问时，歌曲下载退回内存 Blob（大文件占用较多内存），MV 无法下载；播放不受影响。
@@ -42,7 +42,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 ## Web 界面
 
 - 界面支持中文 / English，右上角按钮一键切换（会记住选择；首次访问按浏览器语言决定）。切换时正在进行的播放和下载不受影响。
-- 首页显示 wrapper-lite 状态，以及最近打开的歌曲和 MV。
+- 首页显示 wrapper-lite 状态，以及最近打开的歌曲和 MV；页面底部有本项目的 GitHub 链接和对所用开源项目的致谢。
 
 ### 歌曲
 

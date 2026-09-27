@@ -102,6 +102,8 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
 
         await page.locator('[data-option="translation"]').click();
         assert.equal(await page.locator('[data-option="translation"]').getAttribute('aria-pressed'), 'true');
+        assert.equal(await page.locator('[data-option="translation"]').evaluate(el => getComputedStyle(el).backgroundColor),
+          'rgb(255, 255, 255)', 'a pressed chip stays light while hovered');
         await page.locator(lineSel).filter({ hasText: 'Tercera línea' }).waitFor({ state: 'visible', timeout: 2000 });
         assert.equal(await page.locator('.credit-names').textContent(), 'Writer A、Writer B');
         await page.evaluate(() => AmI18n.toggle()); // the overlay covers the page's language button
