@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall/js"
 
+	"am-hook/mvcore/c608"
 	"am-hook/mvcore/defrag"
 	pr "git.gay/itouakirai/puppyready"
 	"github.com/itouakirai/mp4ff/mp4"
@@ -20,6 +21,8 @@ type stream struct {
 	info mp4.DecryptInfo
 	init *mp4.InitSegment
 	ids  map[uint32]uint32
+	// Caption tracks whose malformed samples are repaired in each fragment.
+	captions map[uint32]*mp4.TrexBox
 	// First decode timestamps are retained across seeks and subtracted from each track.
 	origin map[uint32]uint64
 }
@@ -197,7 +200,7 @@ func main() {
 		if e != nil {
 			return nil, e
 		}
-		s := &stream{info: info, init: f.Init, ids: map[uint32]uint32{}, origin: map[uint32]uint64{}}
+		s := &stream{info: info, init: f.Init, ids: map[uint32]uint32{}, captions: c608.Tracks(f.Init), origin: map[uint32]uint64{}}
 		base := uint32(a[2].Int())
 		for i, t := range f.Init.Moov.Traks {
 			s.ids[t.Tkhd.TrackID] = base + uint32(i)
@@ -242,6 +245,11 @@ func main() {
 					return nil, fmt.Errorf("mdat without moof")
 				}
 				frag.AddChild(b)
+				// Before decryption, while offsets still match the source positions.
+				// Caption samples are clear and keep their size.
+				if _, e = c608.Repair(frag, s.captions); e != nil {
+					return nil, e
+				}
 				if e = mp4.DecryptFragment(frag, s.info, key); e != nil && e.Error() != "no senc box in traf" {
 					return nil, e
 				}

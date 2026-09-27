@@ -7,6 +7,9 @@ runtime. The checked-in assets were built with Go 1.22.1.
 
 The worker builds PlayReady challenges, parses licenses, decrypts CENC/CBCS
 fragments, normalizes decode timestamps and merges initialization metadata.
+`c608/` rewrites malformed closed-caption samples in place (Apple starts the
+c608 track with an all-zero sample, which recent FFmpeg rejects and mpv then
+treats as a fatal read error) as same-size `cdat` atoms of CEA-608 null pairs.
 JavaScript downloads CDN resources directly, feeds MediaSource or writes
 interleaved fragments to OPFS. After muxing, the worker defragments that OPFS
 file into a progressive MP4 (`ftyp`, `moov`, `mdat`) through synchronous
@@ -42,7 +45,8 @@ defrag) is deleted. Without Web Locks, only files untouched for 24 hours are.
 
 ## Validation
 
-`node tests/mv_hls.cjs` and `cargo test --test mv_api` are offline checks.
+`node tests/mv_hls.cjs`, `cargo test --test mv_api` and `go test ./c608` (in this
+directory) are offline checks.
 `tests/mv_live.cjs` is an opt-in real browser test and writes a downloaded MP4
 under `target/`. It checks playback, seeking, cancellation, OPFS cleanup and
 that media URLs go directly to Apple. Use `ffprobe` / `ffmpeg` on the resulting
