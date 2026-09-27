@@ -739,7 +739,7 @@
       loadMeta();
       loadVariants();
       loadStatus();
-      AmDecrypt.cleanupStale();
+      AmDecrypt.collectGarbage();
       // 歌词界面（ES module）：点击「歌词」按钮或播放条时才获取歌词
       import('/assets/lyrics/panel.mjs')
         .then(({ mountLyrics }) => mountLyrics({

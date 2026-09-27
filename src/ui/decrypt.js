@@ -20,8 +20,10 @@
   const DOWNLOAD_CONCURRENCY = 4;
   /** 保存完成后 OPFS 临时文件保留多久（浏览器需要时间把它复制到下载目录） */
   const KEEP_SAVED_MS = 10 * 60 * 1000;
-  /** 页面加载时清理超过该时长的残留临时文件（上次中断的下载等） */
-  const STALE_MS = 60 * 60 * 1000;
+  /** 每个下载持有的 Web Lock 名前缀（与 MV 的 am-hook-mv- 同一机制） */
+  const LOCK_PREFIX = 'am-hook-song-';
+  /** 浏览器不支持 Web Locks 时，只回收超过该时长未改动的临时文件 */
+  const STALE_MS = 24 * 60 * 60 * 1000;
 
   /** 界面文案（i18n.js）；未加载时直接返回 key */
   function t(key, vars) {
@@ -265,6 +267,19 @@
     try { await (await opfsDir()).removeEntry(name); } catch {}
   }
 
+  /**
+   * 每个下载持有以其文件 id 命名的 Web Lock，直到文件被删除。标签页关闭或崩溃时浏览器
+   * 自动释放锁，因此没有被持有锁的临时文件就是垃圾。返回释放函数。
+   */
+  function hold(id) {
+    if (!navigator.locks) return Promise.resolve(() => {});
+    let release;
+    const held = new Promise((r) => { release = r; });
+    return new Promise((resolve) => {
+      navigator.locks.request(LOCK_PREFIX + id, () => { resolve(release); return held; }).catch(() => resolve(() => {}));
+    });
+  }
+
   /** 解密结果写入 OPFS：由专用 Worker 持有同步访问句柄，按偏移乱序写入 */
   class OpfsSink {
     static async open(size) {
@@ -272,22 +287,26 @@
         const { quota, usage } = await navigator.storage.estimate();
         if (quota && quota - (usage || 0) < size * 1.05) throw new Error('OPFS 剩余配额不足');
       }
-      const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.m4a`;
+      const id = crypto.randomUUID();
+      const name = `${id}.m4a`;
+      const unlock = await hold(id);
       const worker = new WorkerClient();
       try {
         await worker.call('file-open', { dir: OPFS_DIR, name });
       } catch (err) {
         worker.terminate();
         await removeOpfsFile(name);
+        unlock();
         throw err;
       }
-      return new OpfsSink(worker, name);
+      return new OpfsSink(worker, name, unlock);
     }
 
-    constructor(worker, name) {
+    constructor(worker, name, unlock) {
       this.kind = 'opfs';
       this.worker = worker;
       this.name = name;
+      this.unlock = unlock;
     }
 
     write(at, buf) {
@@ -325,12 +344,13 @@
         this.closeWorker();
       }
       await removeOpfsFile(this.name);
-      // 被终止的 Worker 可能尚未释放句柄，删不掉的留给 cleanupStale
+      // 被终止的 Worker 可能尚未释放句柄，删不掉的在释放锁后留给 collectGarbage
       if (this.output) await removeOpfsFile(this.output);
+      this.unlock();
     }
 
     cleanup() {
-      removeOpfsFile(this.name);
+      removeOpfsFile(this.name).finally(this.unlock);
     }
   }
 
@@ -368,6 +388,7 @@
 
   async function openSink(size) {
     if (opfsSupported()) {
+      await collectGarbage();
       try {
         return await OpfsSink.open(size);
       } catch (err) {
@@ -454,17 +475,24 @@
     }
   }
 
-  /** 清理上次中断遗留的 OPFS 临时文件（正在被其他标签页写入的文件无法删除，会被跳过） */
-  async function cleanupStale() {
+  /**
+   * 回收关闭的标签页、被终止的 Worker 或未完成的清理遗留的 OPFS 临时文件：
+   * 没有被持有 Web Lock 的即为垃圾；不支持 Web Locks 时只删除一天未改动的文件。
+   */
+  async function collectGarbage() {
     if (!opfsSupported()) return;
     try {
       const dir = await opfsDir();
+      const held = navigator.locks ? new Set((await navigator.locks.query()).held.map((l) => l.name)) : null;
+      const garbage = [];
       for await (const [name, handle] of dir.entries()) {
-        if (handle.kind !== 'file') continue;
-        try {
-          if (Date.now() - (await handle.getFile()).lastModified > STALE_MS) await dir.removeEntry(name);
-        } catch {}
+        const match = handle.kind === 'file' && name.match(/^(.+?)(?:-defrag)?\.m4a$/);
+        if (!match || (held && held.has(LOCK_PREFIX + match[1]))) continue;
+        if (!held && Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
+        garbage.push(name);
       }
+      // 遍历结束后再删除：遍历目录时修改目录的行为未定义
+      for (const name of garbage) await dir.removeEntry(name).catch(() => {});
     } catch {}
   }
 
@@ -478,7 +506,7 @@
     openTrack: (url, signal) => Track.open(url, signal),
     parseMediaPlaylist,
     download,
-    cleanupStale,
+    collectGarbage,
     opfsSupported,
     supported,
   };
