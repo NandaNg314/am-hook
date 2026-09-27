@@ -13,6 +13,7 @@ import (
 
 	"am-hook/mvcore/c608"
 	"am-hook/mvcore/defrag"
+	"am-hook/mvcore/readahead"
 	pr "git.gay/itouakirai/puppyready"
 	"github.com/itouakirai/mp4ff/mp4"
 )
@@ -43,13 +44,10 @@ func encode(v interface{ Encode(io.Writer) error }) ([]byte, error) {
 }
 
 // syncFile adapts a FileSystemSyncAccessHandle-like object (read/write with
-// {at}) to Go IO. Reads are served from a read-ahead window to keep the number
-// of JS calls small while lazy mdat parsing issues many tiny reads.
+// {at}) to Go IO: positional reads for readahead.Reader and sequential writes.
 type syncFile struct {
 	h         js.Value
 	pos, size int64
-	buf       []byte
-	start     int64
 	js        js.Value
 }
 
@@ -62,46 +60,18 @@ func (f *syncFile) view(n int) js.Value {
 	}
 	return f.js.Call("subarray", 0, n)
 }
-func (f *syncFile) Read(p []byte) (int, error) {
-	if f.pos >= f.size {
-		return 0, io.EOF
-	}
-	if f.pos < f.start || f.pos >= f.start+int64(len(f.buf)) {
-		n := int64(1 << 20)
-		if int64(len(p)) > n {
-			n = int64(len(p))
+
+// reader serves reads through a read-ahead window for small reads and passes
+// large ones through at their exact size, keeping JS calls and bytes read low.
+func (f *syncFile) reader() *readahead.Reader {
+	return readahead.New(func(p []byte, at int64) int {
+		v := f.view(len(p))
+		got := f.h.Call("read", v, map[string]interface{}{"at": float64(at)}).Int()
+		if got > 0 {
+			js.CopyBytesToGo(p[:got], v.Call("subarray", 0, got))
 		}
-		if n > f.size-f.pos {
-			n = f.size - f.pos
-		}
-		v := f.view(int(n))
-		got := f.h.Call("read", v, map[string]interface{}{"at": float64(f.pos)}).Int()
-		if got <= 0 {
-			return 0, io.ErrUnexpectedEOF
-		}
-		if cap(f.buf) < got {
-			f.buf = make([]byte, got)
-		}
-		f.buf = f.buf[:got]
-		js.CopyBytesToGo(f.buf, v.Call("subarray", 0, got))
-		f.start = f.pos
-	}
-	n := copy(p, f.buf[f.pos-f.start:])
-	f.pos += int64(n)
-	return n, nil
-}
-func (f *syncFile) Seek(offset int64, whence int) (int64, error) {
-	switch whence {
-	case io.SeekCurrent:
-		offset += f.pos
-	case io.SeekEnd:
-		offset += f.size
-	}
-	if offset < 0 {
-		return 0, fmt.Errorf("negative seek")
-	}
-	f.pos = offset
-	return offset, nil
+		return got
+	}, f.size)
 }
 func (f *syncFile) Write(p []byte) (int, error) {
 	v := f.view(len(p))
@@ -347,7 +317,7 @@ func main() {
 			return nil, fmt.Errorf("defrag output is not empty")
 		}
 		// Same progressive layout and brands as the reference mv.Mux output.
-		e := defrag.DefragmentWithFtyp(newSyncFile(a[0]), out, "isom", 0x200, []string{"isom", "iso4"})
+		e := defrag.DefragmentWithFtyp(newSyncFile(a[0]).reader(), out, "isom", 0x200, []string{"isom", "iso4"})
 		return float64(out.pos), e
 	})
 	register("mvRelease", func(a []js.Value) (interface{}, error) { delete(streams, a[0].String()); return nil, nil })

@@ -16,7 +16,10 @@ file into a progressive MP4 (`ftyp`, `moov`, `mdat`) through synchronous
 access handles: only sample tables are held in memory and sample data is
 streamed from the fragmented file. Media data is interleaved: every track is
 cut into chunks of at most one second, written in decode-time order, so video,
-audio and captions for the same moment sit close together. Working memory is otherwise bounded by
+audio and captions for the same moment sit close together. `readahead/` serves
+the parser's small reads from a read-ahead window and passes chunk copies
+through at their exact size, so the input is read about once (1.09× for a 4K
+MV) despite the jumps between tracks. Working memory is otherwise bounded by
 current fragments and the playback buffer. No transcoding or tag writing is done.
 Only the two wrapper control requests go through Rust.
 
@@ -47,7 +50,7 @@ defrag) is deleted. Without Web Locks, only files untouched for 24 hours are.
 
 ## Validation
 
-`node tests/mv_hls.cjs`, `cargo test --test mv_api` and `go test ./c608 ./defrag` (in this
+`node tests/mv_hls.cjs`, `cargo test --test mv_api` and `go test ./...` (in this
 directory) are offline checks.
 `tests/mv_live.cjs` is an opt-in real browser test and writes a downloaded MP4
 under `target/`. It checks playback, seeking, cancellation, OPFS cleanup and
