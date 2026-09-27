@@ -1,0 +1,19 @@
+# AMLL lyric player
+
+The lyrics view uses [Apple Music-like Lyrics](https://github.com/amll-dev/applemusic-like-lyrics)
+(`@applemusic-like-lyrics/core`, version in `VERSION`, AGPL-3.0-only, see `LICENSE`):
+`DomLyricPlayer` renders the lyrics, and `BackgroundRender` + `MeshGradientRenderer` draw
+the flowing artwork background.
+
+`scripts/build-amll.cjs` bundles `entry.mjs` with esbuild into `src/ui/lyrics/amll-core.mjs`
+and copies the package stylesheet to `src/ui/lyrics/amll.css`. Its dependencies are bundled
+too (gl-matrix MIT, bezier-easing MIT, @ungap/structured-clone ISC, deep-freeze public domain).
+Pixi is only needed by AMLL's `PixiRenderer`, which is not used, so `pixi-stub.mjs` replaces
+it and nothing from Pixi ends up in the bundle. Rebuild with:
+
+    npm i --legacy-peer-deps @applemusic-like-lyrics/core@$(cat browser/amll/VERSION) esbuild
+    node scripts/build-amll.cjs node_modules
+
+The app does not need Node at runtime. Apple TTML is still parsed by `src/ui/lyrics/ttml.mjs`
+(translations and pronunciations come from the iTunes metadata); `panel.mjs` converts that
+model to AMLL `LyricLine`s.

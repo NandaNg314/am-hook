@@ -225,7 +225,7 @@ pub async fn wasm_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "application/wasm", include_bytes!("ui/hook.wasm"))
 }
 
-/// 歌词界面（src/ui/lyrics/）：TTML 解析、时间轴、歌词视图与封面背景，均为 ES module
+/// 歌词界面（src/ui/lyrics/）：TTML 解析、接入播放器的 panel.mjs 与打包好的 AMLL（见 browser/amll）
 pub async fn lyrics_asset_handler(
     headers: HeaderMap,
     axum::extract::Path(file): axum::extract::Path<String>,
@@ -234,12 +234,8 @@ pub async fn lyrics_asset_handler(
     let (content_type, body): (&'static str, &'static [u8]) = match file.as_str() {
         "panel.mjs" => (JS, include_bytes!("ui/lyrics/panel.mjs")),
         "ttml.mjs" => (JS, include_bytes!("ui/lyrics/ttml.mjs")),
-        "timeline.mjs" => (JS, include_bytes!("ui/lyrics/timeline.mjs")),
-        "lyric-view.mjs" => (JS, include_bytes!("ui/lyrics/lyric-view.mjs")),
-        "backdrop.mjs" => (JS, include_bytes!("ui/lyrics/backdrop.mjs")),
-        "backdrop-render.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-render.mjs")),
-        "backdrop-worker.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-worker.mjs")),
-        "lyrics.css" => ("text/css; charset=utf-8", include_bytes!("ui/lyrics/lyrics.css")),
+        "amll-core.mjs" => (JS, include_bytes!("ui/lyrics/amll-core.mjs")),
+        "amll.css" => ("text/css; charset=utf-8", include_bytes!("ui/lyrics/amll.css")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)

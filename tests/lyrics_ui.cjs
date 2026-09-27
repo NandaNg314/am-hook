@@ -82,19 +82,27 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         await page.locator(width === 390 ? '.player-track' : '.player-lyrics').click();
         await page.locator('#lyrics-overlay:not([hidden])').waitFor();
         assert.deepEqual(lyricRequests, ['/lyrics/123456789']);
-        assert.equal(await page.locator('.lyric-row').count(), 4, 'three lines and the credits row');
+        // AMLL line wrappers use hashed CSS-module class names; match their stable suffixes
+        const lineSel = '.amll-lyric-player [class*="_lyricLineWrapper"]:not([class*="_bottomLineWrapper"])';
+        await page.locator(lineSel).first().waitFor();
+        assert.equal(await page.locator(lineSel).count(), 3, 'three lyric lines');
+        const activeLines = () => page.evaluate(sel => [...document.querySelectorAll(sel)]
+          .filter(el => [el, ...el.querySelectorAll('*')].some(n => [...n.classList].some(c => c.endsWith('_active'))))
+          .map(el => el.querySelector('[class*="_lyricMainLine"]').textContent.trim()), lineSel);
         assert.equal(await page.locator('.lyrics-title').textContent(), 'Lyric song');
         assert.equal(await page.locator('[data-option="pronunciation"]').isDisabled(), true);
 
         await page.evaluate(() => { fakeTransport.currentTime = 5.5; });
-        await page.waitForFunction(() => document.querySelector('.lyric-row.current')?.dataset.key === 'L2');
-        await page.locator('.lyric-row[data-key="L3"] .line-button').click();
+        await page.waitForTimeout(300);
+        assert.deepEqual(await activeLines(), ['Second line']);
+        await page.locator(lineSel).filter({ hasText: 'Third line' }).click();
         assert.equal(await page.evaluate(() => fakeTransport.currentTime), 9, 'clicking a line seeks the player');
-        await page.waitForFunction(() => document.querySelector('.lyric-row.current')?.dataset.key === 'L3');
+        await page.waitForTimeout(300);
+        assert.deepEqual(await activeLines(), ['Third line']);
 
         await page.locator('[data-option="translation"]').click();
         assert.equal(await page.locator('[data-option="translation"]').getAttribute('aria-pressed'), 'true');
-        await page.locator('.lyric-row[data-key="L3"] .translation-text').waitFor({ state: 'visible', timeout: 2000 });
+        await page.locator(lineSel).filter({ hasText: 'Tercera línea' }).waitFor({ state: 'visible', timeout: 2000 });
         assert.equal(await page.locator('.credit-names').textContent(), 'Writer A、Writer B');
         await page.evaluate(() => AmI18n.toggle()); // the overlay covers the page's language button
         assert.equal(await page.locator('.credit-names').textContent(), 'Writer A, Writer B');

@@ -484,7 +484,7 @@ body.has-player { padding-bottom: calc(var(--player-height, 110px) + 32px + env(
   .variant { gap: 8px; padding-inline: 10px; }
 }
 
-/* ---------- 歌词界面（歌词排版见 /assets/lyrics/lyrics.css） ---------- */
+/* ---------- 歌词界面（歌词由 AMLL 排版，样式见 /assets/lyrics/amll.css） ---------- */
 .player-lyrics {
   width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center;
   border: 0; border-radius: 8px; background: none; color: var(--muted);
@@ -525,7 +525,15 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-chip:hover:not(:disabled) { background: rgba(255, 255, 255, .14); }
 .lyrics-chip[aria-pressed="true"] { border-color: transparent; background: rgba(255, 255, 255, .9); color: #1b1a19; }
 .lyrics-chip:disabled { display: none; }
-.lyrics-overlay .lyric-panel { grid-column: 2; grid-row: 1 / -1; display: flex; align-items: center; min-height: 0; mix-blend-mode: plus-lighter; }
+.lyrics-overlay .lyric-panel {
+  grid-column: 2; grid-row: 1 / -1; min-height: 0; position: relative;
+  mask-image: linear-gradient(180deg, transparent, #000 12%, #000 80%, transparent);
+}
+.lyric-panel .amll-lyric-player { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'PingFang SC', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 600; }
+.lyrics-credits { font-size: 12px; line-height: 1.25; color: rgba(255, 255, 255, .64); padding-block: 12px 32px; border-top: 1px solid rgba(255, 255, 255, .1); }
+.lyrics-credits .credit-label { font-weight: 600; margin-right: 5px; }
+.lyrics-credits .translation-note { margin-top: 16px; }
+.lyrics-credits:empty { display: none; }
 /* 打开歌词时播放条并入这里：去掉卡片外观，排成「进度条 / 时间 / 播放控件」三行，与封面同宽 */
 .lyrics-controls { grid-column: 1; grid-row: 3; width: min(100%, 44vh); margin-top: 26px; }
 .lyrics-controls .player {
@@ -576,7 +584,6 @@ body.lyrics-open { overflow: hidden; }
   .lyrics-options { grid-column: 1 / -1; }
   .lyrics-chip { min-height: 32px; padding: 0 12px; font-size: 12px; }
   .lyrics-overlay .lyric-panel { flex: 1; }
-  .lyrics-overlay .lyric-surface { height: 100%; --font-size: 28px; --row-gap: 32px; }
   .lyrics-controls { width: 100%; margin-top: 0; }
   .lyrics-controls .player .player-toggle { width: 56px; height: 56px; margin-block: 4px; }
   .lyrics-follow { right: 20px; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 136px); }
