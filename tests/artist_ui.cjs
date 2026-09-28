@@ -127,7 +127,7 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       await page.close();
     }
 
-    // Other pages link to the artist page: pasted links on the home page, artist names on album pages
+    // Other pages link to the artist page: pasted links on the home page, artist names on album, song and MV pages
     {
       const page = await browser.newPage();
       await page.addInitScript(() => localStorage.setItem('am-hook:lang', 'en'));
@@ -137,6 +137,14 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       await page.locator('#input').press('Enter');
       await page.waitForURL('**/artist/taylor-swift/159260351', { timeout: 10000 });
       await page.goto(base + '/https://music.apple.com/cn/album/justice-triple-chucks-deluxe-deluxe-video-version/1561058084');
+      await page.locator('#artist a').first().waitFor({ timeout: 20000 });
+      assert.match(await page.locator('#artist a').first().getAttribute('href'), localPage('artist'));
+      // A song by three artists: each name links to its own artist page, separators stay text
+      await page.goto(base + '/https://music.apple.com/cn/song/_/6796864754');
+      await page.locator('#subtitle a[href*="/artist/"]').first().waitFor({ timeout: 20000 });
+      assert.deepEqual(await page.locator('#subtitle a[href*="/artist/"]').evaluateAll((links) => links.map((a) => a.textContent)), ['KAROL G', 'Judeline', 'rusowsky']);
+      assert.match(await page.locator('#subtitle').textContent(), /^KAROL G, Judeline & rusowsky — /);
+      await page.goto(base + '/https://music.apple.com/us/music-video/born-again-feat-doja-cat-raye/1794822079');
       await page.locator('#artist a').first().waitFor({ timeout: 20000 });
       assert.match(await page.locator('#artist a').first().getAttribute('href'), localPage('artist'));
       await page.close();

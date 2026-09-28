@@ -24,7 +24,7 @@ const variants = [
           const url = new URL(route.request().url());
           // 歌曲信息经 /amp 代理取自 amp-api 的 songs 资源；地区语言信息取不到时页面退回默认写法
           if (/^\/amp\/v1\/catalog\/[a-z]{2}\/songs\//.test(url.pathname)) {
-            return route.fulfill({ json: { data: [{ id: url.pathname.split('/').pop(), type: 'songs', attributes: { name: 'A song with a beautifully long title / 一首很长很长的歌曲名称', artistName: 'Artist', albumName: 'The listening room', durationInMillis: 213000 } }] } });
+            return route.fulfill({ json: { data: [{ id: url.pathname.split('/').pop(), type: 'songs', attributes: { name: 'A song with a beautifully long title / 一首很长很长的歌曲名称', artistName: 'Artist', albumName: 'The listening room', durationInMillis: 213000 }, relationships: { artists: { data: [{ id: '42', type: 'artists', attributes: { name: 'Artist', url: 'https://music.apple.com/us/artist/artist/42' } }] } } }] } });
           }
           if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
           if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us', 'cn'] } });
@@ -52,6 +52,7 @@ const variants = [
         await page.locator('.variant').first().waitFor();
         await page.waitForFunction(() => !document.getElementById('title').classList.contains('skeleton'));
         assert.match(await page.locator('#title').textContent(), /beautifully long title/, 'song metadata from the /amp fixture');
+        assert.equal(await page.locator('#subtitle a[href="/https://music.apple.com/us/artist/artist/42"]').textContent(), 'Artist', 'artist name links to the artist page');
         await fits('song');
         await page.locator('.more-btn').first().click();
         const bounds = await page.locator('#menu').boundingBox();

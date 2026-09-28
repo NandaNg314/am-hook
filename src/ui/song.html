@@ -638,7 +638,7 @@
       for (const cc of new Set([country, 'us', 'cn'])) {
         try {
           const url = new URL(`/amp/v1/catalog/${cc}/songs/${adamId}`, location.origin);
-          url.searchParams.set('include', 'albums');
+          url.searchParams.set('include', 'albums,artists');
           const l = await AmI18n.catalogLang(cc);
           if (l) url.searchParams.set('l', l);
           let res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -657,6 +657,11 @@
             artist: a.artistName || '',
             album: a.albumName || '',
             albumId: song.relationships?.albums?.data?.[0]?.id || '',
+            // 各位艺人的名字与本站艺人页路径，用于把艺人行中的名字做成链接
+            artists: (song.relationships?.artists?.data || []).filter((r) => r.attributes?.name).map((r) => ({
+              name: r.attributes.name,
+              href: artistPath(r, cc),
+            })),
             // artwork.url 是 {w}x{h}{c}.{f} 模板
             artwork: a.artwork?.url ? a.artwork.url.replace('{w}', 600).replace('{h}', 600).replace('{c}', 'bb').replace('{f}', 'jpg') : '',
             genre: a.genreNames?.[0] || '',
@@ -668,6 +673,40 @@
         } catch {}
       }
       return {};
+    }
+
+    /** 艺人资源 → 本站艺人页路径 */
+    function artistPath(resource, cc) {
+      const m = (resource.attributes?.url || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/artist\/([^/?#]+)\/(\d+)/i);
+      return m ? `/https://music.apple.com/${m[1].toLowerCase()}/artist/${m[2]}/${m[3]}` : `/https://music.apple.com/${cc}/artist/_/${resource.id}`;
+    }
+
+    /**
+     * 艺人行（如「KAROL G, Judeline & rusowsky」）中每位艺人的名字链接到其艺人页，分隔符保持原样；
+     * 名字对不上（如译名不同）而只有一位艺人时，整行链接到该艺人。
+     */
+    function artistNodes(text, artists) {
+      const named = (artists || []).slice().sort((a, b) => b.name.length - a.name.length);
+      const link = (artist, label = artist.name) => el('a', { href: artist.href, textContent: label });
+      const word = /[\p{L}\p{N}]/u;
+      const nodes = [];
+      let plain = '';
+      let linked = false;
+      for (let i = 0; i < text.length;) {
+        // 名字前后不能紧挨字母或数字，避免把长名字里的一段当成另一位艺人
+        const hit = (i === 0 || !word.test(text[i - 1])) && named.find((a) => text.startsWith(a.name, i)
+          && !word.test(text[i + a.name.length] || ''));
+        if (hit) {
+          if (plain) nodes.push(plain);
+          plain = '';
+          nodes.push(link(hit));
+          i += hit.name.length;
+          linked = true;
+        } else plain += text[i++];
+      }
+      if (plain) nodes.push(plain);
+      if (!linked && named.length === 1) return [link(named[0], text)];
+      return nodes;
     }
 
     let metaLoaded = false;
@@ -682,8 +721,9 @@
       const albumNode = meta.album && meta.albumId
         ? el('a', { href: `/https://music.apple.com/${meta.country || country}/album/_/${meta.albumId}`, textContent: meta.album })
         : meta.album;
-      const parts = [meta.artist, albumNode].filter(Boolean);
-      $('subtitle').replaceChildren(...(parts.length ? parts.flatMap((part, i) => (i ? [' — ', part] : [part])) : [t('song.noMeta')]));
+      // 艺人名链接到本站艺人页
+      const parts = [meta.artist && artistNodes(meta.artist, meta.artists), albumNode].filter(Boolean);
+      $('subtitle').replaceChildren(...(parts.length ? parts.flatMap((part, i) => (i ? [' — ', ...[].concat(part)] : [].concat(part))) : [t('song.noMeta')]));
       $('subtitle').classList.remove('skeleton');
       const tags = [];
       if (meta.releaseDate) tags.push(meta.releaseDate.slice(0, 4));

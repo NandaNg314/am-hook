@@ -128,7 +128,7 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 | `GET /parse/mv/<adamId>` | MV master 播放列表文本与最终 CDN 地址 |
 | `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | 专辑页（与 music.apple.com 相同的 `editorialVideo` 动态封面：宽屏方形、手机全宽 3:4；曲目列表、页内连续播放、相关推荐货架；数据来自与 music.apple.com 相同的 amp-api `albums` 请求）。带 `?i=` 的专辑链接会打开歌曲页 |
 | `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | 歌单页（编辑歌单与公开的用户歌单：与专辑页相同的动态封面；曲目带封面、艺人、专辑列；页内连续播放；精选艺人、策展人的更多歌单货架；数据来自与 music.apple.com 相同的 amp-api `playlists` 请求，经 `/amp` 获取） |
-| `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | 艺人页（与 music.apple.com 相同的头部：按目录数据显示动态视频、通栏图片或圆形头像；最新发行、歌曲排行与页内播放、专辑 / MV / 歌单 / 相似艺人货架与「显示全部」、艺人简介；数据来自与 music.apple.com 相同的 amp-api `artists` 请求，经 `/amp` 获取）。专辑页的艺人名与艺人货架都链接到这里 |
+| `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | 艺人页（与 music.apple.com 相同的头部：按目录数据显示动态视频、通栏图片或圆形头像；最新发行、歌曲排行与页内播放、专辑 / MV / 歌单 / 相似艺人货架与「显示全部」、艺人简介；数据来自与 music.apple.com 相同的 amp-api `artists` 请求，经 `/amp` 获取）。歌曲页、MV 页、专辑页的艺人名（多位艺人时各自单独链接）与艺人货架都链接到这里 |
 | `GET /amp/v1/catalog/<path>?<query>` | 代理 Apple Music 目录接口（`amp-api-edge.music.apple.com/v1/catalog/...`，首页搜索使用），自动附带 music.apple.com 网页版 developer token，查询参数原样转发 |
 | `GET /amp/v1/storefronts/<cc>` | amp-api 地区信息；页面据其 `supportedLanguageTags` 选择目录语言 `l`（地区不支持的 `l` 会被静默回退到默认语言，如 `cn` 只支持 `zh-Hans-CN` / `en-GB`） |
 | `GET /mv/webplayback/<adamId>`、`POST /mv/license` | MV 转发到 wrapper-lite `/webplayback` 与 `/license` |

@@ -116,6 +116,36 @@ function renderTracks() {
   $('audio-count').textContent = master.audios.length;
   $('selection').textContent = [selectedVideo.RESOLUTION, videoRange(selectedVideo) || 'SDR', audioName(selectedAudio) || selectedAudio.codec].filter(Boolean).join(' · ');
 }
+/** 艺人资源 → 本站艺人页链接 */
+function artistLink(resource, label = resource.attributes.name) {
+  const m = (resource.attributes.url || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/artist\/([^/?#]+)\/(\d+)/i);
+  const a = document.createElement('a');
+  a.href = m ? `/https://music.apple.com/${m[1].toLowerCase()}/artist/${m[2]}/${m[3]}` : `/https://music.apple.com/${country}/artist/_/${resource.id}`;
+  a.textContent = label;
+  return a;
+}
+/**
+ * 艺人行（如「A, B & C」）中每位艺人的名字链接到其艺人页，分隔符保持原样（与 song 页相同）；
+ * 名字对不上而只有一位艺人时，整行链接到该艺人。
+ */
+function artistNodes(text, artists) {
+  const named = artists.slice().sort((a, b) => b.attributes.name.length - a.attributes.name.length);
+  const word = /[\p{L}\p{N}]/u;
+  const nodes = [];
+  let plain = '', linked = false;
+  for (let i = 0; i < text.length;) {
+    // 名字前后不能紧挨字母或数字，避免把长名字里的一段当成另一位艺人
+    const hit = (i === 0 || !word.test(text[i - 1])) && named.find(a => text.startsWith(a.attributes.name, i)
+      && !word.test(text[i + a.attributes.name.length] || ''));
+    if (hit) {
+      if (plain) nodes.push(plain);
+      plain = ''; nodes.push(artistLink(hit)); i += hit.attributes.name.length; linked = true;
+    } else plain += text[i++];
+  }
+  if (plain) nodes.push(plain);
+  if (!linked && named.length === 1) return [artistLink(named[0], text)];
+  return nodes;
+}
 let metadataSeq = 0;
 async function metadata() {
   // 快速切换语言时只采用最后一次请求的结果
@@ -123,16 +153,19 @@ async function metadata() {
   try {
     // 经服务端 /amp 代理请求 amp-api 的 music-videos 资源，名称按界面语言返回（l 按地区支持的语言选择）
     const url = new URL(`/amp/v1/catalog/${country}/music-videos/${id}`, location.origin);
+    url.searchParams.set('include', 'artists');
     const l = await AmI18n.catalogLang(country);
     if (l) url.searchParams.set('l', l);
     let res = await fetch(url, { signal: pageController.signal });
     // 语言参数被拒绝时去掉 l，改用地区默认语言
     if (res.status === 400 && url.searchParams.has('l')) { url.searchParams.delete('l'); res = await fetch(url, { signal: pageController.signal }); }
     if (!res.ok) return;
-    const item = (await res.json()).data?.[0]?.attributes;
+    const resource = (await res.json()).data?.[0];
+    const item = resource?.attributes;
     if (!item || seq !== metadataSeq) return;
     title = item.name || title; artist = item.artistName || '';
-    $('title').textContent = title; $('artist').textContent = artist; document.title = `${title} · am-hook MV`;
+    $('title').textContent = title; document.title = `${title} · am-hook MV`;
+    $('artist').replaceChildren(...artistNodes(artist, (resource.relationships?.artists?.data || []).filter(r => r.attributes?.name)));
     const seconds = Math.floor(Number(item.durationInMillis) / 1000);
     $('meta').replaceChildren(...[item.releaseDate?.slice(0, 4), item.genreNames?.[0],
       seconds > 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '', `ID ${id}`].filter(Boolean).map(value => badge(value)));
