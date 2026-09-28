@@ -144,6 +144,8 @@ pub struct AppState {
     /// fileuri -> 轨道。OnceCell 让并发请求同一轨道时只拉取/解析一次 m3u8。
     tracks: Mutex<HashMap<String, TrackSlot>>,
     pub segments: SegmentCache,
+    /// amp-api（Apple Music 目录 / 搜索）所需的网页版 developer token
+    pub amp_token: crate::amp::DeveloperToken,
 }
 
 impl AppState {
@@ -174,6 +176,7 @@ impl AppState {
             http_client,
             tracks: Mutex::default(),
             segments: SegmentCache::new(cache_mb.max(16) * 1024 * 1024),
+            amp_token: Default::default(),
         }
     }
 

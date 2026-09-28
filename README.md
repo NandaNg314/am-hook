@@ -124,6 +124,8 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | Song track decryption template JSON from wrapper-lite `/key` |
 | `GET /lyrics/<adamId>` | TTML lyrics from wrapper-lite `/lyrics`, XML unchanged; 404 when the song has none |
 | `GET /parse/mv/<adamId>` | MV master playlist text and final CDN URL |
+| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, in-page playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the song page |
+| `GET /amp/v1/catalog/<path>?<query>` | Proxies Apple Music catalog API (`amp-api-edge.music.apple.com/v1/catalog/...`, used by home page search) with the music.apple.com web developer token; query passed through unchanged |
 | `GET /mv/webplayback/<adamId>`, `POST /mv/license` | MV relays to wrapper-lite `/webplayback` and `/license` |
 | `/assets/...` | Pages, scripts and on-demand WASM modules embedded in the binary (`no-cache` + ETag) |
 | `/https://aod.itunes.apple.com/itunes-assets/...` | `--hook` only: song decrypting proxy |
@@ -170,7 +172,7 @@ Browser-side tests are plain Node scripts:
 |---|---|
 | Offline, Node only | `node --test tests/player_*.cjs`, `node tests/mv_hls.cjs`, `node tests/mv_captions.cjs` |
 | Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>` |
-| Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`) |
+| Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`), `node tests/search_ui.cjs <playwright> [base]`, `node tests/album_ui.cjs <playwright> [base]` (need access to music.apple.com) |
 
 `<playwright>` is the path to a Playwright package; live tests default to `http://127.0.0.1:18888` (MV) or `AM_HOOK_URL` / `http://127.0.0.1:8888` (ALAC).
 

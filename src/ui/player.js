@@ -168,9 +168,10 @@
 
   /** Bounded, on-demand multichannel PCM playback for EC-3. */
   class PcmEngine {
-    constructor(onUpdate, onError) {
+    constructor(onUpdate, onError, onEnded) {
       this.onUpdate = onUpdate;
       this.onError = onError;
+      this.onEnded = onEnded;
       this.context = new (global.AudioContext || global.webkitAudioContext)();
       this.gain = this.context.createGain();
       this.gain.connect(this.context.destination);
@@ -181,7 +182,10 @@
       this.loadedUntil = 0;
       this.generation = 0;
       this.timer = setInterval(() => {
-        if (!this.paused && this.duration && this.currentTime >= this.duration) this.pause();
+        if (!this.paused && this.duration && this.currentTime >= this.duration) {
+          this.pause();
+          if (this.onEnded) this.onEnded();
+        }
         if (!this.paused) this.pump();
         this.onUpdate();
       }, 200);
@@ -578,6 +582,7 @@
       this.$ = (sel) => root.querySelector(sel);
       this.listeners = new Set();
       this.unsupportedListeners = new Set();
+      this.endedListeners = new Set();
       this.playToken = 0;
       this.bindUi();
       try {
@@ -666,6 +671,7 @@
 
       ['timeupdate', 'progress', 'durationchange', 'loadedmetadata'].forEach((ev) => a.addEventListener(ev, () => this.renderProgress()));
       ['play', 'pause', 'playing', 'waiting', 'ended'].forEach((ev) => a.addEventListener(ev, () => { this.renderToggle(); this.emit(); }));
+      a.addEventListener('ended', () => this.ended());
       a.addEventListener('error', () => {
         // 尝试阶段的错误由 play() 统一处理（会自动换下一种播放方式）
         if (!this.attempting && this.current && this.current.mode !== 'mse' && this.audio.getAttribute('src')) {
@@ -708,7 +714,8 @@
         return;
       }
       const token = ++this.playToken;
-      const resumeAt = this.current ? this.transport().currentTime : 0;
+      // 同一首歌切换音质时从当前位置继续；专辑页换曲（track 不同）从头播放
+      const resumeAt = this.current && this.current.track === item.track ? this.transport().currentTime : 0;
       this.current = { ...item, mode: modes[0], duration: 0 };
       this.root.hidden = false;
       document.body.classList.add('has-player');
@@ -770,7 +777,7 @@
     async tryMode(mode, item, resumeAt, token) {
       this.teardown();
       if (mode === 'ec3') {
-        this.pcm = new PcmEngine(() => this.updatePcm(), (err) => this.showError(err.message || String(err)));
+        this.pcm = new PcmEngine(() => this.updatePcm(), (err) => this.showError(err.message || String(err)), () => this.ended());
         this.pcm.gain.gain.value = this.audio.volume;
         await this.pcm.load(item.m3u8Url);
         if (token !== this.playToken) return;
@@ -792,6 +799,10 @@
 
     /** 某编码经实际尝试确认无法播放时回调 */
     onUnsupported(fn) { this.unsupportedListeners.add(fn); }
+
+    /** 当前曲目播放到结尾时回调（audio 与 EC-3 PCM 两种方式），专辑页据此播放下一首 */
+    onEnded(fn) { this.endedListeners.add(fn); }
+    ended() { if (this.current) this.endedListeners.forEach((fn) => fn(this.current)); }
 
     toggle() {
       if (!this.current) return;

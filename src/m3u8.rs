@@ -11,6 +11,9 @@ static SONG_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
 static MV_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/music-video/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
+/// 专辑链接的 slug 可省略（music.apple.com/cn/album/1561058084 也有效）
+static ALBUM_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/album/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
 static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
 
@@ -48,6 +51,13 @@ pub fn parse_mv_link(url: &str) -> Result<String, String> {
         .captures(url.trim())
         .map(|caps| caps[1].to_string())
         .ok_or_else(|| format!("Only Apple Music music-video links are supported: {url}"))
+}
+
+pub fn parse_album_link(url: &str) -> Result<String, String> {
+    ALBUM_LINK_RE
+        .captures(url.trim())
+        .map(|caps| caps[1].to_string())
+        .ok_or_else(|| format!("Only Apple Music album links are supported: {url}"))
 }
 
 fn parse_attributes(input: &str) -> HashMap<&str, &str> {
@@ -299,6 +309,18 @@ mod tests {
         assert_eq!(parse_mv_link("https://music.apple.com/us/music-video/_/123?l=zh-CN").unwrap(), "123");
         assert!(parse_mv_link("https://music.apple.com/us/song/name/123").is_err());
         assert!(parse_mv_link("https://music.apple.com/us/music-video/123").is_err());
+    }
+
+    #[test]
+    fn test_parse_album_link() {
+        assert_eq!(
+            parse_album_link("https://music.apple.com/cn/album/justice-triple-chucks-deluxe-deluxe-video-version/1561058084").unwrap(),
+            "1561058084"
+        );
+        assert_eq!(parse_album_link("https://music.apple.com/cn/album/1561058084").unwrap(), "1561058084");
+        assert_eq!(parse_album_link("https://music.apple.com/us/album/lover/1468058165?i=1468058171").unwrap(), "1468058165");
+        assert!(parse_album_link("https://music.apple.com/us/song/name/123").is_err());
+        assert!(parse_album_link("https://music.apple.com/us/album/name/abc").is_err());
     }
 
     #[test]

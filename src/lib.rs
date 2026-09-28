@@ -1,3 +1,4 @@
+pub mod amp;
 pub mod cli;
 pub mod m3u8;
 pub mod monitor;
@@ -23,12 +24,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/parse/song/:adam_id", get(ui::master_handler))
         .route("/parse/mv/:adam_id", get(ui::mv_master_handler))
         .route("/key", get(ui::key_handler))
+        .route("/amp/v1/catalog/*path", get(amp::catalog_handler))
         .route("/mv/webplayback/:adam_id", get(ui::mv_webplayback_handler))
         .route("/mv/license", post(ui::mv_license_handler))
         .route("/assets/mv/:file", get(ui::mv_asset_handler))
         .route("/lyrics/:adam_id", get(ui::lyrics_handler))
         .route("/assets/lyrics/:file", get(ui::lyrics_asset_handler))
         .route("/assets/app.css", get(ui::css_handler))
+        .route("/assets/motion-art.mjs", get(ui::motion_art_handler))
         .route("/assets/player.js", get(ui::player_js_handler))
         .route("/assets/i18n.js", get(ui::i18n_js_handler))
         .route("/assets/decrypt.js", get(ui::decrypt_js_handler))

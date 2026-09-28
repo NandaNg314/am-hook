@@ -124,6 +124,8 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | 转发 wrapper-lite `/key` 返回的歌曲轨道解密模板 JSON |
 | `GET /lyrics/<adamId>` | 通过 wrapper-lite `/lyrics` 获取 TTML 歌词，原样返回 XML；没有歌词时返回 404 |
 | `GET /parse/mv/<adamId>` | MV master 播放列表文本与最终 CDN 地址 |
+| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | 专辑页（与 music.apple.com 相同的 `editorialVideo` 动态封面：宽屏方形、手机全宽 3:4；曲目列表、页内连续播放、相关推荐货架；数据来自与 music.apple.com 相同的 amp-api `albums` 请求）。带 `?i=` 的专辑链接会打开歌曲页 |
+| `GET /amp/v1/catalog/<path>?<query>` | 代理 Apple Music 目录接口（`amp-api-edge.music.apple.com/v1/catalog/...`，首页搜索使用），自动附带 music.apple.com 网页版 developer token，查询参数原样转发 |
 | `GET /mv/webplayback/<adamId>`、`POST /mv/license` | MV 转发到 wrapper-lite `/webplayback` 与 `/license` |
 | `/assets/...` | 内嵌在二进制中的页面、脚本与按需加载的 WASM（`no-cache` + ETag） |
 | `/https://aod.itunes.apple.com/itunes-assets/...` | 仅 `--hook`：歌曲解密代理 |
@@ -170,7 +172,7 @@ cargo test --workspace
 |---|---|
 | 离线，仅需 Node | `node --test tests/player_*.cjs`、`node tests/mv_hls.cjs`、`node tests/mv_captions.cjs` |
 | 离线，Playwright + Chrome 与本地 fixture | `node tests/ui_layout.cjs <playwright>`、`node tests/lyrics_ui.cjs <playwright>`、`node tests/mv_ui.cjs <playwright>` |
-| 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`） |
+| 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`）、`node tests/search_ui.cjs <playwright> [base]`、`node tests/album_ui.cjs <playwright> [base]`（需能访问 music.apple.com） |
 
 `<playwright>` 为 Playwright 包路径；在线测试默认地址为 `http://127.0.0.1:18888`（MV）或 `AM_HOOK_URL` / `http://127.0.0.1:8888`（ALAC）。
 
