@@ -41,10 +41,10 @@ const loaded = () => !document.getElementById('title').classList.contains('skele
       assert.ok(await page.locator('.track-album').first().isVisible(), 'album column on wide screens');
       assert.ok(await page.locator('#play-all').isEnabled());
       assert.match(await page.locator('#footer').textContent(), /\d/);
-      // Featured artists shelf links out to Apple Music (no artist page here)
+      // Featured artists shelf opens the artist pages here
       const artist = page.locator('.shelf-item.artist').first();
-      assert.match(await artist.getAttribute('href'), /^https:\/\/music\.apple\.com\/[a-z]{2}\/artist\//);
-      assert.equal(await artist.getAttribute('target'), '_blank');
+      assert.match(await artist.getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/[^/]+\/\d+$/);
+      assert.equal(await artist.getAttribute('target'), null);
       const tint = await page.evaluate(() => document.body.style.getPropertyValue('--album-tint'));
       assert.match(tint, /^#[0-9a-f]{6}$/i, 'page tinted with artwork colour');
       await page.locator('#art .motion-video.ready').waitFor({ timeout: 30000 });

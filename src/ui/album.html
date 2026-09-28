@@ -214,8 +214,8 @@
     /** 目录资源的 url → 本站页面路径；识别不了时按类型与 ID 拼出 */
     function pagePath(resource) {
       const url = (resource.attributes && resource.attributes.url) || '';
-      const kind = { songs: 'song', 'music-videos': 'music-video', albums: 'album' }[resource.type];
-      const m = url.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album)\/([^/?#]+)\/(\d+)/i);
+      const kind = { songs: 'song', 'music-videos': 'music-video', albums: 'album', artists: 'artist' }[resource.type];
+      const m = url.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|artist)\/([^/?#]+)\/(\d+)/i);
       if (m && m[2] === kind) return `/https://music.apple.com/${m[1].toLowerCase()}/${kind}/${m[3]}/${m[4]}`;
       // 专辑内曲目的 url 是 album/...?i=<id>，统一转成歌曲页
       const slug = url.match(/\/album\/([^/?#]+)\//);
@@ -240,9 +240,9 @@
         .filter((artist) => artist.attributes && artist.attributes.name);
       const artistEl = $('artist');
       artistEl.classList.remove('skeleton');
-      // 艺人页本站不支持，链接到 Apple Music
+      // 艺人名链接到本站艺人页
       artistEl.replaceChildren(...(artists.length && artists.map((artist) => artist.attributes.name).join(' & ') === a.artistName
-        ? artists.flatMap((artist, i) => [i ? ' & ' : '', el('a', { href: artist.attributes.url, target: '_blank', rel: 'noreferrer', textContent: artist.attributes.name })])
+        ? artists.flatMap((artist, i) => [i ? ' & ' : '', el('a', { href: pagePath(artist), textContent: artist.attributes.name })])
         : [a.artistName || '']));
 
       const year = (a.releaseDate || '').slice(0, 4);

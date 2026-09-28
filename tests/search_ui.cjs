@@ -55,12 +55,25 @@ const shots = process.env.SEARCH_UI_SHOTS;
 
     // "Load more" follows the API's next link through the proxy
     const songs = await page.locator('.song-row').count();
-    const more = page.locator('.result-group').first().locator('.more-btn');
+    const more = page.locator('.result-group').first().locator('.load-more');
     if (await more.isVisible()) {
       await more.click();
       await page.waitForFunction((n) => document.querySelectorAll('.song-row').length > n, songs, { timeout: 15000 });
     }
     if (shots) await page.screenshot({ path: path.join(shots, 'search-desktop.png'), fullPage: true });
+
+    // Artist and playlist groups open the artist / playlist pages
+    await input.fill('taylor swift');
+    await input.press('Enter');
+    await page.locator('.artist-card').first().waitFor({ timeout: 15000 });
+    assert.match(await page.locator('.artist-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/[^/]+\/\d+$/);
+    assert.ok(await page.locator('.artist-card .album-thumb.round').count(), 'round artist avatars');
+    const playlistHref = await page.locator('.album-card[href*="/playlist/"]').first().getAttribute('href');
+    assert.match(playlistHref, /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/pl\.[\w-]+$/);
+    if (shots) await page.locator('.result-group', { has: page.locator('.artist-card') }).screenshot({ path: path.join(shots, 'search-artists.png') });
+    await input.fill('born again');
+    await input.press('Enter');
+    await page.waitForURL(/q=born\+again/, { timeout: 15000 });
 
     // ?q= restores results on reload; Close clears it
     await page.reload();

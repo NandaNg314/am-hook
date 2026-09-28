@@ -18,6 +18,9 @@ static ALBUM_LINK_RE: LazyLock<Regex> =
 static PLAYLIST_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^https://music\.apple\.com/[a-z]{2}/playlist/(?:[^/?#]+/)?(pl\.[0-9A-Za-z_-]+)(?:[/?#]|$)").unwrap()
 });
+/// 艺人链接的 slug 同样可省略（music.apple.com/cn/artist/159260351 也有效）
+static ARTIST_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/artist/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
 static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
 
@@ -69,6 +72,13 @@ pub fn parse_playlist_link(url: &str) -> Result<String, String> {
         .captures(url.trim())
         .map(|caps| caps[1].to_string())
         .ok_or_else(|| format!("Only Apple Music playlist links are supported: {url}"))
+}
+
+pub fn parse_artist_link(url: &str) -> Result<String, String> {
+    ARTIST_LINK_RE
+        .captures(url.trim())
+        .map(|caps| caps[1].to_string())
+        .ok_or_else(|| format!("Only Apple Music artist links are supported: {url}"))
 }
 
 fn parse_attributes(input: &str) -> HashMap<&str, &str> {
@@ -350,6 +360,15 @@ mod tests {
         assert_eq!(parse_playlist_link("https://music.apple.com/us/playlist/mix/pl.u-AkAmPlyUxqvoZ7?l=en").unwrap(), "pl.u-AkAmPlyUxqvoZ7");
         assert!(parse_playlist_link("https://music.apple.com/us/album/name/123").is_err());
         assert!(parse_playlist_link("https://music.apple.com/us/playlist/name/123").is_err());
+    }
+
+    #[test]
+    fn test_parse_artist_link() {
+        assert_eq!(parse_artist_link("https://music.apple.com/cn/artist/taylor-swift/159260351").unwrap(), "159260351");
+        assert_eq!(parse_artist_link("https://music.apple.com/us/artist/159260351").unwrap(), "159260351");
+        assert_eq!(parse_artist_link("https://music.apple.com/us/artist/the-weeknd/479756766?l=en").unwrap(), "479756766");
+        assert!(parse_artist_link("https://music.apple.com/us/album/name/123").is_err());
+        assert!(parse_artist_link("https://music.apple.com/us/artist/name/abc").is_err());
     }
 
     #[test]

@@ -117,7 +117,7 @@
     /** wrapper-lite 状态：null 表示检查中，否则为 { ok, regions } */
     let wrapperStatus = null;
 
-    /** 把各种输入规整为页面路径：/https://music.apple.com/{cc}/(song|music-video|album|playlist)/{slug}/{id} */
+    /** 把各种输入规整为页面路径：/https://music.apple.com/{cc}/(song|music-video|album|playlist|artist)/{slug}/{id} */
     function toSongLink(raw) {
       const value = raw.trim();
       if (/^\d{5,}$/.test(value)) return `https://music.apple.com/us/song/_/${value}`;
@@ -139,6 +139,9 @@
       // 歌单链接打开歌单页（ID 形如 pl.xxx / pl.u-xxx，slug 可省略）
       const playlistPage = url.pathname.match(/^\/[a-z]{2}\/playlist\/(?:([^/]+)\/)?(pl\.[\w-]+)\/?$/i);
       if (playlistPage) return `https://music.apple.com/${cc}/playlist/${playlistPage[1] || '_'}/${playlistPage[2]}`;
+      // 艺人链接打开艺人页（slug 可省略）
+      const artistPage = url.pathname.match(/^\/[a-z]{2}\/artist\/(?:([^/]+)\/)?(\d+)\/?$/i);
+      if (artistPage) return `https://music.apple.com/${cc}/artist/${artistPage[1] || '_'}/${artistPage[2]}`;
       return null;
     }
 
@@ -180,8 +183,8 @@
       detectEl.hidden = !link;
       if (!link) return;
       if (/^\d{5,}$/.test(value)) { detectEl.textContent = t('home.detectId'); return; }
-      const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist)\//);
-      const label = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist' }[kind];
+      const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist|artist)\//);
+      const label = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist' }[kind];
       detectEl.textContent = `${t(label)} · ${cc.toUpperCase()}`;
     }
 
@@ -292,8 +295,8 @@
     }
 
     /** 目录资源 → 可打开的歌曲 / MV / 专辑 / 歌单条目；其余类型（艺人等）本站无法打开，忽略 */
-    const KINDS = { songs: 'song', 'music-videos': 'music-video', albums: 'album', playlists: 'playlist' };
-    const KIND_LABELS = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist' };
+    const KINDS = { songs: 'song', 'music-videos': 'music-video', albums: 'album', playlists: 'playlist', artists: 'artist' };
+    const KIND_LABELS = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist' };
     function toItem(resource) {
       const attrs = resource && resource.attributes;
       const kind = resource && KINDS[resource.type];
@@ -304,7 +307,7 @@
       return {
         // 歌单没有 artistName，副标题用歌单作者（curatorName）
         kind, mv, href: '/' + link, title: attrs.name || resource.id, artist: attrs.artistName || attrs.curatorName || '', album: attrs.albumName || '',
-        year: (attrs.releaseDate || '').slice(0, 4),
+        year: (attrs.releaseDate || '').slice(0, 4), genre: (attrs.genreNames || [])[0] || '',
         artwork: attrs.artwork, duration: attrs.durationInMillis, explicit: attrs.contentRating === 'explicit',
         traits: attrs.audioTraits || [], has4K: !!attrs.has4K,
       };
@@ -338,7 +341,7 @@
       try {
         await statusReady;
         const data = await amp(`/v1/catalog/${storefront()}/search/suggestions`, {
-          term, l: await catalogLang(), platform: 'web', kinds: 'terms,topResults', types: 'albums,songs,music-videos,playlists',
+          term, l: await catalogLang(), platform: 'web', kinds: 'terms,topResults', types: 'albums,songs,music-videos,playlists,artists',
           'fields[albums]': 'artistName,artwork,contentRating,name,playParams,url',
           'limit[results:terms]': '5', 'limit[results:topResults]': '5', 'omit[resource]': 'autos', with: 'naturalLanguage',
         }, controller.signal);
@@ -379,7 +382,7 @@
           if (item.explicit) title.append(explicitBadge());
           const text = el('span', 'suggest-text');
           text.append(title, el('span', 'suggest-sub', [t(KIND_LABELS[item.kind]), item.artist].filter(Boolean).join(' · ')));
-          option.append(artNode(item.mv ? 'suggest-art mv' : 'suggest-art', artUrl(item.artwork, 80, 80)), text);
+          option.append(artNode(item.mv ? 'suggest-art mv' : item.kind === 'artist' ? 'suggest-art round' : 'suggest-art', artUrl(item.artwork, 80, 80)), text);
         } else continue;
         option.id = `suggest-${suggestItems.length}`;
         option.setAttribute('role', 'option');
@@ -428,8 +431,8 @@
     input.addEventListener('blur', closeSuggest);
     input.addEventListener('focus', () => { if (input.value.trim()) scheduleSuggest(); });
 
-    // 搜索结果：/v1/catalog/{storefront}/search，取歌曲、专辑、歌单与 MV 四组，next 分页地址同样经 /amp 代理
-    const GROUPS = [['song', 'search.songs'], ['album', 'search.albums'], ['playlist', 'search.playlists'], ['music_video', 'search.mvs']];
+    // 搜索结果：/v1/catalog/{storefront}/search，取歌曲、艺人、专辑、歌单与 MV 五组，next 分页地址同样经 /amp 代理
+    const GROUPS = [['song', 'search.songs'], ['artist', 'search.artists'], ['album', 'search.albums'], ['playlist', 'search.playlists'], ['music_video', 'search.mvs']];
     const search = { term: '', controller: null };
     // next 分页地址只带 groups / offset / term / types / l，其余参数需补上，否则返回空结果
     const PAGE_PARAMS = { limit: '21', platform: 'web', with: 'serverBubbles', 'omit[resource]': 'autos' };
@@ -454,7 +457,7 @@
       try {
         await statusReady;
         const data = await amp(`/v1/catalog/${storefront()}/search`, {
-          term, l: await catalogLang(), types: 'songs,albums,music-videos,playlists', ...PAGE_PARAMS,
+          term, l: await catalogLang(), types: 'songs,albums,music-videos,playlists,artists', ...PAGE_PARAMS,
         }, controller.signal);
         if (controller !== search.controller) return;
         const groups = GROUPS.filter(([key]) => data.results && data.results[key] && data.results[key].data && data.results[key].data.length);
@@ -468,7 +471,7 @@
     }
 
     function groupNode(key, label, block, controller) {
-      const [listClass, render] = { music_video: ['mv-grid', mvCard], album: ['album-grid', albumCard], playlist: ['album-grid', playlistCard] }[key] || ['song-grid', songRow];
+      const [listClass, render] = { music_video: ['mv-grid', mvCard], album: ['album-grid', albumCard], playlist: ['album-grid', playlistCard], artist: ['album-grid', artistCard] }[key] || ['song-grid', songRow];
       const section = el('div', 'result-group');
       const list = el('div', listClass);
       const more = el('button', 'btn load-more', t('search.more'));
@@ -513,6 +516,14 @@
       const title = el('span', 'recent-title', item.title);
       if (item.explicit) title.append(explicitBadge());
       card.append(artNode('album-thumb', artUrl(item.artwork, 360, 360)), title, el('span', 'recent-sub', [item.artist, item.year].filter(Boolean).join(' · ')));
+      return card;
+    }
+
+    /** 艺人：圆形头像，副标题为主要流派（与官网搜索结果一致） */
+    function artistCard(item) {
+      const card = el('a', 'album-card artist-card');
+      card.href = item.href;
+      card.append(artNode('album-thumb round', artUrl(item.artwork, 360, 360)), el('span', 'recent-title', item.title), el('span', 'recent-sub', item.genre));
       return card;
     }
 

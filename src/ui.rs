@@ -34,6 +34,11 @@ pub async fn playlist_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/playlist.html"))
 }
 
+/// 艺人页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 艺人页相同的 artists 请求）
+pub async fn artist_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/artist.html"))
+}
+
 /// 专辑动态封面播放（editorialVideo 的 HLS，MSE 播放）
 pub async fn motion_art_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/motion-art.mjs"))

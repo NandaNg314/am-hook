@@ -311,6 +311,7 @@ body.home-page {
 .suggest-term .suggest-text b { color: var(--text); font-weight: 650; }
 .suggest-art { width: 40px; height: 40px; flex: 0 0 auto; overflow: hidden; border-radius: 8px; background: var(--surface-3); }
 .suggest-art.mv { width: 56px; height: 32px; margin-inline: -8px; border-radius: 6px; }
+.suggest-art.round { border-radius: 50%; }
 .suggest-art img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .suggest-title, .suggest-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .suggest-title { font-weight: 650; }
@@ -380,6 +381,9 @@ body.home-page {
 .album-thumb .ph { width: 100%; height: 100%; display: grid; place-items: center; }
 .album-thumb .ph::before { content: "♫"; color: var(--faint); }
 .album-card:hover .album-thumb, .album-card:focus-visible .album-thumb { transform: translateY(-3px); }
+/* 搜索结果中的艺人：圆形头像，文字居中 */
+.album-thumb.round { border-radius: 50%; }
+.artist-card { text-align: center; }
 .load-more { height: 38px; margin-top: 14px; padding: 0 18px; border-radius: 999px; font-size: 13px; }
 
 .recent { margin-top: 88px; }
@@ -832,6 +836,122 @@ a.track-album:hover { color: var(--text); text-decoration: underline; }
   /* 触屏：封面本身即播放按钮，不常驻遮罩；暂停时显示播放图标 */
   .pl-track .track-play { opacity: 0; }
   .pl-track.paused .track-play { opacity: 1; }
+}
+
+/* ---------- 艺人页（官网 artist-expression-header：圆形头像 / 通栏图片 / 通栏视频三种头部） ---------- */
+body.artist-page { overflow-x: clip; }
+.artist-hero {
+  position: relative; z-index: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  gap: 18px; text-align: center;
+}
+/* 头部背景铺满视口宽度，跳出居中的 .page */
+.artist-hero-bg {
+  position: absolute; z-index: -1; top: 0; bottom: 0; left: 50%; width: 100vw; overflow: hidden; transform: translateX(-50%);
+  pointer-events: none;
+}
+.artist-name {
+  margin: 0; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  color: var(--hero-text, var(--text)); font-size: 42px; line-height: 1.19; font-weight: 700; overflow-wrap: anywhere;
+}
+.artist-name:lang(zh) { font-weight: 600; }
+.artist-name.skeleton { width: min(360px, 70vw); height: 50px; }
+.artist-actions { justify-content: center; }
+/* circular：主色背景 + 放大模糊的头像光晕，190px 圆形头像（手机 174px），离开头部渐变回页面底色 */
+/* 背景只铺在头部之内（再往下会盖住后面的区块标题），底部留白用于渐变 */
+.artist-hero.circular { padding: 48px 0 56px; }
+.artist-hero.circular .artist-hero-bg {
+  top: -1px;
+  /* 文字按主色取黑 / 白，所以主色要铺满内容区域，只在底部留白处渐变 */
+  background: linear-gradient(color-mix(in srgb, var(--hero-bg, var(--bg)) 70%, var(--bg)) calc(100% - 56px), var(--bg));
+}
+.hero-glow {
+  position: absolute; top: -30%; left: 50%; width: min(1100px, 140vw); aspect-ratio: 1; object-fit: cover; border-radius: 50%;
+  transform: translateX(-50%); filter: blur(60px); opacity: .45;
+}
+.artist-portrait {
+  width: 190px; aspect-ratio: 1; overflow: hidden; border-radius: 50%; background: var(--surface-3);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .3);
+}
+.artist-portrait:empty { display: none; }
+.artist-portrait img { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* wide / video：通栏图片或视频（约 2.12:1），底部压暗，名字白色叠在下方 */
+.artist-hero.wide, .artist-hero.video { min-height: clamp(320px, calc(100vw / 2.12), 640px); padding-bottom: 28px; }
+.artist-hero.wide .artist-hero-bg, .artist-hero.video .artist-hero-bg { background: #000; }
+.artist-hero-bg .hero-img { width: 100%; height: 100%; display: block; object-fit: cover; object-position: center 20%; }
+.artist-hero.video .motion-video { object-position: center; }
+.artist-hero.wide .artist-hero-bg::after, .artist-hero.video .artist-hero-bg::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; background: linear-gradient(transparent 40%, rgba(0, 0, 0, .7));
+}
+.artist-hero.wide .btn:not(.btn-primary), .artist-hero.video .btn:not(.btn-primary),
+.artist-hero.circular .btn:not(.btn-primary) {
+  border-color: transparent; background: color-mix(in srgb, var(--hero-text, var(--text)) 16%, transparent); color: var(--hero-text, var(--text));
+}
+
+/* 最新发行 + 歌曲排行（官网 featured-content-and-tracks，歌曲 4 行一列横向排开） */
+.artist-featured { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+.artist-featured[hidden], .latest-wrap[hidden], .top-songs-wrap[hidden] { display: none; }
+.artist-featured.has-latest { grid-template-columns: 240px minmax(0, 1fr); }
+.latest { display: flex; flex-direction: column; gap: 2px; color: inherit; text-decoration: none; }
+.latest-art {
+  margin-bottom: 8px; aspect-ratio: 1; overflow: hidden; border-radius: 8px; background: var(--surface-3);
+  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
+}
+.latest-art img { width: 100%; height: 100%; display: block; object-fit: cover; transition: transform .3s ease; }
+.latest:hover .latest-art img { transform: scale(1.03); }
+.latest-date { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.latest-title { font-size: 15px; font-weight: 600; }
+.latest-sub { color: var(--muted); font-size: 13px; }
+.top-songs-wrap { min-width: 0; }
+.top-songs {
+  padding-bottom: 8px; display: grid; grid-auto-flow: column; grid-template-rows: repeat(4, auto);
+  grid-auto-columns: calc((100% - 2 * 16px) / 3); column-gap: 16px; overflow-x: auto;
+  scroll-snap-type: x mandatory; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.artist-featured.has-latest .top-songs { grid-auto-columns: calc((100% - 16px) / 2); }
+.track.ts-item { min-height: 64px; padding: 0 4px 0 6px; grid-template-columns: 48px minmax(0, 1fr) 36px; scroll-snap-align: start; }
+.ts-item .track-art { width: 48px; height: 48px; }
+.ts-item + .ts-item::before { left: 62px; }
+.ts-item:nth-child(4n + 1)::before { display: none; }
+
+/* 货架「显示全部」：取回全部分页后改为网格 */
+.shelf-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.shelf-all { padding: 4px 0; border: 0; background: none; color: var(--accent); font-size: 13px; font-weight: 600; }
+.shelf-all:disabled { opacity: .5; }
+.shelf-all[hidden] { display: none; }
+.shelf.expanded { grid-auto-flow: row; grid-template-columns: repeat(6, minmax(0, 1fr)); row-gap: 24px; overflow-x: visible; }
+.shelf.expanded:has(.shelf-item.mv) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* 关于：简介（6 行折叠）与家乡 / 出生 / 流派 */
+.artist-about-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 32px; align-items: start; }
+.artist-about .album-notes { max-width: none; margin-top: 0; font-size: 14px; }
+.artist-about .album-notes-text { -webkit-line-clamp: 6; }
+.artist-facts { margin: 0; display: grid; gap: 4px; }
+.artist-facts dt { color: var(--muted); font-size: 12px; font-weight: 600; }
+.artist-facts dd { margin: 0 0 10px; font-size: 14px; }
+
+@media (max-width: 1000px) {
+  .artist-featured.has-latest { grid-template-columns: minmax(0, 1fr); }
+  .latest { display: grid; grid-template-columns: 120px minmax(0, 1fr); grid-template-rows: auto auto 1fr; column-gap: 16px; }
+  .latest-art { grid-row: 1 / -1; margin-bottom: 0; }
+  .top-songs, .artist-featured.has-latest .top-songs { grid-auto-columns: calc((100% - 16px) / 2); }
+  .shelf.expanded { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .shelf.expanded:has(.shelf-item.mv) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .artist-name { font-size: 32px; }
+  .artist-hero.circular { padding-top: 32px; }
+  .artist-portrait { width: 174px; }
+  .artist-hero.wide, .artist-hero.video { min-height: 70vw; }
+  .artist-featured { margin-top: 32px; }
+  .top-songs, .artist-featured.has-latest .top-songs {
+    margin-inline: -16px; padding: 0 16px 8px; grid-auto-columns: 85%; scroll-padding-inline: 16px;
+  }
+  .track.ts-item { grid-template-columns: 48px minmax(0, 1fr) 36px; }
+  .ts-item .track-play { opacity: 0; }
+  .ts-item.paused .track-play { opacity: 1; }
+  .shelf.expanded { margin-inline: 0; padding: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; }
+  .shelf.expanded:has(.shelf-item.mv) { grid-template-columns: minmax(0, 1fr); }
+  .artist-about-body { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 }
 
 /* ---------- 歌词界面（歌词由 AMLL 排版，样式见 /assets/lyrics/amll.css） ---------- */
