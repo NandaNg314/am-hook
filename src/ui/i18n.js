@@ -5,6 +5,7 @@
  *   apply(root)           刷新静态文字：data-i18n（textContent）、data-i18n-html（innerHTML，仅限本文件内的可信文案）、
  *                         data-i18n-attr="title=key,aria-label=key2"（属性）
  *   setLang / toggle      切换语言并记住选择；onChange(fn) 在切换后回调，页面据此重绘动态内容
+ *   catalogLang(cc)       异步：当前语言在该地区 amp-api 可用的 l 值（地区不支持时为 undefined）
  *   [data-lang-toggle]    页面上的切换按钮，自动绑定
  * 初始语言：上次的选择，否则按浏览器语言（zh* 为中文，其余为英文）。
  */
@@ -71,6 +72,7 @@
       'search.close': '关闭',
       'search.explicit': '含不当内容',
       'search.albums': '专辑',
+      'search.playlists': '歌单',
       'search.placeholder': '搜索',
       'home.example': '示例',
       'home.recent': '最近解析',
@@ -79,6 +81,7 @@
       'home.detectSong': '歌曲',
       'home.detectMv': 'MV',
       'home.detectAlbum': '专辑',
+      'home.detectPlaylist': '歌单',
       'home.detectId': '歌曲 ID',
       'album.pageTitle': 'am-hook · 专辑',
       'album.loading': '正在载入专辑…',
@@ -102,6 +105,11 @@
       'album.noPlayable': '《{name}》没有浏览器可直接播放的音质，请打开歌曲页下载。',
       'album.coverAlt': '《{title}》封面',
       'album.digitalMaster': 'Apple 数码母带',
+      'playlist.pageTitle': 'am-hook · 歌单',
+      'playlist.loading': '正在载入歌单…',
+      'playlist.failed': '歌单加载失败：{msg}',
+      'playlist.badId': '无效的歌单链接。',
+      'playlist.updated': '更新于 {date}',
       'home.tagAtmos': '空间音频',
       'home.tagAac': '通用',
       'home.tagMv': '视频',
@@ -267,6 +275,7 @@
       'search.close': 'Close',
       'search.explicit': 'Explicit',
       'search.albums': 'Albums',
+      'search.playlists': 'Playlists',
       'search.placeholder': 'Search',
       'home.example': 'Examples',
       'home.recent': 'Recent',
@@ -275,6 +284,7 @@
       'home.detectSong': 'Song',
       'home.detectMv': 'MV',
       'home.detectAlbum': 'Album',
+      'home.detectPlaylist': 'Playlist',
       'home.detectId': 'Song ID',
       'album.pageTitle': 'am-hook · Album',
       'album.loading': 'Loading album…',
@@ -298,6 +308,11 @@
       'album.noPlayable': '“{name}” has no quality this browser can play directly; open the song page to download it.',
       'album.coverAlt': 'Cover of {title}',
       'album.digitalMaster': 'Apple Digital Master',
+      'playlist.pageTitle': 'am-hook · Playlist',
+      'playlist.loading': 'Loading playlist…',
+      'playlist.failed': 'Failed to load playlist: {msg}',
+      'playlist.badId': 'Invalid playlist link.',
+      'playlist.updated': 'Updated {date}',
       'home.tagAtmos': 'Spatial',
       'home.tagAac': 'Universal',
       'home.tagMv': 'Video',
@@ -450,6 +465,36 @@
     listeners.forEach((fn) => fn(lang));
   }
 
+  /**
+   * amp-api 的 l 参数。地区不支持的语言不会报错，而是静默回退到地区默认语言（如 cn 只支持 zh-Hans-CN / en-GB，
+   * 传 en-US 仍返回中文），所以按 /amp/v1/storefronts/<cc> 的 supportedLanguageTags 选择；
+   * 地区不支持当前界面语言时返回 undefined（不传 l），取不到地区信息时退回常见写法。
+   */
+  const storefrontTags = new Map();
+  function supportedTags(cc) {
+    if (!storefrontTags.has(cc)) {
+      storefrontTags.set(cc, fetch(`/amp/v1/storefronts/${cc}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          const tags = data && data.data && data.data[0] && data.data[0].attributes && data.data[0].attributes.supportedLanguageTags;
+          if (!Array.isArray(tags)) throw new Error('no supportedLanguageTags');
+          return tags;
+        })
+        .catch(() => { storefrontTags.delete(cc); return null; }));
+    }
+    return storefrontTags.get(cc);
+  }
+  async function catalogLang(cc) {
+    const zh = lang === 'zh';
+    const tags = /^[a-z]{2}$/i.test(cc || '') ? await supportedTags(cc.toLowerCase()) : null;
+    if (!tags) return zh ? 'zh-Hans-CN' : 'en-US';
+    for (const re of zh ? [/^zh-Hans/i, /^zh/i] : [/^en-US$/i, /^en/i]) {
+      const hit = tags.find((tag) => re.test(tag));
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
   document.addEventListener('click', (e) => {
     if (e.target.closest && e.target.closest('[data-lang-toggle]')) setLang(lang === 'zh' ? 'en' : 'zh');
   });
@@ -460,6 +505,7 @@
     setLang,
     toggle: () => setLang(lang === 'zh' ? 'en' : 'zh'),
     onChange: (fn) => listeners.add(fn),
+    catalogLang,
     get lang() { return lang; },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

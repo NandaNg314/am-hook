@@ -22,7 +22,11 @@ hd.m3u8`;
       let fail = false;
       await context.route('**/*', route => {
         const url = new URL(route.request().url());
-        if (url.hostname === 'itunes.apple.com') return route.fulfill({ json: { results: [{ trackId: 123, trackName: 'A beautifully long music video title / 一首很长的音乐视频名称', artistName: 'Artist / 艺术家', releaseDate: '2026-01-01', primaryGenreName: 'Pop', trackTimeMillis: 213000 }] } });
+        // MV 信息经 /amp 代理取自 amp-api 的 music-videos 资源；地区语言信息取不到时页面退回默认写法
+        if (/^\/amp\/v1\/catalog\/[a-z]{2}\/music-videos\//.test(url.pathname)) {
+          return route.fulfill({ json: { data: [{ id: '123', type: 'music-videos', attributes: { name: 'A beautifully long music video title / 一首很长的音乐视频名称', artistName: 'Artist / 艺术家', releaseDate: '2026-01-01', genreNames: ['Pop'], durationInMillis: 213000 } }] } });
+        }
+        if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
         if (url.pathname.startsWith('/parse/mv/')) return route.fulfill(fail ? { status: 500, json: { msg: 'Fixture failure' } } : { json: { code: 0, data: { masterBody, masterUrl: 'https://example.com/master.m3u8' } } });
         const file = url.pathname === '/assets/mv/style.css' ? 'mv.css'
           : url.pathname.startsWith('/assets/mv/') ? 'mv-' + path.basename(url.pathname)
@@ -34,6 +38,7 @@ hd.m3u8`;
       const fits = async () => assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `overflow ${width}/${lang}`);
       await page.goto('http://am.test/https://music.apple.com/us/music-video/_/123');
       await page.locator('#videos input').first().waitFor({ state: 'attached' });
+      await page.waitForFunction(() => /beautifully long/.test(document.getElementById('title').textContent), null, { timeout: 5000 });
       assert.equal(await page.locator('#video-count').textContent(), '2');
       assert(await page.locator('#audios input').nth(1).isChecked());
       assert(await page.locator('#play').isEnabled());

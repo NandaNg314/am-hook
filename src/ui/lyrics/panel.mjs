@@ -54,7 +54,7 @@ export function toAmllLines(song, options) {
 /**
  * root：歌曲页中的 #lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
- * getMeta() 返回当前的 { title, artist, artwork }；t 为界面文案函数；notify 显示提示。
+ * getMeta() 返回当前的 { title, artist, artwork }，变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
  */
 export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, notify, onLangChange }) {
   const $ = (selector) => root.querySelector(selector);
@@ -298,5 +298,12 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
     if (open) renderHeader();
   });
 
-  return { show, hide, view, get song() { return song; } };
+  /** 页面重新取回歌曲信息（如切换语言）后调用，更新打开中的标题与封面 */
+  function refreshMeta() {
+    if (!open) return;
+    renderHeader();
+    loadArtwork();
+  }
+
+  return { show, hide, refreshMeta, view, get song() { return song; } };
 }

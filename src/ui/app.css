@@ -792,6 +792,48 @@ body.has-player { padding-bottom: calc(var(--player-height, 110px) + 32px + env(
   .variant { gap: 8px; padding-inline: 10px; }
 }
 
+/* ---------- 歌单页：曲目行带封面（官网 songs-list-row--playlist：54px 行高、40px 封面、歌名 / 艺人两行、专辑列、时长） ---------- */
+.pl-track { min-height: 56px; grid-template-columns: 40px minmax(0, 1fr) minmax(0, .8fr) auto 40px; gap: 12px; }
+.tracklist.chart .pl-track { grid-template-columns: 40px 24px minmax(0, 1fr) minmax(0, .8fr) auto 40px; }
+.pl-track + .pl-track::before { left: 62px; }
+.track-art {
+  position: relative; width: 40px; height: 40px; display: grid; place-items: center; overflow: hidden; border-radius: 4px;
+  background: var(--surface-3); outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
+}
+.track-art > * { grid-area: 1 / 1; }
+.track-art img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.track-art .ph::before { content: "♫"; color: var(--faint); font-size: 14px; }
+/* 播放按钮与均衡器叠在封面上，封面压暗 */
+.track-art .eq { z-index: 1; display: none; color: #fff; }
+.track-art .track-play { z-index: 1; width: 100%; height: 100%; border-radius: 0; background: rgba(0, 0, 0, .45); color: #fff; }
+.pl-track.playing .track-art .track-play, .track-art .track-play:hover { color: #fff; }
+.pl-track.playing .track-art img, .pl-track.loading .track-art img { filter: brightness(.5); }
+.track.loading .track-art::after {
+  content: ""; z-index: 1; width: 14px; height: 14px; grid-area: 1 / 1; border: 2px solid rgba(255, 255, 255, .4); border-top-color: #fff;
+  border-radius: 50%; animation: spin .8s linear infinite;
+}
+.track-rank { color: var(--muted); font-size: 14px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.track-kind { margin-left: 6px; flex-shrink: 0; display: inline-flex; color: var(--muted); }
+.track-kind svg { width: 15px; height: 15px; }
+.track-album { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+a.track-album:hover { color: var(--text); text-decoration: underline; }
+.shelf-art.artist { border-radius: 50%; }
+.shelf-item.artist { text-align: center; }
+/* 专辑列在窄屏隐藏（官网 songs-list__col--secondary 在 1000px 以下隐藏） */
+@media (max-width: 1000px) {
+  .pl-track { grid-template-columns: 40px minmax(0, 1fr) auto 40px; }
+  .tracklist.chart .pl-track { grid-template-columns: 40px 24px minmax(0, 1fr) auto 40px; }
+  .track-album { display: none; }
+}
+@media (max-width: 760px) {
+  .pl-track { grid-template-columns: 40px minmax(0, 1fr) auto 36px; gap: 10px; min-height: 56px; }
+  .tracklist.chart .pl-track { grid-template-columns: 40px 20px minmax(0, 1fr) auto 36px; }
+  .pl-track + .pl-track::before { left: 54px; }
+  /* 触屏：封面本身即播放按钮，不常驻遮罩；暂停时显示播放图标 */
+  .pl-track .track-play { opacity: 0; }
+  .pl-track.paused .track-play { opacity: 1; }
+}
+
 /* ---------- 歌词界面（歌词由 AMLL 排版，样式见 /assets/lyrics/amll.css） ---------- */
 .player-lyrics {
   width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center;

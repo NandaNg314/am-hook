@@ -113,7 +113,20 @@ pub async fn catalog_handler(State(state): State<Arc<AppState>>, Path(path): Pat
         url.push('?');
         url.push_str(query);
     }
+    forward(&state, &url).await
+}
 
+/// `GET /amp/v1/storefronts/<cc>` → 地区信息。前端据 `supportedLanguageTags` 选择 `l`：
+/// 地区不支持的语言不会报错，而是静默回退到默认语言（如 cn 只支持 zh-Hans-CN / en-GB，传 en-US 返回中文）。
+pub async fn storefront_handler(State(state): State<Arc<AppState>>, Path(cc): Path<String>) -> Response<Body> {
+    if cc.len() != 2 || !cc.bytes().all(|b| b.is_ascii_lowercase()) {
+        return error(StatusCode::BAD_REQUEST, "Invalid storefront");
+    }
+    forward(&state, &format!("{API_ORIGIN}/v1/storefronts/{cc}")).await
+}
+
+/// 带 developer token 请求 amp-api，原样返回状态码与 JSON；token 失效（401/403）时重新获取一次
+async fn forward(state: &AppState, url: &str) -> Response<Body> {
     let client = &state.http_client;
     let mut retried = false;
     loop {
@@ -125,7 +138,7 @@ pub async fn catalog_handler(State(state): State<Arc<AppState>>, Path(path): Pat
             }
         };
         let response = client
-            .get(&url)
+            .get(url)
             .bearer_auth(&*token)
             .header(reqwest::header::ORIGIN, WEB_ORIGIN)
             .header(reqwest::header::REFERER, format!("{WEB_ORIGIN}/"))

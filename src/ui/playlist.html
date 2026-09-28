@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>am-hook · 专辑</title>
+  <title>am-hook · 歌单</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23fa2d48'/%3E%3Cpath d='M9.5 16.5V7l7-1.5v9' fill='none' stroke='white' stroke-width='1.8'/%3E%3Ccircle cx='7.5' cy='16.5' r='2' fill='white'/%3E%3Ccircle cx='14.5' cy='14.5' r='2' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
-<body class="album-page">
+<body class="album-page playlist-page">
   <div class="album-tint" id="tint" aria-hidden="true"></div>
   <div class="page">
     <header class="topbar">
@@ -111,19 +111,12 @@
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
-    document.title = t('album.pageTitle');
+    document.title = t('playlist.pageTitle');
     const $ = (id) => document.getElementById(id);
     const pageUrl = decodeURIComponent(location.pathname.slice(1));
-    const linkMatch = pageUrl.match(/music\.apple\.com\/([a-z]{2})\/album\/(?:([^/?#]+)\/)?(\d+)/i) || [];
+    const linkMatch = pageUrl.match(/music\.apple\.com\/([a-z]{2})\/playlist\/(?:[^/?#]+\/)?(pl\.[\w-]+)/i) || [];
     const country = (linkMatch[1] || 'us').toLowerCase();
-    const albumId = linkMatch[3];
-
-    // 带 ?i= 的专辑分享链接指向其中一首歌：直接打开歌曲页
-    const trackParam = new URLSearchParams(location.search).get('i');
-    const redirecting = !!albumId && /^\d+$/.test(trackParam || '');
-    if (redirecting) {
-      location.replace(`/https://music.apple.com/${country}/song/${linkMatch[2] || '_'}/${trackParam}`);
-    }
+    const playlistId = linkMatch[2];
 
     const player = new AmPlayer($('player'));
     new ResizeObserver(() => {
@@ -131,8 +124,8 @@
     }).observe($('player'));
     const probe = document.createElement('audio');
 
-    /** 当前专辑（amp-api albums 资源）与其中的曲目 */
-    let album = null;
+    /** 当前歌单（amp-api playlists 资源）与其中的曲目 */
+    let playlist = null;
     let tracks = [];
     let rows = new Map();
     let notesExpanded = false;
@@ -175,21 +168,29 @@
       toastTimer = setTimeout(() => { node.hidden = true; }, 2600);
     }
 
-    /* ---------- amp-api：与 music.apple.com 专辑页相同的 albums 请求，经服务端 /amp 代理 ---------- */
+    /* ---------- amp-api：与 music.apple.com 歌单页相同的 playlists 请求，经服务端 /amp 代理 ---------- */
     // l 按地区支持的语言选择，见 AmI18n.catalogLang
-    const ALBUM_PARAMS = {
-      platform: 'web',
-      extend: 'offers,editorialArtwork,editorialVideo,extendedAssetUrls',
-      'art[url]': 'f',
-      include: 'record-labels,artists',
-      'meta[albums:tracks]': 'popularity',
-      'include[songs]': 'artists,composers,albums',
+    /** 曲目字段：首次请求与 tracks 分页请求共用 */
+    const TRACK_PARAMS = {
+      'include[songs]': 'artists',
       'include[music-videos]': 'artists',
-      'include[playlists]': 'curator',
-      'fields[artists]': 'name,url',
-      'fields[record-labels]': 'name,url',
-      'fields[curators]': 'name',
-      views: 'appears-on,more-by-artist,related-videos,other-versions,you-might-also-like,audio-extras,video-extras',
+      'fields[artists]': 'name,artwork,url',
+      'fields[songs]': 'name,artistName,curatorName,composerName,artwork,playParams,contentRating,albumName,url,durationInMillis,audioTraits,extendedAssetUrls',
+      'fields[albums]': 'name,artwork,playParams,url',
+    };
+    const PLAYLIST_PARAMS = {
+      platform: 'web',
+      extend: 'offers,editorialArtwork,editorialVideo,trackCount',
+      'art[url]': 'f',
+      include: 'tracks,curator',
+      'omit[resource]': 'autos',
+      'limit[tracks]': '300',
+      'fields[curators]': 'name,url',
+      'fields[apple-curators]': 'name,url',
+      'limit[view.more-by-curator]': '15',
+      'limit[view.featured-artists]': '15',
+      views: 'more-by-curator,featured-artists',
+      ...TRACK_PARAMS,
     };
 
     async function amp(path, params) {
@@ -214,49 +215,71 @@
     /** 目录资源的 url → 本站页面路径；识别不了时按类型与 ID 拼出 */
     function pagePath(resource) {
       const url = (resource.attributes && resource.attributes.url) || '';
+      if (resource.type === 'playlists') {
+        const m = url.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/playlist\/([^/?#]+)\/(pl\.[\w-]+)/i);
+        return m ? `/https://music.apple.com/${m[1].toLowerCase()}/playlist/${m[2]}/${m[3]}` : `/https://music.apple.com/${country}/playlist/_/${resource.id}`;
+      }
       const kind = { songs: 'song', 'music-videos': 'music-video', albums: 'album' }[resource.type];
       const m = url.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album)\/([^/?#]+)\/(\d+)/i);
       if (m && m[2] === kind) return `/https://music.apple.com/${m[1].toLowerCase()}/${kind}/${m[3]}/${m[4]}`;
-      // 专辑内曲目的 url 是 album/...?i=<id>，统一转成歌曲页
+      // 歌单内曲目的 url 是 album/...?i=<id>，统一转成歌曲页
       const slug = url.match(/\/album\/([^/?#]+)\//);
       return `/https://music.apple.com/${country}/${kind}/${slug ? slug[1] : '_'}/${resource.id}`;
     }
 
-    /** editorialNotes 是 HTML，只取纯文本 */
+    /** 曲目所属专辑的本站页面路径：取自曲目 url（album/<slug>/<id>?i=...） */
+    function albumPath(track) {
+      const m = ((track.attributes && track.attributes.url) || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/album\/([^/?#]+)\/(\d+)/i);
+      return m ? `/https://music.apple.com/${m[1].toLowerCase()}/album/${m[2]}/${m[3]}` : '';
+    }
+
+    /** description / editorialNotes 是 HTML，只取纯文本 */
     function plainText(html) {
       return new DOMParser().parseFromString(html || '', 'text/html').body.textContent.trim();
     }
 
+    function formatDate(iso) {
+      const date = new Date(iso);
+      return Number.isNaN(date.getTime()) ? ''
+        : new Intl.DateTimeFormat(AmI18n.lang === 'zh' ? 'zh-CN' : 'en-US', { dateStyle: 'long' }).format(date);
+    }
+
     const explicitBadge = () => el('span', { className: 'explicit', textContent: 'E', title: t('search.explicit') });
+
+    /** 编辑歌单的封面在 editorialArtwork.staticDetailSquare，用户歌单只有 artwork */
+    function coverArtwork() {
+      const a = playlist.attributes;
+      return (a.editorialArtwork && a.editorialArtwork.staticDetailSquare) || a.artwork;
+    }
 
     /* ---------- 渲染 ---------- */
     function renderHero() {
-      const a = album.attributes;
+      const a = playlist.attributes;
       document.title = `${a.name} · am-hook`;
       $('title').classList.remove('skeleton');
-      $('title').replaceChildren(a.name, a.contentRating === 'explicit' ? explicitBadge() : '');
+      $('title').textContent = a.name;
 
-      const artists = ((album.relationships && album.relationships.artists && album.relationships.artists.data) || [])
-        .filter((artist) => artist.attributes && artist.attributes.name);
-      const artistEl = $('artist');
-      artistEl.classList.remove('skeleton');
-      // 艺人页本站不支持，链接到 Apple Music
-      artistEl.replaceChildren(...(artists.length && artists.map((artist) => artist.attributes.name).join(' & ') === a.artistName
-        ? artists.flatMap((artist, i) => [i ? ' & ' : '', el('a', { href: artist.attributes.url, target: '_blank', rel: 'noreferrer', textContent: artist.attributes.name })])
-        : [a.artistName || '']));
+      // 歌单作者：编辑歌单是 Apple Music 或某个策展人，链接到 Apple Music（本站不支持策展人页）
+      const curator = ((playlist.relationships && playlist.relationships.curator && playlist.relationships.curator.data) || [])[0];
+      const curatorName = (curator && curator.attributes && curator.attributes.name) || a.curatorName || '';
+      const curatorUrl = curator && curator.attributes && curator.attributes.url;
+      $('artist').classList.remove('skeleton');
+      $('artist').replaceChildren(curatorUrl
+        ? el('a', { href: curatorUrl, target: '_blank', rel: 'noreferrer', textContent: curatorName })
+        : curatorName);
 
-      const year = (a.releaseDate || '').slice(0, 4);
-      $('sub').textContent = [(a.genreNames || [])[0], year].filter(Boolean).join(' · ');
+      const updated = a.lastModifiedDate ? formatDate(a.lastModifiedDate) : '';
+      $('sub').textContent = updated ? t('playlist.updated', { date: updated }) : '';
 
       const traits = a.audioTraits || [];
       const badges = [];
       if (traits.includes('hi-res-lossless')) badges.push('Hi-Res Lossless');
       else if (traits.includes('lossless')) badges.push(t('q.lossless'));
       if (traits.includes('atmos')) badges.push('Dolby Atmos');
-      if (a.isMasteredForItunes) badges.push(t('album.digitalMaster'));
       $('badges').replaceChildren(...badges.map((badge) => el('span', { className: 'q-badge', textContent: badge })));
 
-      const notes = plainText((a.editorialNotes && (a.editorialNotes.standard || a.editorialNotes.short)) || '');
+      const desc = a.description || a.editorialNotes || {};
+      const notes = plainText(desc.standard || desc.short || '');
       $('notes').hidden = !notes;
       $('notes-text').textContent = notes;
       $('notes').classList.toggle('expanded', notesExpanded);
@@ -266,19 +289,20 @@
         $('notes-more').textContent = t(notesExpanded ? 'album.less' : 'album.more');
       });
 
-      const art = artUrl(a.artwork, 600);
+      const cover = coverArtwork();
+      const art = artUrl(cover, 600);
       if (art) {
         const img = $('art').querySelector('img') || $('art').appendChild(el('img', { alt: '' }));
         if (img.getAttribute('src') !== art) img.src = art;
         img.alt = t('album.coverAlt', { title: a.name });
       }
       // 与官网一样用封面主色给页面顶部着色
-      const bg = a.artwork && a.artwork.bgColor;
+      const bg = cover && cover.bgColor;
       if (/^[0-9a-f]{6}$/i.test(bg || '')) document.body.style.setProperty('--album-tint', `#${bg}`);
-      $('apple-link').href = a.url || `https://music.apple.com/${country}/album/${albumId}`;
+      $('apple-link').href = a.url || `https://music.apple.com/${country}/playlist/${playlistId}`;
     }
 
-    /* ---------- 动态封面：与官网一致，宽屏用方形视频替换封面，手机竖屏（≤483px）用全宽 3:4 视频 ---------- */
+    /* ---------- 动态封面：与专辑页相同，宽屏用方形视频替换封面，手机竖屏（≤483px）用全宽 3:4 视频 ---------- */
     const tallQuery = matchMedia('(max-width: 483px)');
     let motion = null;
     let motionKey = '';
@@ -293,7 +317,7 @@
     }
 
     function renderMotion() {
-      const a = album.attributes;
+      const a = playlist.attributes;
       const video = a.editorialVideo || {};
       const art = a.editorialArtwork || {};
       const tallStatic = art.staticDetailTall || (video.motionDetailTall && video.motionDetailTall.previewFrame);
@@ -303,7 +327,8 @@
         const img = $('tall-art').querySelector('img');
         const src = artUrl(tallStatic, 1080, 1440);
         if (img.getAttribute('src') !== src) img.src = src;
-        const bg = /^[0-9a-f]{6}$/i.test(tallStatic.bgColor || '') ? tallStatic.bgColor : (a.artwork && a.artwork.bgColor) || '000000';
+        const cover = coverArtwork();
+        const bg = /^[0-9a-f]{6}$/i.test(tallStatic.bgColor || '') ? tallStatic.bgColor : (cover && cover.bgColor) || '000000';
         const dark = isDark(bg);
         document.body.style.setProperty('--hero-bg', `#${bg}`);
         document.body.style.setProperty('--hero-text', dark ? '#fff' : '#1d1d1f');
@@ -319,53 +344,50 @@
         .then(({ mountMotionArt }) => { if (motionKey === key) motion = mountMotionArt(tall ? $('tall-art') : $('art'), { src: source.video }); })
         .catch((err) => console.warn('[am-hook] 动态封面加载失败', err));
     }
-    tallQuery.addEventListener('change', () => { if (album) renderMotion(); });
+    tallQuery.addEventListener('change', () => { if (playlist) renderMotion(); });
 
     const songs = () => tracks.filter((track) => track.type === 'songs');
 
+    /** 曲目行（官网 songs-list-row--playlist）：封面、歌名与艺人两行、专辑列、时长 */
     function renderTracks() {
-      const albumArtist = album.attributes.artistName;
-      const discs = new Set(tracks.map((track) => track.attributes.discNumber || 1));
+      const chart = !!playlist.attributes.isChart;
       rows = new Map();
-      const nodes = [];
-      let lastDisc = null;
-      for (const track of tracks) {
+      const nodes = tracks.map((track, i) => {
         const a = track.attributes;
-        const disc = a.discNumber || 1;
-        if (discs.size > 1 && disc !== lastDisc) {
-          lastDisc = disc;
-          nodes.push(el('h2', { className: 'disc-title', textContent: t('album.disc', { n: disc }) }));
-        }
         const video = track.type === 'music-videos';
         const href = pagePath(track);
-        const popular = !video && track.meta && track.meta.popularity >= 0.7;
 
-        const index = video ? el('span', { className: 'track-index', innerHTML: ICON.video })
-          : el('span', { className: 'track-index', textContent: String(a.trackNumber || '') });
-        const num = el('span', { className: 'track-num' }, index,
+        const src = artUrl(a.artwork, 80);
+        const cover = el('span', { className: `track-art${video ? ' mv' : ''}` },
+          src ? el('img', { src, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { className: 'ph' }),
           el('span', { className: 'eq', ariaHidden: 'true' }, el('i'), el('i'), el('i'), el('i')));
         let playBtn = null;
         if (!video) {
           playBtn = el('button', { className: 'track-play', type: 'button', innerHTML: ICON.play });
           playBtn.setAttribute('aria-label', t('album.playTrack', { name: a.name }));
           playBtn.addEventListener('click', () => playTrack(track));
-          num.append(playBtn);
+          cover.append(playBtn);
         }
-        if (popular) num.append(el('span', { className: 'track-pop', title: t('album.popular') }));
 
         const title = el('a', { className: 'track-title', href, textContent: a.name });
         const main = el('div', { className: 'track-main' },
-          el('div', { className: 'track-line' }, title, a.contentRating === 'explicit' ? explicitBadge() : ''),
-          a.artistName && a.artistName !== albumArtist ? el('div', { className: 'track-artist', textContent: a.artistName }) : null);
+          el('div', { className: 'track-line' }, title, a.contentRating === 'explicit' ? explicitBadge() : '',
+            video ? el('span', { className: 'track-kind', innerHTML: ICON.video, title: t('album.video') }) : null),
+          el('div', { className: 'track-artist', textContent: a.artistName || '' }));
+        const albumHref = albumPath(track);
+        const albumCol = albumHref && a.albumName ? el('a', { className: 'track-album', href: albumHref, textContent: a.albumName })
+          : el('span', { className: 'track-album', textContent: a.albumName || '' });
         const more = el('a', { className: 'track-more', href, innerHTML: video ? ICON.video : ICON.more, title: t(video ? 'album.video' : 'album.quality') });
         more.setAttribute('aria-label', `${t(video ? 'album.video' : 'album.quality')} · ${a.name}`);
 
-        const row = el('div', { className: `track${video ? ' video' : ''}` }, num, main,
+        const row = el('div', { className: `track pl-track${video ? ' video' : ''}` }, cover,
+          chart ? el('span', { className: 'track-rank', textContent: String(i + 1) }) : null, main, albumCol,
           el('span', { className: 'track-time', textContent: a.durationInMillis ? formatTime(a.durationInMillis / 1000) : '' }), more);
         if (!video) row.addEventListener('dblclick', (e) => { if (!e.target.closest('a, button')) playTrack(track); });
         rows.set(track.id, { row, playBtn });
-        nodes.push(row);
-      }
+        return row;
+      });
+      $('tracks').classList.toggle('chart', chart);
       $('tracks').replaceChildren(...nodes);
       $('tracks').hidden = false;
       $('play-all').disabled = $('shuffle').disabled = songs().length === 0;
@@ -373,43 +395,35 @@
     }
 
     function renderFooter() {
-      const a = album.attributes;
-      const lines = [];
-      if (a.releaseDate) {
-        const date = new Date(`${a.releaseDate}T00:00:00`);
-        lines.push(Number.isNaN(date.getTime()) ? a.releaseDate
-          : new Intl.DateTimeFormat(AmI18n.lang === 'zh' ? 'zh-CN' : 'en-US', { dateStyle: 'long' }).format(date));
-      }
       const songCount = songs().length;
       const videoCount = tracks.length - songCount;
       const minutes = Math.round(tracks.reduce((sum, track) => sum + (track.attributes.durationInMillis || 0), 0) / 60000);
       const length = minutes >= 60 ? t('album.hours', { h: Math.floor(minutes / 60), m: minutes % 60 }) : t('album.minutes', { n: minutes });
-      lines.push([songCount && t('album.songs', { n: songCount }), videoCount && t('album.videos', { n: videoCount }), minutes && length].filter(Boolean).join(AmI18n.lang === 'zh' ? '，' : ', '));
-      if (a.copyright) lines.push(a.copyright);
-      if (a.recordLabel && !(a.copyright || '').includes(a.recordLabel)) lines.push(a.recordLabel);
-      $('footer').replaceChildren(...lines.map((line) => el('p', { textContent: line })));
-      $('footer').hidden = !lines.length;
+      const line = [songCount && t('album.songs', { n: songCount }), videoCount && t('album.videos', { n: videoCount }), minutes && length]
+        .filter(Boolean).join(AmI18n.lang === 'zh' ? '，' : ', ');
+      $('footer').replaceChildren(...(line ? [el('p', { textContent: line })] : []));
+      $('footer').hidden = !line;
     }
 
-    /** 下方货架：与官网相同的 views，只保留本站能打开的专辑与 MV */
-    const VIEWS = ['other-versions', 'related-videos', 'video-extras', 'more-by-artist', 'appears-on', 'you-might-also-like', 'audio-extras'];
+    /** 下方货架：与官网相同的 views（策展人的更多歌单、精选艺人）；艺人页本站不支持，链接到 Apple Music */
+    const VIEWS = ['more-by-curator', 'featured-artists'];
     function renderShelves() {
       const sections = [];
       for (const key of VIEWS) {
-        const view = album.views && album.views[key];
-        const items = ((view && view.data) || []).filter((res) => res.attributes && (res.type === 'albums' || res.type === 'music-videos'));
+        const view = playlist.views && playlist.views[key];
+        const items = ((view && view.data) || []).filter((res) => res.attributes && ['playlists', 'albums', 'artists'].includes(res.type));
         if (!items.length) continue;
         const shelf = el('div', { className: 'shelf' }, ...items.map((res) => {
-          const mv = res.type === 'music-videos';
           const a = res.attributes;
-          const src = mv ? artUrl(a.artwork, 480, 270) : artUrl(a.artwork, 360);
-          const cover = el('span', { className: mv ? 'shelf-art mv' : 'shelf-art' },
+          const artist = res.type === 'artists';
+          const src = artUrl(a.artwork, 360);
+          const cover = el('span', { className: artist ? 'shelf-art artist' : 'shelf-art' },
             src ? el('img', { src, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { className: 'ph' }));
-          const title = el('span', { className: 'shelf-title', textContent: a.name });
-          if (a.contentRating === 'explicit') title.append(explicitBadge());
-          const sub = key === 'other-versions' || key === 'more-by-artist' ? (a.releaseDate || '').slice(0, 4) : a.artistName;
-          return el('a', { className: mv ? 'shelf-item mv' : 'shelf-item', href: pagePath(res) },
-            cover, title, el('span', { className: 'shelf-sub', textContent: sub || '' }));
+          const sub = res.type === 'playlists' ? a.curatorName : a.artistName;
+          const item = el('a', { className: artist ? 'shelf-item artist' : 'shelf-item', href: artist ? a.url : pagePath(res) },
+            cover, el('span', { className: 'shelf-title', textContent: a.name }), artist ? null : el('span', { className: 'shelf-sub', textContent: sub || '' }));
+          if (artist) Object.assign(item, { target: '_blank', rel: 'noreferrer' });
+          return item;
         }));
         sections.push(el('section', { className: 'shelf-section' },
           el('h2', { className: 'shelf-heading', textContent: (view.attributes && view.attributes.title) || key }), shelf));
@@ -425,30 +439,30 @@
       renderShelves();
     }
 
-    async function loadAlbum() {
+    async function loadPlaylist() {
       const token = ++loadToken;
-      if (!album) showAlert('info', () => t('album.loading'));
+      if (!playlist) showAlert('info', () => t('playlist.loading'));
       try {
         const l = await AmI18n.catalogLang(country);
-        const data = await amp(`/v1/catalog/${country}/albums/${albumId}`, { l, ...ALBUM_PARAMS });
+        const data = await amp(`/v1/catalog/${country}/playlists/${playlistId}`, { l, ...PLAYLIST_PARAMS });
         const next = data.data && data.data[0];
         if (!next) throw new Error('empty response');
         const rel = next.relationships && next.relationships.tracks;
         let list = (rel && rel.data) || [];
-        // 超长专辑的曲目分页
+        // 首次请求最多 300 首，其余分页获取
         for (let more = rel && rel.next; more;) {
-          const page = await amp(more, { l });
+          const page = await amp(more, { l, ...TRACK_PARAMS });
           list = list.concat(page.data || []);
           more = page.next;
         }
         if (token !== loadToken) return;
-        album = next;
+        playlist = next;
         tracks = list.filter((track) => track.attributes);
         render();
         showAlert('', '');
       } catch (err) {
         if (token !== loadToken) return;
-        showAlert('error', () => t('album.failed', { msg: err.message }));
+        showAlert('error', () => t('playlist.failed', { msg: err.message }));
       }
     }
 
@@ -490,8 +504,8 @@
         label: variantLabel(best),
         title: a.name,
         artist: a.artistName,
-        album: album.attributes.name,
-        artwork: artUrl(a.artwork || album.attributes.artwork, 600),
+        album: a.albumName || playlist.attributes.name,
+        artwork: artUrl(a.artwork || coverArtwork(), 600),
       };
     }
 
@@ -588,14 +602,14 @@
     AmI18n.onChange(() => {
       renderStatus();
       renderAlert();
-      if (album) render();
-      if (albumId) loadAlbum();
+      if (playlist) render();
+      if (playlistId) loadPlaylist();
     });
 
-    if (!albumId) {
-      showAlert('error', () => t('album.badId'));
-    } else if (!redirecting) {
-      loadAlbum();
+    if (!playlistId) {
+      showAlert('error', () => t('playlist.badId'));
+    } else {
+      loadPlaylist();
       loadStatus();
       AmDecrypt.collectGarbage();
     }

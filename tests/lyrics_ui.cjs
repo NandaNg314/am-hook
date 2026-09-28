@@ -31,7 +31,11 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         const lyricRequests = [];
         await context.route('**/*', async route => {
           const url = new URL(route.request().url());
-          if (url.hostname === 'itunes.apple.com') return route.fulfill({ json: { results: [{ trackName: 'Lyric song', artistName: 'Artist' }] } });
+          // 歌曲信息经 /amp 代理取自 amp-api 的 songs 资源；地区语言信息取不到时页面退回默认写法
+          if (/^\/amp\/v1\/catalog\/[a-z]{2}\/songs\//.test(url.pathname)) {
+            return route.fulfill({ json: { data: [{ id: url.pathname.split('/').pop(), type: 'songs', attributes: { name: 'Lyric song', artistName: 'Artist' } }] } });
+          }
+          if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
           if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us'] } });
           if (url.pathname.startsWith('/parse/song/')) return route.fulfill({ json: { masterUrl: 'https://example.com/master.m3u8', hook: false, variants } });
           if (url.pathname.startsWith('/lyrics/')) {

@@ -22,7 +22,11 @@ const variants = [
         await context.addInitScript(lang => localStorage.setItem('am-hook:lang', lang), lang);
         await context.route('**/*', async route => {
           const url = new URL(route.request().url());
-          if (url.hostname === 'itunes.apple.com') return route.fulfill({ json: { results: [{ trackName: 'A song with a beautifully long title / 一首很长很长的歌曲名称', artistName: 'Artist', collectionName: 'The listening room', trackTimeMillis: 213000 }] } });
+          // 歌曲信息经 /amp 代理取自 amp-api 的 songs 资源；地区语言信息取不到时页面退回默认写法
+          if (/^\/amp\/v1\/catalog\/[a-z]{2}\/songs\//.test(url.pathname)) {
+            return route.fulfill({ json: { data: [{ id: url.pathname.split('/').pop(), type: 'songs', attributes: { name: 'A song with a beautifully long title / 一首很长很长的歌曲名称', artistName: 'Artist', albumName: 'The listening room', durationInMillis: 213000 } }] } });
+          }
+          if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
           if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us', 'cn'] } });
           if (url.pathname.startsWith('/parse/song/')) return route.fulfill({ json: { masterUrl: 'https://example.com/master.m3u8', hook: true, variants } });
           if (url.pathname.startsWith('/lyrics/')) return route.fulfill({ status: 404, json: { code: 1, msg: 'lyrics not found' } });
@@ -47,6 +51,7 @@ const variants = [
         await page.waitForURL('**' + songPath);
         await page.locator('.variant').first().waitFor();
         await page.waitForFunction(() => !document.getElementById('title').classList.contains('skeleton'));
+        assert.match(await page.locator('#title').textContent(), /beautifully long title/, 'song metadata from the /amp fixture');
         await fits('song');
         await page.locator('.more-btn').first().click();
         const bounds = await page.locator('#menu').boundingBox();

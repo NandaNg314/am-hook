@@ -632,28 +632,38 @@
       }
     }
 
-    // 浏览器直连 iTunes Lookup（该接口返回 Access-Control-Allow-Origin: *）。
-    // 先查歌曲链接所在地区，查不到时依次回退 us / cn。
+    // 经服务端 /amp 代理请求 amp-api 的 songs 资源（与 music.apple.com 相同），名称按界面语言返回
+    // （l 按地区支持的语言选择，见 AmI18n.catalogLang）。先查歌曲链接所在地区，查不到时依次回退 us / cn。
     async function lookupMeta() {
       for (const cc of new Set([country, 'us', 'cn'])) {
         try {
-          const res = await fetch(`https://itunes.apple.com/lookup?id=${adamId}&country=${cc}&entity=song`, { signal: AbortSignal.timeout(8000) });
+          const url = new URL(`/amp/v1/catalog/${cc}/songs/${adamId}`, location.origin);
+          url.searchParams.set('include', 'albums');
+          const l = await AmI18n.catalogLang(cc);
+          if (l) url.searchParams.set('l', l);
+          let res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          // 语言参数被拒绝时去掉 l，改用地区默认语言
+          if (res.status === 400 && url.searchParams.has('l')) {
+            url.searchParams.delete('l');
+            res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          }
           if (!res.ok) continue;
-          const track = (await res.json()).results?.[0];
-          if (!track) continue;
+          const song = (await res.json()).data?.[0];
+          const a = song?.attributes;
+          if (!a) continue;
           return {
             country: cc,
-            title: track.trackName || '',
-            artist: track.artistName || '',
-            album: track.collectionName || '',
-            albumId: track.collectionId ? String(track.collectionId) : '',
-            // artworkUrl100 形如 .../100x100bb.jpg，换成大图
-            artwork: (track.artworkUrl100 || '').replace('100x100bb', '600x600bb'),
-            genre: track.primaryGenreName || '',
-            releaseDate: track.releaseDate || '',
-            durationMs: track.trackTimeMillis,
-            explicit: track.trackExplicitness === 'explicit',
-            url: track.trackViewUrl || '',
+            title: a.name || '',
+            artist: a.artistName || '',
+            album: a.albumName || '',
+            albumId: song.relationships?.albums?.data?.[0]?.id || '',
+            // artwork.url 是 {w}x{h}{c}.{f} 模板
+            artwork: a.artwork?.url ? a.artwork.url.replace('{w}', 600).replace('{h}', 600).replace('{c}', 'bb').replace('{f}', 'jpg') : '',
+            genre: a.genreNames?.[0] || '',
+            releaseDate: a.releaseDate || '',
+            durationMs: a.durationInMillis,
+            explicit: a.contentRating === 'explicit',
+            url: a.url || '',
           };
         } catch {}
       }
@@ -686,10 +696,21 @@
       if (meta.url) $('apple-link').href = meta.url;
     }
 
+    let metaSeq = 0;
+    /** 歌词界面（异步加载），取回歌曲信息后通知其刷新标题与封面 */
+    let lyrics = null;
+
     async function loadMeta() {
-      meta = await lookupMeta();
+      // 快速切换语言时只采用最后一次请求的结果
+      const seq = ++metaSeq;
+      const result = await lookupMeta();
+      if (seq !== metaSeq) return;
+      // 切换语言后重新获取失败时保留已有信息
+      if (metaLoaded && !result.title) return;
+      meta = result;
       metaLoaded = true;
       renderMeta();
+      lyrics?.refreshMeta();
       if (rows.size) renderVariants(); // 下载文件名需要歌名
 
       try {
@@ -730,11 +751,12 @@
     // 下载在页面内进行，离开页面会中断
     addEventListener('beforeunload', (e) => { if (downloads.size) e.preventDefault(); });
 
-    // 切换语言：重绘所有动态生成的文字（播放、下载不受影响）
+    // 切换语言：重绘所有动态生成的文字（播放、下载不受影响）；歌名等由 amp-api 按语言返回，重新获取
     AmI18n.onChange(() => {
       closeMenu(false);
       if (!metaLoaded) document.title = t('song.pageTitle');
       renderMeta();
+      if (adamId) loadMeta();
       if (variants.length) {
         variants.forEach((v) => { v.info = describe(v); });
         renderVariants();
@@ -760,6 +782,7 @@
           getMeta: () => meta,
           onLangChange: AmI18n.onChange,
         }))
+        .then((panel) => { lyrics = panel; })
         .catch((err) => console.warn('[am-hook] 歌词界面加载失败', err));
     }
   </script>

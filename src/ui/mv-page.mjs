@@ -116,26 +116,37 @@ function renderTracks() {
   $('audio-count').textContent = master.audios.length;
   $('selection').textContent = [selectedVideo.RESOLUTION, videoRange(selectedVideo) || 'SDR', audioName(selectedAudio) || selectedAudio.codec].filter(Boolean).join(' · ');
 }
+let metadataSeq = 0;
 async function metadata() {
+  // 快速切换语言时只采用最后一次请求的结果
+  const seq = ++metadataSeq;
   try {
-    const res = await fetch(`https://itunes.apple.com/lookup?id=${id}&country=${country}`, { signal: pageController.signal });
+    // 经服务端 /amp 代理请求 amp-api 的 music-videos 资源，名称按界面语言返回（l 按地区支持的语言选择）
+    const url = new URL(`/amp/v1/catalog/${country}/music-videos/${id}`, location.origin);
+    const l = await AmI18n.catalogLang(country);
+    if (l) url.searchParams.set('l', l);
+    let res = await fetch(url, { signal: pageController.signal });
+    // 语言参数被拒绝时去掉 l，改用地区默认语言
+    if (res.status === 400 && url.searchParams.has('l')) { url.searchParams.delete('l'); res = await fetch(url, { signal: pageController.signal }); }
     if (!res.ok) return;
-    const item = (await res.json()).results?.find(v => String(v.trackId) === id);
-    if (!item) return;
-    title = item.trackName || title; artist = item.artistName || '';
+    const item = (await res.json()).data?.[0]?.attributes;
+    if (!item || seq !== metadataSeq) return;
+    title = item.name || title; artist = item.artistName || '';
     $('title').textContent = title; $('artist').textContent = artist; document.title = `${title} · am-hook MV`;
-    const seconds = Math.floor(Number(item.trackTimeMillis) / 1000);
-    $('meta').replaceChildren(...[item.releaseDate?.slice(0, 4), item.primaryGenreName,
+    const seconds = Math.floor(Number(item.durationInMillis) / 1000);
+    $('meta').replaceChildren(...[item.releaseDate?.slice(0, 4), item.genreNames?.[0],
       seconds > 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '', `ID ${id}`].filter(Boolean).map(value => badge(value)));
-    if (item.artworkUrl100) {
-      const art = item.artworkUrl100.replace('100x100bb', '600x600bb');
+    // artwork.url 是 {w}x{h}{c}.{f} 模板
+    const artUrl = size => item.artwork?.url?.replace('{w}', size).replace('{h}', size).replace('{c}', 'bb').replace('{f}', 'jpg') || '';
+    const art = artUrl(600);
+    if (art) {
       $('artwork').src = art; $('artwork').hidden = false; $('video').poster = art;
       $('artwork').onload = () => { $('ambient').style.setProperty('--art', `url("${art}")`); $('ambient').classList.add('on'); };
       $('artwork').onerror = () => { $('artwork').hidden = true; };
     }
     try {
       const old = JSON.parse(localStorage.getItem('am-hook:recent') || '[]');
-      const recent = { id, title, artist, artwork: item.artworkUrl100, link: `https://music.apple.com/${country}/music-video/_/${id}` };
+      const recent = { id, title, artist, artwork: artUrl(100), link: `https://music.apple.com/${country}/music-video/_/${id}` };
       localStorage.setItem('am-hook:recent', JSON.stringify([recent, ...(Array.isArray(old) ? old.filter(r => r.id !== id) : [])].slice(0, 12)));
     } catch {}
   } catch (e) { if (e.name !== 'AbortError') console.info('MV metadata unavailable'); }
@@ -166,7 +177,8 @@ $('download').onclick = async () => {
 $('screen-play').onclick = () => $('play').click();
 $('cancel').onclick =() => { downloadController?.abort(); stopPlayback(); status('mv.cancelled'); };
 window.addEventListener('pagehide', () => { pageController.abort(); downloadController?.abort(); stopPlayback(); if (resultUrl) URL.revokeObjectURL(resultUrl); result?.dispose(); });
-AmI18n.onChange(() => { renderTracks(); status(statusKey, statusVars); });
+// 切换语言：标题等由 amp-api 按语言返回，重新获取
+AmI18n.onChange(() => { renderTracks(); status(statusKey, statusVars); if (id) void metadata(); });
 AmI18n.apply(); status(statusKey);
 async function load() {
   void collectGarbage();
