@@ -140,7 +140,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { AmPlayer, detectMode } = window.AmHook;
+    const { pagePlayer, detectMode } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -150,12 +150,7 @@
     const country = (linkMatch[1] || 'us').toLowerCase();
     const adamId = linkMatch[2];
     const $ = (id) => document.getElementById(id);
-    const player = new AmPlayer($('player'));
-    // Notices can wrap across several lines on phones and after language changes.
-    const playerObserver = new ResizeObserver(() => {
-      document.body.style.setProperty('--player-height', `${$('player').getBoundingClientRect().height}px`);
-    });
-    playerObserver.observe($('player'));
+    const player = pagePlayer($('player'));
     const probe = document.createElement('audio');
     let meta = {};
     let variants = [];
@@ -407,7 +402,7 @@
       const r = menu.trigger.getBoundingClientRect();
       menu.el.style.maxHeight = '';
       const m = menu.el.getBoundingClientRect();
-      const bottom = ($('player').hidden ? innerHeight : $('player').getBoundingClientRect().top) - 8;
+      const bottom = Math.min(innerHeight, player.barTop()) - 8;
       const below = bottom - r.bottom - 6;
       const above = r.top - 6 - 8;
       const down = below >= m.height || below >= above;
@@ -513,7 +508,8 @@
 
     function playItem(v) {
       return {
-        id: v.group_id,
+        id: `${adamId}:${v.group_id}`,
+        track: adamId,
         codecs: v.codecs,
         m3u8Url: v.m3u8Url,
         hookM3u8Url: v.hookM3u8Url,
@@ -578,12 +574,12 @@
       $('play-best').disabled = !variants.some((v) => v.mode);
       $('ext-best').hidden = !hook;
       $('ext-best').disabled = variants.length === 0;
-      syncRows(player.current, !player.audio.paused);
+      syncRows(player.current, !player.transport().paused);
     }
 
     function syncRows(current, playing) {
       for (const [id, { row, playBtn }] of rows) {
-        const active = current && current.id === id;
+        const active = current && current.id === `${adamId}:${id}`;
         row.classList.toggle('playing', !!active);
         playBtn.innerHTML = active && playing ? ICON.pause : ICON.play;
       }
@@ -812,8 +808,8 @@
       loadVariants();
       loadStatus();
       AmDecrypt.collectGarbage();
-      // 歌词界面（ES module）：点击「歌词」按钮或播放条时才获取歌词
-      import('/assets/lyrics/panel.mjs')
+      // 歌词界面（ES module）：点击「歌词」按钮或播放条时才获取歌词；在外壳中时由外壳的播放条提供
+      if (!player.shared) import('/assets/lyrics/panel.mjs')
         .then(({ mountLyrics }) => mountLyrics({
           root: $('lyrics-overlay'),
           toggle: $('player').querySelector('.player-lyrics'),

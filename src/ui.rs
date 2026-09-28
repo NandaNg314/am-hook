@@ -21,22 +21,22 @@ pub struct ParseRequest {
 }
 
 pub async fn home_handler(headers: HeaderMap) -> Response<Body> {
-    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/home.html"))
+    page_response(&headers, include_bytes!("ui/home.html"))
 }
 
 /// 专辑页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 专辑页相同的 albums 请求）
 pub async fn album_handler(headers: HeaderMap) -> Response<Body> {
-    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/album.html"))
+    page_response(&headers, include_bytes!("ui/album.html"))
 }
 
 /// 歌单页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 歌单页相同的 playlists 请求）
 pub async fn playlist_handler(headers: HeaderMap) -> Response<Body> {
-    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/playlist.html"))
+    page_response(&headers, include_bytes!("ui/playlist.html"))
 }
 
 /// 艺人页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 艺人页相同的 artists 请求）
 pub async fn artist_handler(headers: HeaderMap) -> Response<Body> {
-    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/artist.html"))
+    page_response(&headers, include_bytes!("ui/artist.html"))
 }
 
 /// 专辑动态封面播放（editorialVideo 的 HLS，MSE 播放）
@@ -45,11 +45,7 @@ pub async fn motion_art_handler(headers: HeaderMap) -> Response<Body> {
 }
 
 pub async fn mv_handler(headers: HeaderMap) -> Response<Body> {
-    static_response(
-        &headers,
-        "text/html; charset=utf-8",
-        include_bytes!("ui/mv.html"),
-    )
+    page_response(&headers, include_bytes!("ui/mv.html"))
 }
 
 pub async fn mv_asset_handler(
@@ -485,7 +481,22 @@ pub async fn song_handler(uri: Uri, headers: &HeaderMap) -> Response<Body> {
     if parse_song_link(path.strip_prefix('/').unwrap_or(path)).is_err() {
         return bad_request("Only Apple Music song links are supported");
     }
-    static_response(headers, "text/html; charset=utf-8", include_bytes!("ui/song.html"))
+    page_response(headers, include_bytes!("ui/song.html"))
+}
+
+/// 站内页面。浏览器的顶层页面请求（Sec-Fetch-Dest: document）返回外壳 shell.html：播放条常驻，
+/// 页面在其 iframe 中打开，站内跳转时播放不中断（与 music.apple.com 的底部播放条相同）。
+/// iframe 中的请求与不发送该请求头的浏览器直接返回页面，由页面自己创建播放条。
+fn page_response(headers: &HeaderMap, page: &'static [u8]) -> Response<Body> {
+    let top_level = headers
+        .get("sec-fetch-dest")
+        .is_some_and(|value| value.as_bytes() == b"document");
+    let body: &'static [u8] = if top_level { include_bytes!("ui/shell.html") } else { page };
+    let mut response = static_response(headers, "text/html; charset=utf-8", body);
+    response
+        .headers_mut()
+        .insert(axum::http::header::VARY, axum::http::HeaderValue::from_static("Sec-Fetch-Dest"));
+    response
 }
 
 /// 内嵌静态资源：`no-cache` + 内容 ETag。每次使用前都向服务器确认（未变化时 304），

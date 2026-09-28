@@ -4,6 +4,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
+const { openPage, pageFrame } = require('./shell.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const shots = process.env.SEARCH_UI_SHOTS;
@@ -12,32 +13,33 @@ const shots = process.env.SEARCH_UI_SHOTS;
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let frame;
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
     await page.addInitScript(() => localStorage.setItem('am-hook:lang', 'en'));
-    await page.goto(base + '/');
+    frame = await openPage(page, base + '/');
 
     // Links still go straight to the song page; keywords switch the button to "Search"
-    const input = page.locator('#input');
+    const input = frame.locator('#input');
     await input.fill('https://music.apple.com/us/song/cruel-summer/1468058171');
-    assert.equal(await page.locator('#submit-label').textContent(), 'Parse');
+    assert.equal(await frame.locator('#submit-label').textContent(), 'Parse');
     await input.fill('');
 
     // Suggestions come from /amp/v1/catalog/{sf}/search/suggestions
     await input.pressSequentially('born again', { delay: 20 });
-    assert.equal(await page.locator('#submit-label').textContent(), 'Search');
-    await page.locator('#suggest .suggest-item').first().waitFor({ timeout: 15000 });
+    assert.equal(await frame.locator('#submit-label').textContent(), 'Search');
+    await frame.locator('#suggest .suggest-item').first().waitFor({ timeout: 15000 });
     assert.equal(await input.getAttribute('aria-expanded'), 'true');
-    assert.ok(await page.locator('#suggest .suggest-term').count() > 0, 'term suggestions shown');
+    assert.ok(await frame.locator('#suggest .suggest-term').count() > 0, 'term suggestions shown');
     await input.press('ArrowDown');
     assert.equal(await input.getAttribute('aria-activedescendant'), 'suggest-0');
     await input.press('Escape');
-    assert.ok(await page.locator('#suggest').isHidden());
+    assert.ok(await frame.locator('#suggest').isHidden());
     if (shots) {
       await input.press('End');
       await input.pressSequentially(' ', { delay: 20 });
-      await page.locator('#suggest .suggest-item').first().waitFor({ timeout: 15000 });
+      await frame.locator('#suggest .suggest-item').first().waitFor({ timeout: 15000 });
       await page.screenshot({ path: path.join(shots, 'search-suggest.png') });
       await input.press('Escape');
     }
@@ -45,50 +47,52 @@ const shots = process.env.SEARCH_UI_SHOTS;
     // Results from /amp/v1/catalog/{sf}/search: songs and music videos
     await input.fill('born again');
     await input.press('Enter');
-    await page.locator('.song-row').first().waitFor({ timeout: 15000 });
+    await frame.locator('.song-row').first().waitFor({ timeout: 15000 });
     assert.equal(new URL(page.url()).searchParams.get('q'), 'born again');
-    assert.match(await page.locator('#results-title').textContent(), /born again/);
-    const songHref = await page.locator('.song-row').first().getAttribute('href');
+    assert.match(await frame.locator('#results-title').textContent(), /born again/);
+    const songHref = await frame.locator('.song-row').first().getAttribute('href');
     assert.match(songHref, /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/song\/[^/]+\/\d+$/);
-    const mvCount = await page.locator('.mv-card').count();
-    if (mvCount) assert.match(await page.locator('.mv-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/music-video\/[^/]+\/\d+$/);
+    const mvCount = await frame.locator('.mv-card').count();
+    if (mvCount) assert.match(await frame.locator('.mv-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/music-video\/[^/]+\/\d+$/);
 
     // "Load more" follows the API's next link through the proxy
-    const songs = await page.locator('.song-row').count();
-    const more = page.locator('.result-group').first().locator('.load-more');
+    const songs = await frame.locator('.song-row').count();
+    const more = frame.locator('.result-group').first().locator('.load-more');
     if (await more.isVisible()) {
       await more.click();
-      await page.waitForFunction((n) => document.querySelectorAll('.song-row').length > n, songs, { timeout: 15000 });
+      await frame.waitForFunction((n) => document.querySelectorAll('.song-row').length > n, songs, { timeout: 15000 });
     }
     if (shots) await page.screenshot({ path: path.join(shots, 'search-desktop.png'), fullPage: true });
 
     // Artist and playlist groups open the artist / playlist pages
     await input.fill('taylor swift');
     await input.press('Enter');
-    await page.locator('.artist-card').first().waitFor({ timeout: 15000 });
-    assert.match(await page.locator('.artist-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/[^/]+\/\d+$/);
-    assert.ok(await page.locator('.artist-card .album-thumb.round').count(), 'round artist avatars');
-    const playlistHref = await page.locator('.album-card[href*="/playlist/"]').first().getAttribute('href');
+    await frame.locator('.artist-card').first().waitFor({ timeout: 15000 });
+    assert.match(await frame.locator('.artist-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/[^/]+\/\d+$/);
+    assert.ok(await frame.locator('.artist-card .album-thumb.round').count(), 'round artist avatars');
+    const playlistHref = await frame.locator('.album-card[href*="/playlist/"]').first().getAttribute('href');
     assert.match(playlistHref, /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/pl\.[\w-]+$/);
-    if (shots) await page.locator('.result-group', { has: page.locator('.artist-card') }).screenshot({ path: path.join(shots, 'search-artists.png') });
+    if (shots) await frame.locator('.result-group', { has: frame.locator('.artist-card') }).screenshot({ path: path.join(shots, 'search-artists.png') });
     await input.fill('born again');
     await input.press('Enter');
     await page.waitForURL(/q=born\+again/, { timeout: 15000 });
 
     // ?q= restores results on reload; Close clears it
     await page.reload();
-    await page.locator('.song-row').first().waitFor({ timeout: 15000 });
-    assert.equal(await input.inputValue(), 'born again');
-    await page.locator('#close-results').click();
-    assert.ok(await page.locator('#results').isHidden());
+    frame = await pageFrame(page);
+    await frame.locator('.song-row').first().waitFor({ timeout: 15000 });
+    assert.equal(await frame.locator('#input').inputValue(), 'born again');
+    await frame.locator('#close-results').click();
+    assert.ok(await frame.locator('#results').isHidden());
     assert.equal(new URL(page.url()).searchParams.get('q'), null);
 
     // Mobile: no horizontal scroll
     const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    let mobileFrame;
     await mobile.addInitScript(() => localStorage.setItem('am-hook:lang', 'zh'));
-    await mobile.goto(base + '/?q=' + encodeURIComponent('taylor swift'));
-    await mobile.locator('.song-row').first().waitFor({ timeout: 15000 });
-    assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal scroll on mobile');
+    mobileFrame = await openPage(mobile, base + '/?q=' + encodeURIComponent('taylor swift'));
+    await mobileFrame.locator('.song-row').first().waitFor({ timeout: 15000 });
+    assert.ok(await mobileFrame.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal scroll on mobile');
     if (shots) await mobile.screenshot({ path: path.join(shots, 'search-mobile.png'), fullPage: true });
 
     assert.deepEqual(errors, []);

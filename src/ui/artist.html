@@ -120,7 +120,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { AmPlayer, detectMode, formatTime } = window.AmHook;
+    const { pagePlayer, formatTime } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -131,19 +131,13 @@
     const country = (linkMatch[1] || 'us').toLowerCase();
     const artistId = linkMatch[2];
 
-    const player = new AmPlayer($('player'));
-    new ResizeObserver(() => {
-      document.body.style.setProperty('--player-height', `${$('player').getBoundingClientRect().height}px`);
-    }).observe($('player'));
-    const probe = document.createElement('audio');
+    const player = pagePlayer($('player'));
 
     /** 当前艺人（amp-api artists 资源）与歌曲排行 */
     let artist = null;
     let topSongs = [];
     let rows = new Map();
     let bioExpanded = false;
-    /** 播放队列：topSongs 中的下标顺序与当前位置 */
-    const queue = { order: [], pos: -1 };
     let loadToken = 0;
 
     const ICON = {
@@ -485,103 +479,44 @@
       }
     }
 
-    /* ---------- 播放：歌曲排行逐首解析 master，选浏览器能播放的最高音质，播完自动下一首 ---------- */
-    function rankVariant(v) {
-      const g = v.group_id.toLowerCase();
-      return g.includes('alac') ? 0 : g.includes('atmos') ? 1 : g.includes('he-') ? 3 : 2;
-    }
-    function variantLabel(v) {
-      const g = v.group_id.toLowerCase();
-      if (g.includes('alac')) {
-        const spec = [v.bit_depth && `${v.bit_depth}-bit`, v.sample_rate && `${(v.sample_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`].filter(Boolean).join(' / ');
-        return `ALAC${spec ? ' · ' + spec : ''}`;
-      }
-      if (g.includes('atmos')) return 'Dolby Atmos';
-      const kbps = Number((g.match(/stereo-(\d+)/) || [])[1]) || 0;
-      return `${g.includes('he-') ? 'HE-AAC' : 'AAC'}${kbps ? ' · ' + kbps + ' kbps' : ''}`;
-    }
-
-    async function playItemFor(track) {
-      const res = await fetch(`/parse/song/${track.id}`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.masterUrl || !Array.isArray(data.variants)) throw new Error(data.msg || `HTTP ${res.status}`);
-      const hook = !!data.hook;
-      const base = data.masterUrl.slice(0, data.masterUrl.lastIndexOf('/') + 1);
-      const best = data.variants
-        .map((v) => ({ ...v, mode: detectMode(v.codecs, probe, hook) }))
-        .filter((v) => v.mode)
-        .sort((a, b) => rankVariant(a) - rankVariant(b) || (b.bandwidth || 0) - (a.bandwidth || 0))[0];
-      if (!best) throw Object.assign(new Error(t('album.noPlayable', { name: track.attributes.name })), { noPlayable: true });
+    /* ---------- 播放：队列交给播放器（见 player.js），逐首选浏览器能播放的最高音质，播完自动下一首；离开页面后继续 ---------- */
+    function entryFor(track) {
       const a = track.attributes;
       return {
-        id: `${track.id}:${best.group_id}`,
         track: track.id,
-        codecs: best.codecs,
-        m3u8Url: base + best.uri,
-        hookM3u8Url: hook ? `${location.origin}/${base + best.uri}` : null,
-        hookFileUrl: hook ? `${location.origin}/${base + best.file_uri}` : null,
-        label: variantLabel(best),
-        title: a.name,
+        name: a.name,
         artist: a.artistName,
         album: a.albumName || '',
         artwork: artUrl(a.artwork, 600),
       };
     }
 
-    let pending = null;
-    async function playAt(pos) {
-      const track = topSongs[queue.order[pos]];
-      if (!track) return;
-      queue.pos = pos;
-      pending = track.id;
-      syncRows(player.current, !player.transport().paused);
-      try {
-        const item = await playItemFor(track);
-        if (pending !== track.id) return;
-        pending = null;
-        await player.play(item);
-      } catch (err) {
-        if (pending !== track.id) return;
-        pending = null;
-        showAlert('error', err.noPlayable ? err.message : t('album.trackFailed', { name: track.attributes.name, msg: err.message }));
-      }
-      syncRows(player.current, !player.transport().paused);
+    /** order：topSongs 中的下标，按播放顺序 */
+    function playOrder(order, pos = 0) {
+      player.playQueue(order.map((i) => entryFor(topSongs[i])), pos);
     }
 
     function playTrack(track) {
       if (player.current && player.current.track === track.id) { player.toggle(); return; }
-      queue.order = topSongs.map((_, i) => i);
-      playAt(topSongs.indexOf(track));
+      playOrder(topSongs.map((_, i) => i), topSongs.indexOf(track));
     }
 
-    $('play-all').addEventListener('click', () => {
-      queue.order = topSongs.map((_, i) => i);
-      playAt(0);
-    });
+    $('play-all').addEventListener('click', () => playOrder(topSongs.map((_, i) => i)));
     $('shuffle').addEventListener('click', () => {
       const order = topSongs.map((_, i) => i);
       for (let i = order.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [order[i], order[j]] = [order[j], order[i]];
       }
-      queue.order = order;
-      playAt(0);
+      playOrder(order);
     });
-
-    player.onEnded(() => { if (queue.pos >= 0 && queue.pos + 1 < queue.order.length) playAt(queue.pos + 1); });
-    if ('mediaSession' in navigator) {
-      try {
-        navigator.mediaSession.setActionHandler('nexttrack', () => { if (queue.pos + 1 < queue.order.length) playAt(queue.pos + 1); });
-        navigator.mediaSession.setActionHandler('previoustrack', () => { if (queue.pos > 0) playAt(queue.pos - 1); });
-      } catch {}
-    }
 
     function syncRows(current, playing) {
       for (const [id, { row, playBtn }] of rows) {
         const active = !!current && current.track === id;
         row.classList.toggle('playing', active);
         row.classList.toggle('paused', active && !playing);
-        row.classList.toggle('loading', pending === id);
+        row.classList.toggle('loading', player.pendingTrack === id);
         if (playBtn) playBtn.innerHTML = active && playing ? ICON.pause : ICON.play;
       }
     }

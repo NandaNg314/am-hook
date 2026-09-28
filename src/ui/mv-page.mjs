@@ -207,6 +207,13 @@ $('download').onclick = async () => {
   } catch (e) { if (e.name === 'AbortError') status('mv.cancelled'); else error(e); }
   finally { downloadController = null; busy = false; $('progress').hidden = true; controls(); }
 };
+// 在外壳中打开时：MV 与常驻播放条上的音乐同时只播放一个
+let music = null;
+try { if (parent !== window && parent.AmShell) music = parent.AmShell.attach(window); } catch {}
+if (music) {
+  $('video').addEventListener('play', () => music.pause());
+  music.onChange((current, playing) => { if (playing) $('video').pause(); });
+}
 $('screen-play').onclick = () => $('play').click();
 $('cancel').onclick =() => { downloadController?.abort(); stopPlayback(); status('mv.cancelled'); };
 window.addEventListener('pagehide', () => { pageController.abort(); downloadController?.abort(); stopPlayback(); if (resultUrl) URL.revokeObjectURL(resultUrl); result?.dispose(); });

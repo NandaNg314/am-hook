@@ -109,6 +109,8 @@
 
   <script src="/assets/i18n.js"></script>
   <script>
+    // 在外壳中打开时接入常驻播放条（地址栏跟随本页、为播放条留出底部空间、空格播放 / 暂停）
+    try { if (parent !== window && parent.AmShell) parent.AmShell.attach(window); } catch {}
     const { t } = window.AmI18n;
     AmI18n.apply();
     const input = document.getElementById('input');

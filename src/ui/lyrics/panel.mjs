@@ -52,11 +52,12 @@ export function toAmllLines(song, options) {
 }
 
 /**
- * root：歌曲页中的 #lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
+ * root：#lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
+ * adamId：歌曲页固定的歌曲；外壳页不传，改用返回值的 setTrack() 跟随正在播放的歌曲。
  * getMeta() 返回当前的 { title, artist, artwork }，变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
  */
-export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, notify, onLangChange }) {
+export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getMeta, t, notify, onLangChange }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
   const options = { translation: $('[data-option="translation"]'), pronunciation: $('[data-option="pronunciation"]') };
@@ -89,6 +90,7 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
   }
 
   const barHome = document.createComment('player');
+  let adamId = null;
   let song = null;
   let request = null;
   let unavailable = false;
@@ -234,8 +236,9 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
   /** 首次打开时获取歌词；加载中的重复点击被忽略，失败后可重试 */
   function fetchLyrics() {
     if (!request) {
+      const id = adamId;
       toggle.setAttribute('aria-busy', 'true');
-      request = fetch(`/lyrics/${adamId}`)
+      request = fetch(`/lyrics/${id}`)
         .then(async (response) => {
           if (response.status === 404) return null;
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -243,6 +246,7 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
           return parsed.lines.length ? parsed : null;
         })
         .then((parsed) => {
+          if (id !== adamId) return; // 已切换到另一首歌
           if (!parsed) {
             unavailable = true;
             toggle.hidden = true;
@@ -258,13 +262,40 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
           syncOptions();
         })
         .catch((error) => {
+          if (id !== adamId) return;
           request = null;
           console.warn('[am-hook] 歌词加载失败', error);
           notify(t('lyrics.failed'));
         })
-        .finally(() => toggle.removeAttribute('aria-busy'));
+        .finally(() => { if (id === adamId) toggle.removeAttribute('aria-busy'); });
     }
     return request;
+  }
+
+  /** 切换歌曲（id 为空表示没有歌曲）：歌词界面打开时取回新歌词原地刷新，没有歌词时关闭 */
+  function setTrack(id) {
+    id = id || null;
+    if (id === adamId) return;
+    adamId = id;
+    song = null;
+    request = null;
+    unavailable = false;
+    toggle.removeAttribute('aria-busy');
+    credits.replaceChildren();
+    view.setLyricLines([]);
+    toggle.hidden = !id;
+    bar.classList.toggle('lyrics-available', !!id);
+    if (!open) return;
+    if (!id) { hide(); return; }
+    renderHeader();
+    loadArtwork();
+    fetchLyrics().then(() => {
+      if (id !== adamId || !open) return;
+      if (!song) { hide(); return; }
+      setLines();
+      view.setCurrentTime(currentTime(), true);
+      view.resetScroll();
+    });
   }
 
   function toggleOpen() {
@@ -274,11 +305,10 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
     fetchLyrics().then(() => { if (song) show(); });
   }
 
-  toggle.hidden = false;
-  bar.classList.add('lyrics-available');
+  setTrack(initialId);
   toggle.addEventListener('click', toggleOpen);
   bar.addEventListener('click', (event) => {
-    if (open || unavailable || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;
+    if (open || unavailable || !adamId || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;
     toggleOpen();
   });
   $('.lyrics-close').addEventListener('click', hide);
@@ -305,5 +335,5 @@ export function mountLyrics({ root, toggle, bar, player, adamId, getMeta, t, not
     loadArtwork();
   }
 
-  return { show, hide, refreshMeta, view, get song() { return song; } };
+  return { show, hide, refreshMeta, setTrack, view, get song() { return song; } };
 }

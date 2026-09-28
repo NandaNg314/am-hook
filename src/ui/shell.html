@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>am-hook</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23fb2c55'/%3E%3Cpath d='M9.5 16.5V7l7-1.5v9' fill='none' stroke='white' stroke-width='1.8'/%3E%3Ccircle cx='7.5' cy='16.5' r='2' fill='white'/%3E%3Ccircle cx='14.5' cy='14.5' r='2' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/lyrics/amll.css">
+</head>
+<!--
+  外壳：与 music.apple.com 的底部播放条相同，播放条与歌词界面常驻，站内页面在 iframe 中打开，跳转页面时播放不中断。
+  服务端对浏览器的顶层页面请求（Sec-Fetch-Dest: document）返回本页，iframe 中的请求返回页面本身。
+-->
+<body class="app-shell">
+  <iframe class="app-frame" id="frame" title="am-hook"></iframe>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <section class="lyrics-overlay" id="lyrics-overlay" role="dialog" data-i18n-attr="aria-label=lyrics.title" hidden>
+    <canvas class="lyrics-backdrop" aria-hidden="true" hidden></canvas>
+    <div class="lyrics-stage">
+      <div class="lyrics-side">
+        <img class="lyrics-art" alt="" hidden>
+        <div class="lyrics-meta">
+          <h2 class="lyrics-title"></h2>
+          <p class="lyrics-artist"></p>
+        </div>
+        <div class="lyrics-options">
+          <button class="lyrics-chip" type="button" data-option="translation" aria-pressed="false" data-i18n="lyrics.translation"></button>
+          <button class="lyrics-chip" type="button" data-option="pronunciation" aria-pressed="false" data-i18n="lyrics.pronunciation"></button>
+        </div>
+      </div>
+      <div class="lyric-panel"></div>
+      <div class="lyrics-controls"></div>
+    </div>
+    <button class="lyrics-follow" type="button" data-i18n="lyrics.follow" hidden></button>
+    <button class="lyrics-close" type="button" data-i18n-attr="aria-label=lyrics.close,title=lyrics.close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </section>
+
+  <div class="player" id="player" hidden>
+    <div class="player-track">
+      <img class="player-art" alt="">
+      <div class="player-text">
+        <span class="player-title"></span>
+        <span class="player-sub"></span>
+      </div>
+    </div>
+    <div class="player-center">
+      <button class="player-skip skip-back" type="button" data-i18n-attr="aria-label=player.back,title=player.back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      </button>
+      <button class="player-toggle" type="button"></button>
+      <button class="player-skip skip-fwd" type="button" data-i18n-attr="aria-label=player.forward,title=player.forward">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+      <span class="time time-cur">0:00</span>
+      <div class="seek" role="slider" tabindex="0" data-i18n-attr="aria-label=player.seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <div class="seek-track"><div class="seek-buffer"></div><div class="seek-fill"></div></div>
+        <div class="seek-thumb"></div>
+      </div>
+      <span class="time time-total">0:00</span>
+    </div>
+    <div class="player-right">
+      <button class="player-lyrics" type="button" hidden aria-pressed="false" aria-controls="lyrics-overlay" data-i18n-attr="aria-label=lyrics.open,title=lyrics.open">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5z"/><path d="M8 7.5h8M8 11h5"/></svg>
+      </button>
+      <span class="badge player-mode" data-i18n-attr="title=player.mode"></span>
+      <input class="volume" type="range" min="0" max="1" step="0.01" data-i18n-attr="aria-label=player.volume">
+    </div>
+    <p class="player-notice" hidden></p>
+    <p class="player-msg" hidden></p>
+  </div>
+
+  <script src="/assets/i18n.js"></script>
+  <script src="/assets/decrypt.js"></script>
+  <script src="/assets/player.js"></script>
+  <script>
+    const { AmPlayer } = window.AmHook;
+    const { AmI18n } = window;
+    const { t } = AmI18n;
+    AmI18n.apply();
+    const $ = (id) => document.getElementById(id);
+    const frame = $('frame');
+    const player = new AmPlayer($('player'));
+
+    /** 地址栏与标题跟随 iframe 中的页面（前进 / 后退由 iframe 的历史记录完成） */
+    function sync(win) {
+      try {
+        if (win.location.href !== location.href) history.replaceState(null, '', win.location.href);
+        document.title = win.document.title;
+      } catch {}
+    }
+
+    /** iframe 中的页面接入外壳，返回共用播放器的接口（见 AmPlayer.connect）；页面加载时调用，load 事件时补调 */
+    const attached = new WeakSet();
+    function attach(win) {
+      const doc = win.document;
+      if (!attached.has(doc)) {
+        attached.add(doc);
+        sync(win);
+        // 页面会在加载歌曲信息后改标题，搜索时用 pushState / replaceState 改地址
+        new MutationObserver(() => sync(win)).observe(doc.head, { subtree: true, childList: true, characterData: true });
+        win.addEventListener('popstate', () => sync(win));
+        win.addEventListener('hashchange', () => sync(win));
+        for (const name of ['pushState', 'replaceState']) {
+          const original = win.history[name];
+          win.history[name] = function (...args) {
+            const result = original.apply(this, args);
+            sync(win);
+            return result;
+          };
+        }
+      }
+      return player.connect(win);
+    }
+    window.AmShell = { player, attach };
+
+    frame.addEventListener('load', () => {
+      try {
+        const win = frame.contentWindow;
+        if (win.location.protocol !== 'about:') attach(win);
+      } catch {} // 跳转到了其他网站
+    });
+    // iframe 可以打开与外壳相同的地址（浏览器允许一层自身引用）
+    frame.src = location.pathname + location.search + location.hash;
+    frame.focus();
+
+    let toastTimer = 0;
+    function toast(message) {
+      const node = $('toast');
+      node.textContent = message;
+      node.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { node.hidden = true; }, 2600);
+    }
+
+    // 歌词界面跟随正在播放的歌曲
+    import('/assets/lyrics/panel.mjs')
+      .then(({ mountLyrics }) => {
+        const lyrics = mountLyrics({
+          root: $('lyrics-overlay'),
+          toggle: $('player').querySelector('.player-lyrics'),
+          bar: $('player'),
+          player, t, notify: toast,
+          getMeta: () => ({ title: player.current?.title, artist: player.current?.artist, artwork: player.current?.artwork }),
+          onLangChange: AmI18n.onChange,
+        });
+        const follow = (current) => lyrics.setTrack(current && current.track);
+        follow(player.current);
+        player.onChange(follow);
+      })
+      .catch((err) => console.warn('[am-hook] 歌词界面加载失败', err));
+  </script>
+</body>
+</html>

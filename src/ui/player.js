@@ -92,6 +92,53 @@
     return mode === 'direct' ? t('player.direct') : mode === 'ec3' ? t('player.pcmMode') : mode.toUpperCase();
   }
 
+  /* ---------- 播放队列的曲目：逐首解析 master，选浏览器能播放的最高音质 ---------- */
+  function rankVariant(v) {
+    const g = v.group_id.toLowerCase();
+    return g.includes('alac') ? 0 : g.includes('atmos') ? 1 : g.includes('he-') ? 3 : 2;
+  }
+
+  function variantLabel(v) {
+    const g = v.group_id.toLowerCase();
+    if (g.includes('alac')) {
+      const spec = [v.bit_depth && `${v.bit_depth}-bit`, v.sample_rate && `${(v.sample_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`].filter(Boolean).join(' / ');
+      return `ALAC${spec ? ' · ' + spec : ''}`;
+    }
+    if (g.includes('atmos')) return 'Dolby Atmos';
+    const kbps = Number((g.match(/stereo-(\d+)/) || [])[1]) || 0;
+    return `${g.includes('he-') ? 'HE-AAC' : 'AAC'}${kbps ? ' · ' + kbps + ' kbps' : ''}`;
+  }
+
+  let probe = null;
+
+  /** entry: { track, name, artist, album, artwork } → play() 使用的 item */
+  async function resolveEntry(entry) {
+    const res = await fetch(`/parse/song/${entry.track}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.masterUrl || !Array.isArray(data.variants)) throw new Error(data.msg || `HTTP ${res.status}`);
+    const hook = !!data.hook;
+    const base = data.masterUrl.slice(0, data.masterUrl.lastIndexOf('/') + 1);
+    probe = probe || document.createElement('audio');
+    const best = data.variants
+      .map((v) => ({ ...v, mode: detectMode(v.codecs, probe, hook) }))
+      .filter((v) => v.mode)
+      .sort((a, b) => rankVariant(a) - rankVariant(b) || (b.bandwidth || 0) - (a.bandwidth || 0))[0];
+    if (!best) throw Object.assign(new Error(t('album.noPlayable', { name: entry.name })), { noPlayable: true });
+    return {
+      id: `${entry.track}:${best.group_id}`,
+      track: entry.track,
+      codecs: best.codecs,
+      m3u8Url: base + best.uri,
+      hookM3u8Url: hook ? `${location.origin}/${base + best.uri}` : null,
+      hookFileUrl: hook ? `${location.origin}/${base + best.file_uri}` : null,
+      label: variantLabel(best),
+      title: entry.name,
+      artist: entry.artist,
+      album: entry.album,
+      artwork: entry.artwork,
+    };
+  }
+
   class FlacTranscoder {
     constructor() {
       this.worker = new Worker('/assets/flac-transcode-worker.js');
@@ -571,7 +618,11 @@
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
   const ICON_LOADING = '<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>';
 
-  /** 页面底部播放条 */
+  /**
+   * 页面底部播放条。
+   * 外壳页（shell.html）中只有一个实例，站内页面在 iframe 中经 connect() 共用它，跳转页面时播放不中断；
+   * 直接打开页面（浏览器不发送 Sec-Fetch-Dest）时每个页面各自创建。
+   */
   class AmPlayer {
     constructor(root) {
       this.root = root;
@@ -582,9 +633,16 @@
       this.$ = (sel) => root.querySelector(sel);
       this.listeners = new Set();
       this.unsupportedListeners = new Set();
-      this.endedListeners = new Set();
       this.playToken = 0;
+      /** 播放队列：{ entries, pos }，entries 见 resolveEntry；pendingTrack 为正在解析的曲目 */
+      this.queue = null;
+      this.queueSerial = 0;
+      this.pendingTrack = null;
+      /** 需要为播放条留出底部空间的文档（自身与 iframe 中的页面） */
+      this.docs = new Set([root.ownerDocument]);
+      new ResizeObserver(() => this.layout()).observe(root);
       this.bindUi();
+      this.bindKeys(root.ownerDocument);
       try {
         const v = parseFloat(localStorage.getItem('am-hook:volume'));
         if (v >= 0 && v <= 1) this.audio.volume = v;
@@ -680,13 +738,6 @@
         }
       });
 
-      document.addEventListener('keydown', (e) => {
-        if (!this.current || e.target.closest('input, textarea, button, a, [role="slider"]')) return;
-        if (e.code === 'Space') { e.preventDefault(); this.toggle(); }
-        if (e.key === 'ArrowLeft') this.seekBy(-5);
-        if (e.key === 'ArrowRight') this.seekBy(5);
-      });
-
       if ('mediaSession' in navigator) {
         const ms = navigator.mediaSession;
         ms.setActionHandler('play', () => this.transport().play());
@@ -694,7 +745,78 @@
         ms.setActionHandler('seekbackward', () => this.seekBy(-10));
         ms.setActionHandler('seekforward', () => this.seekBy(10));
         try { ms.setActionHandler('seekto', (d) => { this.transport().currentTime = d.seekTime; }); } catch {}
+        try {
+          ms.setActionHandler('nexttrack', () => this.skipTrack(1));
+          ms.setActionHandler('previoustrack', () => this.skipTrack(-1));
+        } catch {}
       }
+    }
+
+    /** 空格播放 / 暂停，左右方向键快退 / 快进；iframe 中的页面也要绑定，按键不会传到外壳 */
+    bindKeys(doc) {
+      doc.addEventListener('keydown', (e) => {
+        if (!this.current || e.defaultPrevented || e.target.closest('input, textarea, button, a, [role="slider"]')) return;
+        if (e.code === 'Space') { e.preventDefault(); this.toggle(); }
+        if (e.key === 'ArrowLeft') this.seekBy(-5);
+        if (e.key === 'ArrowRight') this.seekBy(5);
+      });
+    }
+
+    /** 显示播放条，页面按其高度留出底部空间（通知、错误信息换行时高度会变） */
+    show() {
+      this.root.hidden = false;
+      this.layout();
+    }
+
+    /** 播放条上边缘的位置（外壳的 iframe 铺满窗口，与页面中的坐标相同），隐藏时为 Infinity */
+    barTop() {
+      return this.root.hidden ? Infinity : this.root.getBoundingClientRect().top;
+    }
+
+    layout() {
+      const height = `${this.root.getBoundingClientRect().height}px`;
+      for (const doc of this.docs) {
+        if (!doc.defaultView) { this.docs.delete(doc); continue; } // iframe 已跳转到其他页面
+        if (!doc.body) continue;
+        doc.body.style.setProperty('--player-height', height);
+        doc.body.classList.toggle('has-player', !this.root.hidden);
+      }
+    }
+
+    /**
+     * iframe 中的页面使用外壳的播放条：返回与 AmPlayer 相同用法的接口。
+     * 页面跳转后其文档失效，注册的回调随之移除。
+     */
+    connect(win) {
+      const doc = win.document;
+      if (!this.docs.has(doc)) {
+        this.docs.add(doc);
+        this.bindKeys(doc);
+        this.layout();
+      }
+      const player = this;
+      const scoped = (set) => (fn) => {
+        const wrapped = (...args) => {
+          if (!doc.defaultView) { set.delete(wrapped); return; }
+          fn(...args);
+        };
+        set.add(wrapped);
+      };
+      // 条目在外壳中保存，复制为外壳的对象，页面卸载后仍可使用
+      return {
+        shared: true,
+        get current() { return player.current; },
+        get pendingTrack() { return player.pendingTrack; },
+        get audio() { return player.audio; },
+        transport: () => player.transport(),
+        barTop: () => player.barTop(),
+        play: (item) => player.play({ ...item }),
+        playQueue: (entries, pos) => player.playQueue(entries.map((entry) => ({ ...entry })), pos),
+        toggle: () => player.toggle(),
+        pause: () => player.pause(),
+        onChange: scoped(this.listeners),
+        onUnsupported: scoped(this.unsupportedListeners),
+      };
     }
 
     duration() {
@@ -707,6 +829,47 @@
      * m3u8Url 为 CDN 原始地址（浏览器解密）；hook* 为服务端解密地址，仅 --hook 时存在。
      */
     async play(item) {
+      // 单独播放另一首歌时结束队列；同一首歌切换音质时保留
+      if (this.queue && item.track !== this.queue.entries[this.queue.pos].track) this.clearQueue();
+      return this.start(item);
+    }
+
+    /** entries：按播放顺序排列的曲目（见 resolveEntry）；从 pos 开始，播完一首自动播放下一首 */
+    playQueue(entries, pos = 0) {
+      this.queue = { entries, pos };
+      return this.playAt(pos);
+    }
+
+    clearQueue() {
+      this.queue = null;
+      this.queueSerial++;
+      this.pendingTrack = null;
+    }
+
+    skipTrack(delta) {
+      if (this.queue && this.queue.entries[this.queue.pos + delta]) this.playAt(this.queue.pos + delta);
+    }
+
+    async playAt(pos) {
+      const entry = this.queue.entries[pos];
+      this.queue.pos = pos;
+      const serial = ++this.queueSerial;
+      this.pendingTrack = entry.track;
+      this.emit();
+      try {
+        const item = await resolveEntry(entry);
+        if (serial !== this.queueSerial) return;
+        this.pendingTrack = null;
+        await this.start(item);
+      } catch (err) {
+        if (serial !== this.queueSerial) return;
+        this.pendingTrack = null;
+        this.showError(() => (err.noPlayable ? err.message : t('album.trackFailed', { name: entry.name, msg: err.message })));
+      }
+      this.emit();
+    }
+
+    async start(item) {
       if (this.current && this.current.id === item.id) { this.toggle(); return; }
       const modes = detectModes(item.codecs, this.audio, !!item.hookM3u8Url);
       if (!modes.length) {
@@ -717,8 +880,7 @@
       // 同一首歌切换音质时从当前位置继续；专辑页换曲（track 不同）从头播放
       const resumeAt = this.current && this.current.track === item.track ? this.transport().currentTime : 0;
       this.current = { ...item, mode: modes[0], duration: 0 };
-      this.root.hidden = false;
-      document.body.classList.add('has-player');
+      this.show();
       this.showError('');
       this.$('.player-title').textContent = item.title || t('player.unknownTitle');
       this.$('.player-sub').textContent = [item.artist, item.label].filter(Boolean).join(' · ');
@@ -800,14 +962,18 @@
     /** 某编码经实际尝试确认无法播放时回调 */
     onUnsupported(fn) { this.unsupportedListeners.add(fn); }
 
-    /** 当前曲目播放到结尾时回调（audio 与 EC-3 PCM 两种方式），专辑页据此播放下一首 */
-    onEnded(fn) { this.endedListeners.add(fn); }
-    ended() { if (this.current) this.endedListeners.forEach((fn) => fn(this.current)); }
+    /** 当前曲目播放到结尾（audio 与 EC-3 PCM 两种方式）：播放队列中的下一首 */
+    ended() { if (this.current) this.skipTrack(1); }
 
     toggle() {
       if (!this.current) return;
       const transport = this.transport();
       if (transport.paused) transport.play().catch((err) => this.showError(err.message)); else transport.pause();
+    }
+
+    /** 其他媒体（如 MV）开始播放时暂停 */
+    pause() {
+      if (this.current && !this.transport().paused) this.transport().pause();
     }
 
     seekBy(delta) {
@@ -914,8 +1080,7 @@
       this.errorMsg = msg || null;
       this.renderError();
       if (msg) {
-        this.root.hidden = false;
-        document.body.classList.add('has-player');
+        this.show();
         this.setLoading(false);
       }
     }
@@ -928,7 +1093,16 @@
     }
   }
 
-  const api = { AmPlayer, segmentAt, formatTime, detectMode, detectModes, mimeFor };
+  /** 页面的播放条：在外壳的 iframe 中时使用外壳的播放器（移除页面自己的播放条），否则在页面内创建 */
+  function pagePlayer(root) {
+    let shell = null;
+    try { shell = global.parent !== global && global.parent.AmShell; } catch {}
+    if (!shell) return new AmPlayer(root);
+    root.remove();
+    return shell.attach(global);
+  }
+
+  const api = { AmPlayer, pagePlayer, segmentAt, formatTime, detectMode, detectModes, mimeFor };
   if (typeof module !== 'undefined' && module.exports) module.exports = { ...api, MseEngine };
   else global.AmHook = api;
 })(typeof window !== 'undefined' ? window : globalThis);

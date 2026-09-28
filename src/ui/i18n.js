@@ -526,6 +526,10 @@
   document.addEventListener('click', (e) => {
     if (e.target.closest && e.target.closest('[data-lang-toggle]')) setLang(lang === 'zh' ? 'en' : 'zh');
   });
+  // 其他文档切换语言后同步：外壳的播放条与 iframe 中的页面、其他标签页
+  global.addEventListener('storage', (e) => {
+    if (e.key === STORAGE_KEY && e.newValue) setLang(e.newValue);
+  });
 
   global.AmI18n = {
     t,
