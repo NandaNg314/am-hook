@@ -88,7 +88,9 @@
     AmI18n.apply();
     const $ = (id) => document.getElementById(id);
     const frame = $('frame');
-    const player = new AmPlayer($('player'));
+    /** 播放条、歌词界面里的链接在 iframe 中打开，外壳不刷新，播放不中断 */
+    const navigate = (href) => { frame.contentWindow.location.href = href; };
+    const player = new AmPlayer($('player'), { navigate });
 
     /** 地址栏与标题跟随 iframe 中的页面（前进 / 后退由 iframe 的历史记录完成） */
     function sync(win) {
@@ -149,7 +151,8 @@
           toggle: $('player').querySelector('.player-lyrics'),
           bar: $('player'),
           player, t, notify: toast,
-          getMeta: () => ({ title: player.current?.title, artist: player.current?.artist, artwork: player.current?.artwork }),
+          getMeta: () => ({ title: player.current?.title, artist: player.current?.artist, artists: player.current?.artists, artwork: player.current?.artwork }),
+          navigate,
           onLangChange: AmI18n.onChange,
         });
         const follow = (current) => lyrics.setTrack(current && current.track);

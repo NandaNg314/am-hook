@@ -617,6 +617,8 @@ body.home-page {
 .track-title:hover { text-decoration: underline; }
 .track.playing .track-title { color: var(--accent); }
 .track-artist { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.track-artist a { color: inherit; text-decoration: none; }
+.track-artist a:hover { color: var(--text); text-decoration: underline; }
 .track-time { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .track-more { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); text-decoration: none; }
 .track-more svg { width: 17px; height: 17px; }
@@ -662,10 +664,43 @@ body.app-shell, body.app-shell.has-player { overflow: hidden; padding: 0; }
 .player[hidden] { display: none; }
 .player-track { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .player-art { width: 48px; height: 48px; border-radius: 7px; flex: 0 0 auto; object-fit: cover; background: var(--surface-3); }
-.player-text { min-width: 0; }
-.player-title, .player-sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player-title { font-weight: 700; font-size: 13px; }
-.player-sub { color: var(--muted); font-size: 12px; }
+.player-text { flex: 1 1 auto; min-width: 0; }
+/* 与 music.apple.com 相同：歌名一行，「艺人 — 专辑」一行；链接平时不加下划线，悬停时变主题色并加下划线 */
+.player-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-weight: 700; font-size: 13px; }
+.player-sub { display: block; min-width: 0; color: var(--muted); font-size: 12px; }
+/* 音质标志：Apple Music 的图标与文字一体的 SVG，按高度缩放，颜色跟随次要文字色 */
+.player-quality { flex: 0 0 auto; display: inline-flex; align-items: center; color: var(--muted); }
+.player-quality svg { display: block; width: auto; height: 16px; fill: currentColor; }
+.player-quality[hidden] { display: none; }
+.player-text a { color: inherit; text-decoration: none; }
+.player-text a:hover { color: var(--accent); text-decoration: underline; }
+
+/* 滚动字幕（player.js 的 Marquee），照 music.apple.com 播放条的 marquee：
+   放不下时右侧 15px 渐隐；滚动时两侧渐隐，原文移出后（is-near-end）去掉左侧渐隐；副本与原文间隔 28px */
+.marquee { display: block; flex: 1 1 auto; min-width: 0; }
+.marquee-line { display: flex; width: 100%; overflow: clip; white-space: nowrap; }
+.marquee-line__mask { width: 100%; }
+.marquee--primary .marquee-line__mask { height: 18px; line-height: 18px; }
+.marquee--secondary .marquee-line__mask { height: 17px; line-height: 17px; }
+.marquee-line__scroller { --marquee-line-padding: 28px; display: grid; grid-template-columns: auto 1fr; }
+.marquee-line.active .marquee-line__chunk { padding-inline-end: var(--marquee-line-padding); }
+.marquee-line__chunk--copy { opacity: 0; }
+.marquee-line.inactive .marquee-line__chunk--copy { display: none; }
+.marquee-line.active.is-animating .marquee-line__chunk--copy { opacity: 1; }
+.marquee-line.active:not(.is-animating) .marquee-line__mask {
+  -webkit-mask: linear-gradient(270deg, transparent, #000 15px); mask: linear-gradient(270deg, transparent, #000 15px);
+}
+.marquee-line.active.is-animating .marquee-line__mask {
+  -webkit-mask: linear-gradient(90deg, transparent 0, #000 var(--lcd-fade-length-start, 15px), #000 calc(100% - 15px), transparent);
+  mask: linear-gradient(90deg, transparent 0, #000 var(--lcd-fade-length-start, 15px), #000 calc(100% - 15px), transparent);
+}
+.marquee-line.active.is-animating.is-near-end .marquee-line__mask { --lcd-fade-length-start: 0px; }
+/* --marquee-scroll-width（原文宽度 + 间隔，无单位）由 player.js 写入；时长与官网相同：宽度 / 25 × 1.25s */
+.marquee-line.active.is-animating .marquee-line__scroller {
+  animation: marquee calc(var(--marquee-scroll-width) / 25 * 1.25s) linear forwards; will-change: transform;
+}
+.marquee-line.active.is-paused .marquee-line__scroller { animation-play-state: paused; }
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(calc(var(--marquee-scroll-width) * -1px)); } }
 .player-center { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .player-toggle {
   width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 50%;
@@ -1076,6 +1111,8 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-meta { min-width: 0; }
 .lyrics-title { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 700; overflow-wrap: anywhere; }
 .lyrics-artist { margin: 4px 0 0; color: rgba(255, 255, 255, .6); font-size: 15px; overflow-wrap: anywhere; }
+.lyrics-artist a { color: inherit; text-decoration: none; }
+.lyrics-artist a:hover { color: #fff; text-decoration: underline; }
 .lyrics-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .lyrics-chip {
   min-height: 36px; padding: 0 14px; border: 1px solid rgba(255, 255, 255, .16); border-radius: 999px;

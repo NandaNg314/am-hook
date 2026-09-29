@@ -22,7 +22,6 @@
         <input name="q" type="search" enterkeyhint="search" autocomplete="off" data-i18n-attr="placeholder=search.placeholder,aria-label=search.placeholder">
       </form>
       <div class="topbar-right">
-        <span class="status-pill" id="status" aria-live="polite"><span class="status-dot"></span><span>wrapper-lite</span></span>
         <button class="btn lang-btn" type="button" data-lang-toggle>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
           <span class="lang-label"></span>
@@ -144,7 +143,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { pagePlayer, detectMode } = window.AmHook;
+    const { pagePlayer, detectMode, artistNodes, qualityBadge } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -519,9 +518,13 @@
         hookM3u8Url: v.hookM3u8Url,
         hookFileUrl: v.hookFileUrl,
         label: v.info.name,
+        badge: qualityBadge(v),
         title: meta.title,
         artist: meta.artist,
+        artists: meta.artists,
         album: meta.album,
+        href: location.pathname,
+        albumHref: albumHref(),
         artwork: meta.artwork,
       };
     }
@@ -681,32 +684,9 @@
       return m ? `/https://music.apple.com/${m[1].toLowerCase()}/artist/${m[2]}/${m[3]}` : `/https://music.apple.com/${cc}/artist/_/${resource.id}`;
     }
 
-    /**
-     * 艺人行（如「KAROL G, Judeline & rusowsky」）中每位艺人的名字链接到其艺人页，分隔符保持原样；
-     * 名字对不上（如译名不同）而只有一位艺人时，整行链接到该艺人。
-     */
-    function artistNodes(text, artists) {
-      const named = (artists || []).slice().sort((a, b) => b.name.length - a.name.length);
-      const link = (artist, label = artist.name) => el('a', { href: artist.href, textContent: label });
-      const word = /[\p{L}\p{N}]/u;
-      const nodes = [];
-      let plain = '';
-      let linked = false;
-      for (let i = 0; i < text.length;) {
-        // 名字前后不能紧挨字母或数字，避免把长名字里的一段当成另一位艺人
-        const hit = (i === 0 || !word.test(text[i - 1])) && named.find((a) => text.startsWith(a.name, i)
-          && !word.test(text[i + a.name.length] || ''));
-        if (hit) {
-          if (plain) nodes.push(plain);
-          plain = '';
-          nodes.push(link(hit));
-          i += hit.name.length;
-          linked = true;
-        } else plain += text[i++];
-      }
-      if (plain) nodes.push(plain);
-      if (!linked && named.length === 1) return [link(named[0], text)];
-      return nodes;
+    /** 本站专辑页路径 */
+    function albumHref() {
+      return meta.album && meta.albumId ? `/https://music.apple.com/${meta.country || country}/album/_/${meta.albumId}` : '';
     }
 
     let metaLoaded = false;
@@ -718,9 +698,7 @@
       $('title').textContent = title;
       $('title').classList.remove('skeleton');
       // 专辑名链接到本站专辑页
-      const albumNode = meta.album && meta.albumId
-        ? el('a', { href: `/https://music.apple.com/${meta.country || country}/album/_/${meta.albumId}`, textContent: meta.album })
-        : meta.album;
+      const albumNode = albumHref() ? el('a', { href: albumHref(), textContent: meta.album }) : meta.album;
       // 艺人名链接到本站艺人页
       const parts = [meta.artist && artistNodes(meta.artist, meta.artists), albumNode].filter(Boolean);
       $('subtitle').replaceChildren(...(parts.length ? parts.flatMap((part, i) => (i ? [' — ', ...[].concat(part)] : [].concat(part))) : [t('song.noMeta')]));
@@ -761,31 +739,6 @@
       } catch {}
     }
 
-    /** wrapper-lite 状态：null 表示检查中，否则为 { ok, regions } */
-    let wrapperStatus = null;
-
-    function renderStatus() {
-      const pill = $('status');
-      pill.classList.toggle('ok', !!wrapperStatus && wrapperStatus.ok);
-      pill.classList.toggle('bad', !!wrapperStatus && !wrapperStatus.ok);
-      pill.lastElementChild.textContent = !wrapperStatus ? t('status.checking')
-        : !wrapperStatus.ok ? t('status.down')
-        : wrapperStatus.regions.length ? `wrapper-lite · ${wrapperStatus.regions.join(' / ').toUpperCase()}` : t('status.online');
-    }
-
-    async function loadStatus() {
-      renderStatus();
-      try {
-        const res = await fetch('/status');
-        const data = await res.json();
-        if (!res.ok || data.code !== 0) throw new Error();
-        wrapperStatus = { ok: true, regions: (data.regions || []).map(String) };
-      } catch {
-        wrapperStatus = { ok: false, regions: [] };
-      }
-      renderStatus();
-    }
-
     $('reparse').addEventListener('click', loadVariants);
 
     // 下载在页面内进行，离开页面会中断
@@ -802,7 +755,6 @@
         renderVariants();
       }
       renderAlert();
-      renderStatus();
     });
 
     if (!adamId) {
@@ -810,7 +762,6 @@
     } else {
       loadMeta();
       loadVariants();
-      loadStatus();
       AmDecrypt.collectGarbage();
       // 歌词界面（ES module）：点击「歌词」按钮或播放条时才获取歌词；在外壳中时由外壳的播放条提供
       if (!player.shared) import('/assets/lyrics/panel.mjs')

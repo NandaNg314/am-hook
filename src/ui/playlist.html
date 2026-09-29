@@ -22,7 +22,6 @@
         <input name="q" type="search" enterkeyhint="search" autocomplete="off" data-i18n-attr="placeholder=search.placeholder,aria-label=search.placeholder">
       </form>
       <div class="topbar-right">
-        <span class="status-pill" id="status" aria-live="polite"><span class="status-dot"></span><span>wrapper-lite</span></span>
         <button class="btn lang-btn" type="button" data-lang-toggle>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
           <span class="lang-label"></span>
@@ -346,6 +345,24 @@
 
     const songs = () => tracks.filter((track) => track.type === 'songs');
 
+    /** 曲目艺人：在 artistName 中依次找到各关联艺人的名字并链接到艺人页，分隔符（&、逗号、feat. 等）保留为文字 */
+    function trackArtists(track) {
+      const name = track.attributes.artistName || '';
+      const artists = ((track.relationships && track.relationships.artists && track.relationships.artists.data) || [])
+        .filter((artist) => artist.attributes && artist.attributes.name);
+      const parts = [];
+      let pos = 0;
+      for (const artist of artists) {
+        const i = name.indexOf(artist.attributes.name, pos);
+        if (i < 0) continue;
+        if (i > pos) parts.push(name.slice(pos, i));
+        parts.push(el('a', { href: pagePath(artist), textContent: artist.attributes.name }));
+        pos = i + artist.attributes.name.length;
+      }
+      if (pos < name.length) parts.push(name.slice(pos));
+      return parts;
+    }
+
     /** 曲目行（官网 songs-list-row--playlist）：封面、歌名与艺人两行、专辑列、时长 */
     function renderTracks() {
       const chart = !!playlist.attributes.isChart;
@@ -371,7 +388,7 @@
         const main = el('div', { className: 'track-main' },
           el('div', { className: 'track-line' }, title, a.contentRating === 'explicit' ? explicitBadge() : '',
             video ? el('span', { className: 'track-kind', innerHTML: ICON.video, title: t('album.video') }) : null),
-          el('div', { className: 'track-artist', textContent: a.artistName || '' }));
+          el('div', { className: 'track-artist' }, ...trackArtists(track)));
         const albumHref = albumPath(track);
         const albumCol = albumHref && a.albumName ? el('a', { className: 'track-album', href: albumHref, textContent: a.albumName })
           : el('span', { className: 'track-album', textContent: a.albumName || '' });
@@ -470,7 +487,13 @@
         track: track.id,
         name: a.name,
         artist: a.artistName,
+        // 各位艺人的名字与本站艺人页路径，歌词界面用来把艺人行中的名字做成链接
+        artists: ((track.relationships && track.relationships.artists && track.relationships.artists.data) || [])
+          .filter((artist) => artist.attributes && artist.attributes.name)
+          .map((artist) => ({ name: artist.attributes.name, href: pagePath(artist) })),
         album: a.albumName || playlist.attributes.name,
+        href: pagePath(track),
+        albumHref: a.albumName ? albumPath(track) : '',
         artwork: artUrl(a.artwork || coverArtwork(), 600),
         duration: a.durationInMillis || 0,
       };
@@ -510,32 +533,8 @@
       renderHero();
     });
 
-    /* ---------- wrapper-lite 状态 ---------- */
-    let wrapperStatus = null;
-    function renderStatus() {
-      const pill = $('status');
-      pill.classList.toggle('ok', !!wrapperStatus && wrapperStatus.ok);
-      pill.classList.toggle('bad', !!wrapperStatus && !wrapperStatus.ok);
-      pill.lastElementChild.textContent = !wrapperStatus ? t('status.checking')
-        : !wrapperStatus.ok ? t('status.down')
-        : wrapperStatus.regions.length ? `wrapper-lite · ${wrapperStatus.regions.join(' / ').toUpperCase()}` : t('status.online');
-    }
-    async function loadStatus() {
-      renderStatus();
-      try {
-        const res = await fetch('/status');
-        const data = await res.json();
-        if (!res.ok || data.code !== 0) throw new Error();
-        wrapperStatus = { ok: true, regions: (data.regions || []).map(String) };
-      } catch {
-        wrapperStatus = { ok: false, regions: [] };
-      }
-      renderStatus();
-    }
-
     // 切换语言：名称、简介和货架标题由 amp-api 按语言返回，重新获取
     AmI18n.onChange(() => {
-      renderStatus();
       renderAlert();
       if (playlist) render();
       if (playlistId) loadPlaylist();
@@ -545,7 +544,6 @@
       showAlert('error', () => t('playlist.badId'));
     } else {
       loadPlaylist();
-      loadStatus();
       AmDecrypt.collectGarbage();
     }
   </script>

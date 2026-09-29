@@ -55,9 +55,11 @@ export function toAmllLines(song, options) {
  * root：#lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
  * adamId：歌曲页固定的歌曲；外壳页不传，改用返回值的 setTrack() 跟随正在播放的歌曲。
- * getMeta() 返回当前的 { title, artist, artwork }，变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
+ * getMeta() 返回当前的 { title, artist, artists, artwork }（artists: [{ name, href }]，用于艺人链接），
+ * 变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
+ * navigate(href)：外壳传入，点击艺人链接时关闭歌词界面并由它在 iframe 中打开；省略时按普通链接跳转。
  */
-export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getMeta, t, notify, onLangChange }) {
+export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getMeta, t, notify, onLangChange, navigate }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
   const options = { translation: $('[data-option="translation"]'), pronunciation: $('[data-option="pronunciation"]') };
@@ -136,7 +138,8 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
     if (meta.artwork) { if (art.getAttribute('src') !== meta.artwork) art.src = meta.artwork; } else art.removeAttribute('src');
     art.hidden = !meta.artwork;
     $('.lyrics-title').textContent = meta.title || t('player.unknownTitle');
-    $('.lyrics-artist').textContent = meta.artist || '';
+    // 艺人名链接到艺人页（见 player.js 的 artistNodes）
+    $('.lyrics-artist').replaceChildren(...globalThis.AmHook.artistNodes(meta.artist || '', meta.artists));
   }
 
   function renderCredits() {
@@ -312,6 +315,13 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
     toggleOpen();
   });
   $('.lyrics-close').addEventListener('click', hide);
+  $('.lyrics-artist').addEventListener('click', (event) => {
+    const link = event.target.closest('a');
+    if (!link || !navigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    hide();
+    navigate(link.getAttribute('href'));
+  });
   for (const [name, button] of Object.entries(options)) {
     button.addEventListener('click', () => {
       shown[name] = !shown[name];
