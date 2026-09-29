@@ -6,6 +6,7 @@
  *                         data-i18n-attr="title=key,aria-label=key2"（属性）
  *   setLang / toggle      切换语言并记住选择；onChange(fn) 在切换后回调，页面据此重绘动态内容
  *   catalogLang(cc)       异步：当前语言在该地区 amp-api 可用的 l 值（地区不支持时为 undefined）
+ *   defaultLang(cc)       异步：该地区的默认语言（如 cn → zh-Hans-CN），用于请求歌词
  *   [data-lang-toggle]    页面上的切换按钮，自动绑定
  * 初始语言：上次的选择，否则按浏览器语言（zh* 为中文，其余为英文）。
  */
@@ -513,9 +514,10 @@
    * amp-api 的 l 参数。地区不支持的语言不会报错，而是静默回退到地区默认语言（如 cn 只支持 zh-Hans-CN / en-GB，
    * 传 en-US 仍返回中文），所以按各地区的 supportedLanguageTags 选择；
    * 地区不支持当前界面语言时返回 undefined（不传 l），取不到地区信息时退回常见写法。
-   * 地区表取自 /amp/v1/storefronts（一次返回全部地区，几乎不变），缓存在 localStorage，过期后才重新拉取。
+   * 地区表取自 /amp/v1/storefronts（一次返回全部地区，几乎不变），缓存在 localStorage，过期后才重新拉取；
+   * 每个地区记为 { tags: supportedLanguageTags, default: defaultLanguageTag }。
    */
-  const STOREFRONTS_KEY = 'am-hook:storefront-langs';
+  const STOREFRONTS_KEY = 'am-hook:storefront-langs:v2';
   const STOREFRONTS_TTL = 30 * 24 * 3600 * 1000;
   let storefrontsPromise = null;
 
@@ -527,8 +529,10 @@
       if (!res.ok) throw new Error(`storefronts ${res.status}`);
       const data = await res.json();
       for (const item of (data && data.data) || []) {
-        const tags = item && item.attributes && item.attributes.supportedLanguageTags;
-        if (item.id && Array.isArray(tags)) map[String(item.id).toLowerCase()] = tags;
+        const a = item && item.attributes;
+        if (item.id && a && Array.isArray(a.supportedLanguageTags)) {
+          map[String(item.id).toLowerCase()] = { tags: a.supportedLanguageTags, default: a.defaultLanguageTag || a.supportedLanguageTags[0] };
+        }
       }
       path = data && data.next;
     }
@@ -556,13 +560,20 @@
     return storefrontsPromise;
   }
 
-  async function supportedTags(cc) {
+  async function storefront(cc) {
+    if (!/^[a-z]{2}$/i.test(cc || '')) return null;
     const map = await storefrontLangs();
-    return (map && map[cc]) || null;
+    return (map && map[cc.toLowerCase()]) || null;
+  }
+  /** 地区的默认语言（如 cn → zh-Hans-CN）；取不到地区信息时为 undefined */
+  async function defaultLang(cc) {
+    const sf = await storefront(cc);
+    return (sf && sf.default) || undefined;
   }
   async function catalogLang(cc) {
     const zh = lang === 'zh';
-    const tags = /^[a-z]{2}$/i.test(cc || '') ? await supportedTags(cc.toLowerCase()) : null;
+    const sf = await storefront(cc);
+    const tags = sf && sf.tags;
     if (!tags) return zh ? 'zh-Hans-CN' : 'en-US';
     for (const re of zh ? [/^zh-Hans/i, /^zh/i] : [/^en-US$/i, /^en/i]) {
       const hit = tags.find((tag) => re.test(tag));
@@ -586,6 +597,7 @@
     toggle: () => setLang(lang === 'zh' ? 'en' : 'zh'),
     onChange: (fn) => listeners.add(fn),
     catalogLang,
+    defaultLang,
     get lang() { return lang; },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

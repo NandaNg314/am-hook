@@ -66,11 +66,14 @@ struct LyricsData {
     lyrics: Option<String>,
 }
 
-/// 从 wrapper-lite `/lyrics` 接口获取歌曲的 TTML 歌词（响应中的 `data.lyrics`）
-pub async fn fetch_lyrics(client: &Client, wrapper_url: &str, adam_id: &str) -> Result<Lyrics, String> {
-    let resp = client
-        .get(format!("{wrapper_url}/lyrics"))
-        .query(&[("adamId", adam_id)])
+/// 从 wrapper-lite `/lyrics` 接口获取歌曲的 TTML 歌词（响应中的 `data.lyrics`）。
+/// `language` 为歌曲所在地区的默认语言（如 `zh-Hans-CN`），有值时原样转发
+pub async fn fetch_lyrics(client: &Client, wrapper_url: &str, adam_id: &str, language: Option<&str>) -> Result<Lyrics, String> {
+    let mut request = client.get(format!("{wrapper_url}/lyrics")).query(&[("adamId", adam_id)]);
+    if let Some(language) = language {
+        request = request.query(&[("language", language)]);
+    }
+    let resp = request
         .timeout(Duration::from_secs(15))
         .send()
         .await

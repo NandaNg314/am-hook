@@ -513,6 +513,7 @@
       return {
         id: `${adamId}:${v.group_id}`,
         track: adamId,
+        country: meta.country || country,
         codecs: v.codecs,
         m3u8Url: v.m3u8Url,
         hookM3u8Url: v.hookM3u8Url,
@@ -769,7 +770,7 @@
           root: $('lyrics-overlay'),
           toggle: $('player').querySelector('.player-lyrics'),
           bar: $('player'),
-          player, adamId, t, notify: toast,
+          player, adamId, country, t, notify: toast,
           getMeta: () => meta,
           onLangChange: AmI18n.onChange,
         }))

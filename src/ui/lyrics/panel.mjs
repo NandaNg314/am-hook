@@ -1,8 +1,8 @@
 /*
  * 在线播放的歌词界面：用 AMLL（Apple Music-like Lyrics，见 browser/amll）显示歌词，接到 AmPlayer 上。
  *
- *   歌词     GET /lyrics/<adamId>（服务端向 wrapper-lite /lyrics 获取的 TTML 原文），
- *            首次打开歌词界面时才请求并缓存；没有歌词时隐藏按钮。
+ *   歌词     GET /lyrics/<adamId>?language=<地区默认语言>（服务端向 wrapper-lite /lyrics 获取的 TTML 原文），
+ *            language 取歌曲所在地区的 defaultLanguageTag（AmI18n.defaultLang），取不到时不传；首次打开歌词界面时才请求并缓存；没有歌词时隐藏按钮。
  *            ttml.mjs 解析 Apple TTML，toAmllLines() 转成 AMLL 的 LyricLine
  *   时间     每帧把 player.transport().currentTime 交给 DomLyricPlayer，点击歌词行跳转并继续播放
  *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景
@@ -54,12 +54,13 @@ export function toAmllLines(song, options) {
 /**
  * root：#lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
- * adamId：歌曲页固定的歌曲；外壳页不传，改用返回值的 setTrack() 跟随正在播放的歌曲。
- * getMeta() 返回当前的 { title, artist, artists, artwork }（artists: [{ name, href }]，用于艺人链接），
+ * adamId / country：歌曲页固定的歌曲及其地区；外壳页不传，改用返回值的 setTrack(id, country) 跟随正在播放的歌曲。
+ * getMeta() 返回当前的 { title, artist, artists, artwork, country? }（artists: [{ name, href }]，用于艺人链接；
+ * 有 country 时优先作为请求歌词的地区），
  * 变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
  * navigate(href)：外壳传入，点击艺人链接时关闭歌词界面并由它在 iframe 中打开；省略时按普通链接跳转。
  */
-export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getMeta, t, notify, onLangChange, navigate }) {
+export function mountLyrics({ root, toggle, bar, player, adamId: initialId, country: initialCountry, getMeta, t, notify, onLangChange, navigate }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
   const options = { translation: $('[data-option="translation"]'), pronunciation: $('[data-option="pronunciation"]') };
@@ -93,6 +94,7 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
 
   const barHome = document.createComment('player');
   let adamId = null;
+  let country = null;
   let song = null;
   let request = null;
   let unavailable = false;
@@ -241,7 +243,9 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
     if (!request) {
       const id = adamId;
       toggle.setAttribute('aria-busy', 'true');
-      request = fetch(`/lyrics/${id}`)
+      request = Promise.resolve(globalThis.AmI18n?.defaultLang(getMeta()?.country || country))
+        .catch(() => undefined)
+        .then((language) => fetch(`/lyrics/${id}${language ? `?language=${encodeURIComponent(language)}` : ''}`))
         .then(async (response) => {
           if (response.status === 404) return null;
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -276,10 +280,11 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
   }
 
   /** 切换歌曲（id 为空表示没有歌曲）：歌词界面打开时取回新歌词原地刷新，没有歌词时关闭 */
-  function setTrack(id) {
+  function setTrack(id, cc) {
     id = id || null;
     if (id === adamId) return;
     adamId = id;
+    country = cc || null;
     song = null;
     request = null;
     unavailable = false;
@@ -308,7 +313,7 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, getM
     fetchLyrics().then(() => { if (song) show(); });
   }
 
-  setTrack(initialId);
+  setTrack(initialId, initialCountry);
   toggle.addEventListener('click', toggleOpen);
   bar.addEventListener('click', (event) => {
     if (open || unavailable || !adamId || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;

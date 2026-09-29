@@ -252,7 +252,7 @@
     }
   }
 
-  /** entry: { track, name, artist, artists, album, href, albumHref, artwork } → play() 使用的 item */
+  /** entry: { track, country, name, artist, artists, album, href, albumHref, artwork } → play() 使用的 item */
   /** 就地打乱 list[start..]（Fisher-Yates） */
   function shuffleFrom(list, start) {
     for (let i = list.length - 1; i > start; i--) {
@@ -276,6 +276,7 @@
     return {
       id: `${entry.track}:${best.group_id}`,
       track: entry.track,
+      country: entry.country,
       codecs: best.codecs,
       m3u8Url: base + best.uri,
       hookM3u8Url: hook ? `${location.origin}/${base + best.uri}` : null,

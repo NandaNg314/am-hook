@@ -155,7 +155,7 @@
           navigate,
           onLangChange: AmI18n.onChange,
         });
-        const follow = (current) => lyrics.setTrack(current && current.track);
+        const follow = (current) => lyrics.setTrack(current && current.track, current && current.country);
         follow(player.current);
         player.onChange(follow);
       })

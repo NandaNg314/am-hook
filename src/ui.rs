@@ -258,15 +258,26 @@ pub async fn lyrics_asset_handler(
     static_response(&headers, content_type, body)
 }
 
+#[derive(Deserialize)]
+pub struct LyricsQuery {
+    /// 歌曲所在地区的默认语言（BCP 47，如 `zh-Hans-CN`），转发给 wrapper-lite
+    pub language: Option<String>,
+}
+
 /// 歌曲的 TTML 歌词：向 wrapper-lite `/lyrics` 获取后原样返回 XML。没有歌词时返回 404。
 pub async fn lyrics_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(adam_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<LyricsQuery>,
 ) -> Response<Body> {
     if adam_id.is_empty() || !adam_id.chars().all(|c| c.is_ascii_digit()) {
         return bad_request("Invalid adamId");
     }
-    match fetch_lyrics(&state.http_client, &state.config.wrapper_url, &adam_id).await {
+    let language = query.language.as_deref().filter(|l| !l.is_empty());
+    if language.is_some_and(|l| l.len() > 35 || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        return bad_request("Invalid language");
+    }
+    match fetch_lyrics(&state.http_client, &state.config.wrapper_url, &adam_id, language).await {
         Ok(Lyrics::Found(ttml)) => Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/ttml+xml; charset=utf-8")
