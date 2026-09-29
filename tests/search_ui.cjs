@@ -40,6 +40,7 @@ const shots = process.env.SEARCH_UI_SHOTS;
       await input.press('End');
       await input.pressSequentially(' ', { delay: 20 });
       await frame.locator('#suggest .suggest-item').first().waitFor({ timeout: 15000 });
+      await page.waitForTimeout(1000);
       await page.screenshot({ path: path.join(shots, 'search-suggest.png') });
       await input.press('Escape');
     }

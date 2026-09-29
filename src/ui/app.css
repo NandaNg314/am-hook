@@ -291,7 +291,7 @@ body.home-page {
 /* 搜索建议：挂在搜索框下方的下拉列表 */
 .search { position: relative; }
 .suggest {
-  position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; right: 0; max-height: min(420px, 60vh); padding: 6px;
+  position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; right: 0; max-height: min(640px, 70vh); padding: 6px;
   overflow-y: auto; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow);
   text-align: left; animation: menu-in .15s ease-out;
 }

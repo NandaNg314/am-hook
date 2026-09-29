@@ -311,7 +311,7 @@
         kind, mv, href: '/' + link, title: attrs.name || resource.id, artist: attrs.artistName || attrs.curatorName || '', album: attrs.albumName || '',
         year: (attrs.releaseDate || '').slice(0, 4), genre: (attrs.genreNames || [])[0] || '',
         artwork: attrs.artwork, duration: attrs.durationInMillis, explicit: attrs.contentRating === 'explicit',
-        traits: attrs.audioTraits || [], has4K: !!attrs.has4K,
+        traits: attrs.audioTraits || [], has4K: !!attrs.has4K, subtitle: attrs.subtitle || '',
       };
     }
 
@@ -342,10 +342,12 @@
       const controller = suggestController = new AbortController();
       try {
         await statusReady;
+        // 参数与官网一致（types 相同，才能拿到与官网相同的直达结果与顺序）；本站打不开的类型在 renderSuggest 里跳过
         const data = await amp(`/v1/catalog/${storefront()}/search/suggestions`, {
-          term, l: await catalogLang(), platform: 'web', kinds: 'terms,topResults', types: 'albums,songs,music-videos,playlists,artists',
-          'fields[albums]': 'artistName,artwork,contentRating,name,playParams,url',
-          'limit[results:terms]': '5', 'limit[results:topResults]': '5', 'omit[resource]': 'autos', with: 'naturalLanguage',
+          term, l: await catalogLang(), platform: 'web', kinds: 'terms,topResults',
+          types: 'activities,artists,albums,editorial-items,music-movies,music-videos,playlists,record-labels,songs,stations,tv-episodes',
+          'fields[albums]': 'artistName,artwork,contentRating,name,playParams,url', 'fields[artists]': 'url,name,artwork',
+          'limit[results:terms]': '5', 'limit[results:topResults]': '10', 'omit[resource]': 'autos', 'art[url]': 'c,f', with: 'naturalLanguage',
         }, controller.signal);
         if (controller !== suggestController || document.activeElement !== input) return;
         renderSuggest(term, (data.results && data.results.suggestions) || []);
@@ -383,7 +385,8 @@
           const title = el('span', 'suggest-title', item.title);
           if (item.explicit) title.append(explicitBadge());
           const text = el('span', 'suggest-text');
-          text.append(title, el('span', 'suggest-sub', [t(KIND_LABELS[item.kind]), item.artist].filter(Boolean).join(' · ')));
+          // 与官网一致：接口给了 subtitle 就用它，否则为“类型 · 艺人 / 歌单作者”
+          text.append(title, el('span', 'suggest-sub', item.subtitle || [t(KIND_LABELS[item.kind]), item.artist].filter(Boolean).join(' · ')));
           option.append(artNode(item.mv ? 'suggest-art mv' : item.kind === 'artist' ? 'suggest-art round' : 'suggest-art', artUrl(item.artwork, 80, 80)), text);
         } else continue;
         option.id = `suggest-${suggestItems.length}`;
