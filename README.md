@@ -45,6 +45,11 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 
 - Chinese and English UI; the top-right button switches instantly (remembered; the first visit follows the browser language). Playback and downloads in progress are not interrupted.
 - The home page shows wrapper-lite status and recently opened songs and MVs; its footer links to this GitHub repository and credits the projects am-hook builds on.
+- Persistent player bar: like music.apple.com, the player bar stays at the bottom and playback continues while you move between pages.
+  - A queue started on an album, playlist or artist page keeps playing in order after you leave the page, including previous / next from system media controls. Playing a different song on its song page ends the queue; switching quality of the same song keeps it.
+  - The address bar, page title and browser Back / Forward follow the current page, so links can be shared and a reload stays on the same page.
+  - Space and arrow keys control playback on every page. Playing a music video pauses the music and vice versa.
+  - How it works: top-level page requests (`Sec-Fetch-Dest: document`) get the shell page `shell.html`, which owns the player bar, audio, decryption workers and lyrics view; site pages open in its full-screen iframe. Browsers that do not send the header get the page itself with its own player bar (playback stops when navigating).
 
 ### Songs
 
@@ -54,7 +59,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
   - `--hook` only: download through the server; an **external players** grid (14 players including VLC, PotPlayer, mpv, IINA, Infuse, nPlayer and MX Player, using the same link schemes as OpenList) that plays any variant from the server-decrypted media m3u8, current-platform players first; and **Copy URL**, as M3U8 (for players) or media file (for download managers such as IDM). Players must be installed and register their link scheme; desktop VLC, for example, registers no `vlc://` handler by default.
   - The "External player" button at the top opens the player grid for the highest quality.
 - Built-in player: MSE with browser-side decryption. ALAC plays losslessly via FLAC-in-MP4 when the browser lacks ALAC support. EC-3 falls back to multichannel PCM when MSE is unavailable, with a notice about the spatial-audio limitation. Downloads keep the original codec. In `--hook` mode, other codecs may use native HLS or a direct media file. Space, arrow keys and system media controls are supported.
-- Lyrics: when a song has lyrics, a Lyrics button appears on the player bar. The view is rendered by [AMLL (Apple Music-like Lyrics)](https://github.com/amll-dev/applemusic-like-lyrics): word- and line-synced highlighting with spring scrolling, background vocals, duets, translation and pronunciation, interlude dots, and click-to-seek. Its flowing background is AMLL's mesh gradient generated from the artwork. Esc closes it.
+- Lyrics: when the playing song has lyrics, a Lyrics button appears on the player bar (available on every page; it switches to the new song's lyrics when the track changes). The view is rendered by [AMLL (Apple Music-like Lyrics)](https://github.com/amll-dev/applemusic-like-lyrics): word- and line-synced highlighting with spring scrolling, background vocals, duets, translation and pronunciation, interlude dots, and click-to-seek. Its flowing background is AMLL's mesh gradient generated from the artwork. Esc closes it.
 
 ### Music Videos
 
@@ -126,9 +131,9 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | Song track decryption template JSON from wrapper-lite `/key` |
 | `GET /lyrics/<adamId>` | TTML lyrics from wrapper-lite `/lyrics`, XML unchanged; 404 when the song has none |
 | `GET /parse/mv/<adamId>` | MV master playlist text and final CDN URL |
-| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, in-page playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the song page |
-| `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | Playlist page (editorial and public user playlists: motion artwork like the album page, tracks with artwork / artist / album columns, in-page playback queue, featured-artists and more-by-curator shelves; data from the same amp-api `playlists` request as music.apple.com, fetched through `/amp`) |
-| `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | Artist page (header like music.apple.com: motion video, wide image or circular portrait from the catalog data; latest release, top songs with in-page playback, album / music-video / playlist / similar-artist shelves with See All, bio; data from the same amp-api `artists` request as music.apple.com, fetched through `/amp`). Artist names on song, music-video and album pages (each artist of a multi-artist line separately) and artist shelves link here |
+| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the song page |
+| `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | Playlist page (editorial and public user playlists: motion artwork like the album page, tracks with artwork / artist / album columns, playback queue, featured-artists and more-by-curator shelves; data from the same amp-api `playlists` request as music.apple.com, fetched through `/amp`) |
+| `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | Artist page (header like music.apple.com: motion video, wide image or circular portrait from the catalog data; latest release, top songs with a playback queue, album / music-video / playlist / similar-artist shelves with See All, bio; data from the same amp-api `artists` request as music.apple.com, fetched through `/amp`). Artist names on song, music-video and album pages (each artist of a multi-artist line separately) and artist shelves link here |
 | `GET /amp/v1/catalog/<path>?<query>` | Proxies Apple Music catalog API (`amp-api-edge.music.apple.com/v1/catalog/...`, used by home page search) with the music.apple.com web developer token; query passed through unchanged |
 | `GET /amp/v1/storefronts/<cc>` | Storefront info from amp-api; pages pick the `l` catalog language from its `supportedLanguageTags` (an unsupported `l` silently falls back to the storefront default, e.g. `cn` only supports `zh-Hans-CN` / `en-GB`) |
 | `GET /mv/webplayback/<adamId>`, `POST /mv/license` | MV relays to wrapper-lite `/webplayback` and `/license` |
@@ -177,7 +182,7 @@ Browser-side tests are plain Node scripts:
 |---|---|
 | Offline, Node only | `node --test tests/player_*.cjs`, `node tests/mv_hls.cjs`, `node tests/mv_captions.cjs` |
 | Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>` |
-| Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`), `node tests/search_ui.cjs <playwright> [base]`, `node tests/album_ui.cjs <playwright> [base]`, `node tests/playlist_ui.cjs <playwright> [base]`, `node tests/artist_ui.cjs <playwright> [base]` (need access to music.apple.com) |
+| Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`), `node tests/search_ui.cjs <playwright> [base]`, `node tests/album_ui.cjs <playwright> [base]`, `node tests/playlist_ui.cjs <playwright> [base]`, `node tests/artist_ui.cjs <playwright> [base]` (need access to music.apple.com), `node tests/shell_ui.cjs <playwright> [base]` (persistent player bar: playback across navigation, queue, Back / Forward, lyrics) |
 
 `<playwright>` is the path to a Playwright package; live tests default to `http://127.0.0.1:18888` (MV) or `AM_HOOK_URL` / `http://127.0.0.1:8888` (ALAC).
 
@@ -197,8 +202,9 @@ src/
   ui.rs                Web endpoints (status, parse, templates, lyrics, MV relays, static assets)
   ui/
     home.html / song.html / mv.html / app.css / mv.css   Pages and styles
+    shell.html         Shell page: persistent player bar and lyrics view; site pages open in its iframe
     i18n.js            Chinese / English strings
-    player.js          Song player (MSE)
+    player.js          Song player (MSE) and playback queue; pages inside the shell share its player via pagePlayer()
     decrypt.js         Song decryption: m3u8 parsing, Worker pool, templates, download and OPFS
     hook-worker.js     Worker: wasm decryption and OPFS writes
     hook.wasm          Build output of crates/am-wasm
