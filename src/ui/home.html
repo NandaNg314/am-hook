@@ -313,13 +313,21 @@
       };
     }
 
-    function qualityBadges(item) {
-      if (item.mv) return item.has4K ? ['4K'] : [];
-      const badges = [];
-      if (item.traits.includes('hi-res-lossless')) badges.push('Hi-Res');
-      else if (item.traits.includes('lossless')) badges.push(t('q.lossless'));
-      if (item.traits.includes('atmos')) badges.push('Atmos');
-      return badges;
+    /** 音质标志：歌曲用 app.css 的 .q-icon 图标（与播放条同一套），MV 用 4K 文字标签 */
+    const QUALITY_LABELS = { hires: 'Hi-Res Lossless', lossless: 'Lossless', atmos: 'Dolby Atmos' };
+    function qualityBadges(item, mvClass = '') {
+      if (item.mv) return item.has4K ? [el('span', `q-badge ${mvClass}`.trim(), '4K')] : [];
+      const keys = [];
+      if (item.traits.includes('hi-res-lossless')) keys.push('hires');
+      else if (item.traits.includes('lossless')) keys.push('lossless');
+      if (item.traits.includes('atmos')) keys.push('atmos');
+      return keys.map((key) => {
+        const icon = el('span', `q-icon q-icon--${key}`);
+        icon.title = QUALITY_LABELS[key];
+        icon.setAttribute('role', 'img');
+        icon.setAttribute('aria-label', QUALITY_LABELS[key]);
+        return icon;
+      });
     }
 
     // 建议下拉框：search/suggestions 的 terms（补全词）与 topResults（直达歌曲 / MV）
@@ -536,7 +544,7 @@
       row.append(cover, main);
       if (item.kind === 'song' || item.mv) {
         const meta = el('span', 'row-meta');
-        meta.append(...qualityBadges(item).map((badge) => el('span', 'q-badge', badge)), el('span', 'row-time', fmtDuration(item.duration)));
+        meta.append(...qualityBadges(item), el('span', 'row-time', fmtDuration(item.duration)));
         row.append(meta);
       }
       return row;
@@ -550,7 +558,7 @@
       const main = el('span', 'row-main');
       main.append(title, el('span', 'row-sub', [item.artist, item.album].filter(Boolean).join(' · ')));
       const meta = el('span', 'row-meta');
-      meta.append(...qualityBadges(item).map((badge) => el('span', 'q-badge', badge)), el('span', 'row-time', fmtDuration(item.duration)));
+      meta.append(...qualityBadges(item), el('span', 'row-time', fmtDuration(item.duration)));
       row.append(artNode('row-cover', artUrl(item.artwork, 96, 96)), main, meta);
       return row;
     }
@@ -584,7 +592,7 @@
       card.href = item.href;
       const thumb = artNode('mv-thumb', artUrl(item.artwork, 480, 270));
       if (item.duration) thumb.append(el('span', 'mv-time', fmtDuration(item.duration)));
-      thumb.append(...qualityBadges(item).map((badge) => el('span', 'q-badge mv-q', badge)));
+      thumb.append(...qualityBadges(item, 'mv-q'));
       const title = el('span', 'recent-title', item.title);
       if (item.explicit) title.append(explicitBadge());
       card.append(thumb, title, el('span', 'recent-sub', item.artist));

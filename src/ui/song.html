@@ -143,7 +143,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { pagePlayer, detectMode, artistNodes, qualityBadge } = window.AmHook;
+    const { pagePlayer, detectMode, artistNodes, qualityBadge, qualityIcon } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -211,13 +211,13 @@
       const variantRank = tags.length ? 1 : 0;
       if (g.includes('alac')) {
         const spec = [v.bit_depth && `${v.bit_depth}-bit`, v.sample_rate && `${(v.sample_rate / 1000).toFixed(1).replace(/\.0$/, '')} kHz`].filter(Boolean).join(' / ');
-        return { group: t('q.lossless'), rank: 0, kbps: 0, name: `ALAC${spec ? ' · ' + spec : ''}`, badge: ['Lossless', 'accent'], tags, sub: variantRank };
+        return { group: t('q.lossless'), rank: 0, kbps: 0, name: `ALAC${spec ? ' · ' + spec : ''}`, tags, sub: variantRank };
       }
       if (g.includes('atmos')) {
         // GROUP-ID 形如 atmos-2768：首位是版本号，后三位才是码率（768 kbps）
         const raw = Number((g.match(/atmos-(\d+)/) || [])[1]) || 0;
         const kbps = raw >= 1000 ? raw % 1000 : raw;
-        return { group: t('q.atmos'), rank: 1, kbps, name: `Dolby Atmos${kbps ? ' · ' + kbps + ' kbps' : ''}`, badge: ['Atmos', 'accent'], tags, sub: variantRank };
+        return { group: t('q.atmos'), rank: 1, kbps, name: `Dolby Atmos${kbps ? ' · ' + kbps + ' kbps' : ''}`, tags, sub: variantRank };
       }
       if (g.includes('he-')) {
         const kbps = Number((g.match(/stereo-(\d+)/) || [])[1]) || 0;
@@ -547,7 +547,7 @@
         playBtn.addEventListener('click', () => player.play(playItem(v)));
 
         const name = el('div', { className: 'variant-name' }, v.info.name,
-          v.info.badge && el('span', { className: `badge ${v.info.badge[1]}`, textContent: v.info.badge[0] }),
+          qualityIcon(qualityBadge(v)),
           ...v.info.tags.map((tag) => el('span', { className: 'badge', textContent: tag })),
           el('span', { className: `badge ${playable ? 'ok' : 'warn'}`, textContent: t(playable ? 'row.playable' : hook ? 'row.external' : 'row.downloadOnly') }));
         const detail = el('div', { className: 'variant-detail' },

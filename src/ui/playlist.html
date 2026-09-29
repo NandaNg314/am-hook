@@ -110,7 +110,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { pagePlayer, formatTime } = window.AmHook;
+    const { pagePlayer, formatTime, qualityIcon } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -270,10 +270,10 @@
 
       const traits = a.audioTraits || [];
       const badges = [];
-      if (traits.includes('hi-res-lossless')) badges.push('Hi-Res Lossless');
-      else if (traits.includes('lossless')) badges.push(t('q.lossless'));
-      if (traits.includes('atmos')) badges.push('Dolby Atmos');
-      $('badges').replaceChildren(...badges.map((badge) => el('span', { className: 'q-badge', textContent: badge })));
+      if (traits.includes('hi-res-lossless')) badges.push('hires');
+      else if (traits.includes('lossless')) badges.push('lossless');
+      if (traits.includes('atmos')) badges.push('atmos');
+      $('badges').replaceChildren(...badges.map((key) => qualityIcon(key)));
 
       const desc = a.description || a.editorialNotes || {};
       const notes = plainText(desc.standard || desc.short || '');

@@ -110,7 +110,7 @@
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>
   <script>
-    const { pagePlayer, formatTime } = window.AmHook;
+    const { pagePlayer, formatTime, qualityIcon } = window.AmHook;
     const { AmDecrypt, AmI18n } = window;
     const { t } = AmI18n;
     AmI18n.apply();
@@ -246,12 +246,13 @@
       $('sub').textContent = [(a.genreNames || [])[0], year].filter(Boolean).join(' · ');
 
       const traits = a.audioTraits || [];
+      // 音质标志与播放条同一套图标
       const badges = [];
-      if (traits.includes('hi-res-lossless')) badges.push('Hi-Res Lossless');
-      else if (traits.includes('lossless')) badges.push(t('q.lossless'));
-      if (traits.includes('atmos')) badges.push('Dolby Atmos');
-      if (a.isMasteredForItunes) badges.push(t('album.digitalMaster'));
-      $('badges').replaceChildren(...badges.map((badge) => el('span', { className: 'q-badge', textContent: badge })));
+      if (traits.includes('hi-res-lossless')) badges.push('hires');
+      else if (traits.includes('lossless')) badges.push('lossless');
+      if (traits.includes('atmos')) badges.push('atmos');
+      if (a.isMasteredForItunes) badges.push('adm');
+      $('badges').replaceChildren(...badges.map((key) => qualityIcon(key)));
 
       const notes = plainText((a.editorialNotes && (a.editorialNotes.standard || a.editorialNotes.short)) || '');
       $('notes').hidden = !notes;
