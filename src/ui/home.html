@@ -433,8 +433,13 @@
     input.addEventListener('blur', closeSuggest);
     input.addEventListener('focus', () => { if (input.value.trim()) scheduleSuggest(); });
 
-    // 搜索结果：/v1/catalog/{storefront}/search，取歌曲、艺人、专辑、歌单与 MV 五组，next 分页地址同样经 /amp 代理
-    const GROUPS = [['song', 'search.songs'], ['artist', 'search.artists'], ['album', 'search.albums'], ['playlist', 'search.playlists'], ['music_video', 'search.mvs']];
+    // 搜索结果：/v1/catalog/{storefront}/search，取最佳结果与歌曲、艺人、专辑、歌单、MV 五组，next 分页地址同样经 /amp 代理
+    // 分组顺序按接口返回的 meta.results.order（与官网一致），缺失时用这里的顺序
+    const GROUPS = [['top', 'search.top'], ['artist', 'search.artists'], ['album', 'search.albums'], ['song', 'search.songs'], ['playlist', 'search.playlists'], ['music_video', 'search.mvs']];
+    const GROUP_LABELS = Object.fromEntries(GROUPS);
+    // 首屏每组显示的条数（能被 3 / 2 / 1 列与 6 / 4 / 2 列整除），其余点“加载更多”展开；最佳结果只取前 6 条
+    const PREVIEW = 12;
+    const TOP_LIMIT = 6;
     const search = { term: '', controller: null };
     // next 分页地址只带 groups / offset / term / types / l，其余参数需补上，否则返回空结果
     const PAGE_PARAMS = { limit: '21', platform: 'web', with: 'serverBubbles', 'omit[resource]': 'autos' };
@@ -462,14 +467,25 @@
           term, l: await catalogLang(), types: 'songs,albums,music-videos,playlists,artists', ...PAGE_PARAMS,
         }, controller.signal);
         if (controller !== search.controller) return;
-        const groups = GROUPS.filter(([key]) => data.results && data.results[key] && data.results[key].data && data.results[key].data.length);
+        const results = data.results || {};
+        const order = (data.meta && data.meta.results && data.meta.results.order) || GROUPS.map(([key]) => key);
+        const groups = order.filter((key) => GROUP_LABELS[key] && results[key] && results[key].data && results[key].data.some(toItem));
         resultsBody.replaceChildren(...(groups.length
-          ? groups.map(([key, label]) => groupNode(key, label, data.results[key], controller))
+          ? groups.map((key) => key === 'top' ? topNode(results.top) : groupNode(key, GROUP_LABELS[key], results[key], controller))
           : [statusNode(t('search.none'))]));
       } catch (error) {
         if (controller !== search.controller || error.name === 'AbortError') return;
         resultsBody.replaceChildren(statusNode(t('search.failed', { msg: error.message }), 'error'));
       }
+    }
+
+    /** 最佳结果：混合类型，按相关度排序，不分页 */
+    function topNode(block) {
+      const section = el('div', 'result-group top-group');
+      const list = el('div', 'song-grid');
+      list.append(...block.data.map(toItem).filter(Boolean).slice(0, TOP_LIMIT).map(topRow));
+      section.append(el('h3', 'group-title', t('search.top')), list);
+      return section;
     }
 
     function groupNode(key, label, block, controller) {
@@ -479,24 +495,50 @@
       const more = el('button', 'btn load-more', t('search.more'));
       more.type = 'button';
       let next = block.next;
-      const append = (resources) => list.append(...resources.map(toItem).filter(Boolean).map(render));
-      append(block.data);
-      more.hidden = !next;
+      // 已取到的条目；首屏只渲染前 PREVIEW 条，“加载更多”先展开已取到的，再按 next 翻页
+      const items = block.data.map(toItem).filter(Boolean);
+      let shown = 0;
+      const show = (count) => {
+        list.append(...items.slice(shown, count).map(render));
+        shown = Math.max(shown, Math.min(count, items.length));
+        more.hidden = shown >= items.length && !next;
+      };
+      show(PREVIEW);
       more.addEventListener('click', async () => {
+        if (shown < items.length) { show(items.length); return; }
         more.disabled = true;
         try {
           const data = await amp(next, PAGE_PARAMS, controller.signal);
           const page = (data.results && (data.results[key] || Object.values(data.results)[0])) || {};
-          append(page.data || []);
+          items.push(...(page.data || []).map(toItem).filter(Boolean));
           next = page.next;
+          show(items.length);
         } catch (error) {
           if (error.name === 'AbortError') return;
         }
         more.disabled = false;
-        more.hidden = !next;
       });
       section.append(el('h3', 'group-title', t(label)), list, more);
       return section;
+    }
+
+    /** 最佳结果的一行：与歌曲行同样的布局，副标题带类型；艺人圆形头像，MV 用 16:9 缩略图 */
+    function topRow(item) {
+      const row = el('a', 'song-row');
+      row.href = item.href;
+      const title = el('span', 'row-title', item.title);
+      if (item.explicit) title.append(explicitBadge());
+      const main = el('span', 'row-main');
+      main.append(title, el('span', 'row-sub', [t(KIND_LABELS[item.kind]), item.artist].filter(Boolean).join(' · ')));
+      const cover = item.mv ? artNode('row-cover wide', artUrl(item.artwork, 160, 90))
+        : artNode(item.kind === 'artist' ? 'row-cover round' : 'row-cover', artUrl(item.artwork, 96, 96));
+      row.append(cover, main);
+      if (item.kind === 'song' || item.mv) {
+        const meta = el('span', 'row-meta');
+        meta.append(...qualityBadges(item).map((badge) => el('span', 'q-badge', badge)), el('span', 'row-time', fmtDuration(item.duration)));
+        row.append(meta);
+      }
+      return row;
     }
 
     function songRow(item) {

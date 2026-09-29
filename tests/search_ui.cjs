@@ -44,25 +44,35 @@ const shots = process.env.SEARCH_UI_SHOTS;
       await input.press('Escape');
     }
 
-    // Results from /amp/v1/catalog/{sf}/search: songs and music videos
+    // Results from /amp/v1/catalog/{sf}/search: groups follow meta.results.order, Top Results first
     await input.fill('born again');
     await input.press('Enter');
     await frame.locator('.song-row').first().waitFor({ timeout: 15000 });
     assert.equal(new URL(page.url()).searchParams.get('q'), 'born again');
     assert.match(await frame.locator('#results-title').textContent(), /born again/);
-    const songHref = await frame.locator('.song-row').first().getAttribute('href');
+    const groupTitles = await frame.locator('.group-title').allTextContents();
+    const order = ['Top Results', 'Artists', 'Albums', 'Songs', 'Playlists', 'Music Videos'];
+    assert.equal(groupTitles[0], 'Top Results');
+    assert.deepEqual(groupTitles, order.filter((title) => groupTitles.includes(title)), 'groups in Apple Music order');
+    assert.ok(await frame.locator('.top-group .song-row').count() <= 6, 'at most 6 top results');
+    const songGroup = frame.locator('.result-group', { has: frame.locator('.group-title', { hasText: /^Songs$/ }) });
+    const songHref = await songGroup.locator('.song-row').first().getAttribute('href');
     assert.match(songHref, /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/song\/[^/]+\/\d+$/);
     const mvCount = await frame.locator('.mv-card').count();
     if (mvCount) assert.match(await frame.locator('.mv-card').first().getAttribute('href'), /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/music-video\/[^/]+\/\d+$/);
 
-    // "Load more" follows the API's next link through the proxy
-    const songs = await frame.locator('.song-row').count();
-    const more = frame.locator('.result-group').first().locator('.load-more');
-    if (await more.isVisible()) {
-      await more.click();
-      await frame.waitForFunction((n) => document.querySelectorAll('.song-row').length > n, songs, { timeout: 15000 });
-    }
     if (shots) await page.screenshot({ path: path.join(shots, 'search-desktop.png'), fullPage: true });
+
+    // 12 per group at first; "Load more" reveals the rest of the page, then follows the API's next link through the proxy
+    const songRows = songGroup.locator('.song-row');
+    const songs = await songRows.count();
+    assert.ok(songs <= 12, 'songs preview capped at 12');
+    const more = songGroup.locator('.load-more');
+    for (let i = 0; i < 2 && await more.isVisible(); i++) {
+      const before = await songRows.count();
+      await more.click();
+      await songRows.nth(before).waitFor({ timeout: 15000 });
+    }
 
     // Artist and playlist groups open the artist / playlist pages
     await input.fill('taylor swift');
