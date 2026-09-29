@@ -25,7 +25,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/parse/mv/:adam_id", get(ui::mv_master_handler))
         .route("/key", get(ui::key_handler))
         .route("/amp/v1/catalog/*path", get(amp::catalog_handler))
-        .route("/amp/v1/storefronts/:cc", get(amp::storefront_handler))
+        .route("/amp/v1/storefronts", get(amp::storefronts_handler))
         .route("/mv/webplayback/:adam_id", get(ui::mv_webplayback_handler))
         .route("/mv/license", post(ui::mv_license_handler))
         .route("/assets/mv/:file", get(ui::mv_asset_handler))

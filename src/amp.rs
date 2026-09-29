@@ -116,13 +116,20 @@ pub async fn catalog_handler(State(state): State<Arc<AppState>>, Path(path): Pat
     forward(&state, &url).await
 }
 
-/// `GET /amp/v1/storefronts/<cc>` → 地区信息。前端据 `supportedLanguageTags` 选择 `l`：
+/// `GET /amp/v1/storefronts?<query>` → 全部地区信息。前端据各地区的 `supportedLanguageTags` 选择 `l`：
 /// 地区不支持的语言不会报错，而是静默回退到默认语言（如 cn 只支持 zh-Hans-CN / en-GB，传 en-US 返回中文）。
-pub async fn storefront_handler(State(state): State<Arc<AppState>>, Path(cc): Path<String>) -> Response<Body> {
-    if cc.len() != 2 || !cc.bytes().all(|b| b.is_ascii_lowercase()) {
-        return error(StatusCode::BAD_REQUEST, "Invalid storefront");
+/// 数据几乎不变，前端取一次后缓存在 localStorage；查询参数原样转发，以便跟随分页 `next`。
+pub async fn storefronts_handler(State(state): State<Arc<AppState>>, uri: Uri) -> Response<Body> {
+    let query = uri.query().unwrap_or_default();
+    if query.len() > MAX_QUERY_LEN {
+        return error(StatusCode::BAD_REQUEST, "Query too long");
     }
-    forward(&state, &format!("{API_ORIGIN}/v1/storefronts/{cc}")).await
+    let mut url = format!("{API_ORIGIN}/v1/storefronts");
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(query);
+    }
+    forward(&state, &url).await
 }
 
 /// 带 developer token 请求 amp-api，原样返回状态码与 JSON；token 失效（401/403）时重新获取一次

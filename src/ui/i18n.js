@@ -55,8 +55,8 @@
       'nav.home': '主页',
 
       'home.intro': '搜索或粘贴 Apple Music 歌曲、音乐视频链接，在浏览器里播放与下载。',
-      'home.formHint': '输入关键词搜索，或粘贴歌曲、MV 链接、带 ?i= 的专辑分享链接及歌曲 ID',
-      'home.inputLabel': '搜索，或输入歌曲 / MV 链接、歌曲 ID',
+      'home.formHint': '输入关键词搜索，或粘贴歌曲、MV 链接、带 ?i= 的专辑分享链接',
+      'home.inputLabel': '搜索，或输入歌曲 / MV 链接',
       'home.placeholder': '搜索歌曲、MV，或粘贴链接',
       'home.submit': '解析',
       'home.search': '搜索',
@@ -79,13 +79,12 @@
       'home.example': '示例',
       'home.recent': '最近解析',
       'home.clear': '清空',
-      'home.invalid': '无法识别：请输入歌曲、MV 或专辑链接，或纯数字歌曲 ID。',
+      'home.invalid': '无法识别：请输入歌曲、MV 或专辑链接。',
       'home.detectSong': '歌曲',
       'home.detectMv': 'MV',
       'home.detectAlbum': '专辑',
       'home.detectPlaylist': '歌单',
       'home.detectArtist': '艺人',
-      'home.detectId': '歌曲 ID',
       'album.pageTitle': 'am-hook · 专辑',
       'album.loading': '正在载入专辑…',
       'album.failed': '专辑加载失败：{msg}',
@@ -282,8 +281,8 @@
       'nav.home': 'Home',
 
       'home.intro': 'Search or paste an Apple Music song or music video link, then play or download right in your browser.',
-      'home.formHint': 'Search by keyword, or paste a song / music-video link, an album link with ?i=, or a song ID',
-      'home.inputLabel': 'Search, or enter a song / MV link or song ID',
+      'home.formHint': 'Search by keyword, or paste a song / music-video link, or an album link with ?i=',
+      'home.inputLabel': 'Search, or enter a song / MV link',
       'home.placeholder': 'Search songs and music videos, or paste a link',
       'home.submit': 'Parse',
       'home.search': 'Search',
@@ -306,13 +305,12 @@
       'home.example': 'Examples',
       'home.recent': 'Recent',
       'home.clear': 'Clear',
-      'home.invalid': 'Unrecognized input: enter a song, music-video or album link, or a numeric song ID.',
+      'home.invalid': 'Unrecognized input: enter a song, music-video or album link.',
       'home.detectSong': 'Song',
       'home.detectMv': 'MV',
       'home.detectAlbum': 'Album',
       'home.detectPlaylist': 'Playlist',
       'home.detectArtist': 'Artist',
-      'home.detectId': 'Song ID',
       'album.pageTitle': 'am-hook · Album',
       'album.loading': 'Loading album…',
       'album.failed': 'Failed to load album: {msg}',
@@ -515,22 +513,54 @@
 
   /**
    * amp-api 的 l 参数。地区不支持的语言不会报错，而是静默回退到地区默认语言（如 cn 只支持 zh-Hans-CN / en-GB，
-   * 传 en-US 仍返回中文），所以按 /amp/v1/storefronts/<cc> 的 supportedLanguageTags 选择；
+   * 传 en-US 仍返回中文），所以按各地区的 supportedLanguageTags 选择；
    * 地区不支持当前界面语言时返回 undefined（不传 l），取不到地区信息时退回常见写法。
+   * 地区表取自 /amp/v1/storefronts（一次返回全部地区，几乎不变），缓存在 localStorage，过期后才重新拉取。
    */
-  const storefrontTags = new Map();
-  function supportedTags(cc) {
-    if (!storefrontTags.has(cc)) {
-      storefrontTags.set(cc, fetch(`/amp/v1/storefronts/${cc}`)
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          const tags = data && data.data && data.data[0] && data.data[0].attributes && data.data[0].attributes.supportedLanguageTags;
-          if (!Array.isArray(tags)) throw new Error('no supportedLanguageTags');
-          return tags;
-        })
-        .catch(() => { storefrontTags.delete(cc); return null; }));
+  const STOREFRONTS_KEY = 'am-hook:storefront-langs';
+  const STOREFRONTS_TTL = 30 * 24 * 3600 * 1000;
+  let storefrontsPromise = null;
+
+  async function fetchStorefronts() {
+    const map = {};
+    // 跟随分页 next（如 /v1/storefronts?offset=25），经 /amp 代理
+    for (let path = '/v1/storefronts', page = 0; path && page < 20; page++) {
+      const res = await fetch('/amp' + path);
+      if (!res.ok) throw new Error(`storefronts ${res.status}`);
+      const data = await res.json();
+      for (const item of (data && data.data) || []) {
+        const tags = item && item.attributes && item.attributes.supportedLanguageTags;
+        if (item.id && Array.isArray(tags)) map[String(item.id).toLowerCase()] = tags;
+      }
+      path = data && data.next;
     }
-    return storefrontTags.get(cc);
+    if (!Object.keys(map).length) throw new Error('no storefronts');
+    return map;
+  }
+
+  function storefrontLangs() {
+    if (!storefrontsPromise) {
+      try {
+        const cached = JSON.parse(localStorage.getItem(STOREFRONTS_KEY) || 'null');
+        if (cached && cached.map && Date.now() - cached.at < STOREFRONTS_TTL) {
+          storefrontsPromise = Promise.resolve(cached.map);
+          return storefrontsPromise;
+        }
+      } catch {}
+      storefrontsPromise = fetchStorefronts()
+        .then((map) => {
+          try { localStorage.setItem(STOREFRONTS_KEY, JSON.stringify({ at: Date.now(), map })); } catch {}
+          return map;
+        })
+        // 失败不缓存，下次调用重试
+        .catch(() => { storefrontsPromise = null; return null; });
+    }
+    return storefrontsPromise;
+  }
+
+  async function supportedTags(cc) {
+    const map = await storefrontLangs();
+    return (map && map[cc]) || null;
   }
   async function catalogLang(cc) {
     const zh = lang === 'zh';

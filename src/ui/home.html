@@ -122,7 +122,6 @@
     /** 把各种输入规整为页面路径：/https://music.apple.com/{cc}/(song|music-video|album|playlist|artist)/{slug}/{id} */
     function toSongLink(raw) {
       const value = raw.trim();
-      if (/^\d{5,}$/.test(value)) return `https://music.apple.com/us/song/_/${value}`;
       let url;
       try { url = new URL(value); } catch { return null; }
       if (!/(^|\.)music\.apple\.com$/i.test(url.hostname)) return null;
@@ -176,7 +175,7 @@
     });
     input.addEventListener('input', () => { input.removeAttribute('aria-invalid'); errorEl.hidden = true; renderDetect(); scheduleSuggest(); });
 
-    /** 输入时即时提示识别结果：歌曲 / MV 与地区，或纯歌曲 ID；按钮在“解析”与“搜索”之间切换 */
+    /** 输入时即时提示识别结果：歌曲 / MV 等类型与地区；按钮在“解析”与“搜索”之间切换 */
     function renderDetect() {
       const value = input.value.trim();
       const link = value && toSongLink(value);
@@ -184,7 +183,6 @@
       submitLabel.textContent = t(submitLabel.dataset.i18n);
       detectEl.hidden = !link;
       if (!link) return;
-      if (/^\d{5,}$/.test(value)) { detectEl.textContent = t('home.detectId'); return; }
       const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist|artist)\//);
       const label = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist' }[kind];
       detectEl.textContent = `${t(label)} · ${cc.toUpperCase()}`;
