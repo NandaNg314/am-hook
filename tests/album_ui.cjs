@@ -5,7 +5,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
-const { openPage } = require('./shell.cjs');
+const { openPage } = require('./app.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const shots = process.env.ALBUM_UI_SHOTS;
@@ -66,7 +66,7 @@ const albumPath = '/https://music.apple.com/cn/album/justice-triple-chucks-delux
     // Album share links with ?i= open the song page
     const redirect = await browser.newPage();
     let redirectFrame = await openPage(redirect, base + '/https://music.apple.com/us/album/lover/1468058165?i=1468058171');
-    await redirect.waitForURL('**/song/lover/1468058171', { timeout: 10000 });
+    await redirect.waitForURL('**/song/lover/1468058171', { timeout: 10000, waitUntil: 'commit' });
     await redirect.close();
 
     // Mobile: centred hero, no horizontal scroll

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
@@ -12,30 +12,41 @@ use crate::m3u8::{parse_master_variants, parse_song_link};
 use crate::state::AppState;
 use crate::wrapper::{fetch_key_json, fetch_lyrics, Lyrics};
 
-#[derive(Deserialize)]
-pub struct ParseRequest {
-    pub url: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
+/// 站内页面（首页与歌曲 / MV / 专辑 / 歌单 / 艺人页）。与 music.apple.com 相同，整站是单页应用：
+/// 所有页面地址都返回 app.html，页面视图（/assets/views/）由前端路由（app.mjs）切换，
+/// 播放条与歌词界面常驻，站内跳转时播放不中断。目录数据由前端经 `/amp` 代理获取。
+pub async fn app_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/html; charset=utf-8", include_bytes!("ui/app.html"))
 }
 
-pub async fn home_handler(headers: HeaderMap) -> Response<Body> {
-    page_response(&headers, include_bytes!("ui/home.html"))
+/// 前端路由
+pub async fn app_js_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/app.mjs"))
 }
 
-/// 专辑页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 专辑页相同的 albums 请求）
-pub async fn album_handler(headers: HeaderMap) -> Response<Body> {
-    page_response(&headers, include_bytes!("ui/album.html"))
-}
-
-/// 歌单页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 歌单页相同的 playlists 请求）
-pub async fn playlist_handler(headers: HeaderMap) -> Response<Body> {
-    page_response(&headers, include_bytes!("ui/playlist.html"))
-}
-
-/// 艺人页：目录数据由前端经 `/amp` 代理获取（与 music.apple.com 艺人页相同的 artists 请求）
-pub async fn artist_handler(headers: HeaderMap) -> Response<Body> {
-    page_response(&headers, include_bytes!("ui/artist.html"))
+/// 页面视图（src/ui/views/）：`<name>.html` 为页面内容，`<name>.mjs` 为页面脚本（导出 mount，见 app.mjs）
+pub async fn view_asset_handler(
+    headers: HeaderMap,
+    axum::extract::Path(file): axum::extract::Path<String>,
+) -> Response<Body> {
+    const JS: &str = "text/javascript; charset=utf-8";
+    const HTML: &str = "text/html; charset=utf-8";
+    let (content_type, body): (&'static str, &'static [u8]) = match file.as_str() {
+        "home.html" => (HTML, include_bytes!("ui/views/home.html")),
+        "home.mjs" => (JS, include_bytes!("ui/views/home.mjs")),
+        "song.html" => (HTML, include_bytes!("ui/views/song.html")),
+        "song.mjs" => (JS, include_bytes!("ui/views/song.mjs")),
+        "mv.html" => (HTML, include_bytes!("ui/views/mv.html")),
+        "mv.mjs" => (JS, include_bytes!("ui/views/mv.mjs")),
+        "album.html" => (HTML, include_bytes!("ui/views/album.html")),
+        "album.mjs" => (JS, include_bytes!("ui/views/album.mjs")),
+        "playlist.html" => (HTML, include_bytes!("ui/views/playlist.html")),
+        "playlist.mjs" => (JS, include_bytes!("ui/views/playlist.mjs")),
+        "artist.html" => (HTML, include_bytes!("ui/views/artist.html")),
+        "artist.mjs" => (JS, include_bytes!("ui/views/artist.mjs")),
+        _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
+    };
+    static_response(&headers, content_type, body)
 }
 
 /// 专辑动态封面播放（editorialVideo 的 HLS，MSE 播放）
@@ -43,16 +54,11 @@ pub async fn motion_art_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/motion-art.mjs"))
 }
 
-pub async fn mv_handler(headers: HeaderMap) -> Response<Body> {
-    page_response(&headers, include_bytes!("ui/mv.html"))
-}
-
 pub async fn mv_asset_handler(
     headers: HeaderMap,
     axum::extract::Path(file): axum::extract::Path<String>,
 ) -> Response<Body> {
     let (mime, body): (&str, &[u8]) = match file.as_str() {
-        "page.mjs" => ("text/javascript", include_bytes!("ui/mv-page.mjs")),
         "hls.mjs" => ("text/javascript", include_bytes!("ui/mv-hls.mjs")),
         "engine.mjs" => ("text/javascript", include_bytes!("ui/mv-engine.mjs")),
         "captions.mjs" => ("text/javascript", include_bytes!("ui/mv-captions.mjs")),
@@ -359,47 +365,6 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
     log::note(json_response(status, body), note)
 }
 
-pub async fn parse_handler(
-    State(_state): State<Arc<AppState>>,
-    uri: Uri,
-    headers: HeaderMap,
-    form: axum::Form<ParseRequest>,
-) -> Response<Body> {
-    let Some(song_url) = form.url.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
-        return bad_request("url is required");
-    };
-
-    let adam_id = match parse_song_link(song_url) {
-        Ok(adam_id) => adam_id,
-        Err(error) => return bad_request(&error),
-    };
-
-    let base_url = form
-        .base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_owned)
-        .or_else(|| base_url_from_headers(&headers));
-    let mut target = match base_url.as_deref().filter(|value| !value.is_empty()) {
-        Some(base_url) => format!("{base_url}/parse/song/{adam_id}"),
-        None => format!("/parse/song/{adam_id}"),
-    };
-    if let Some(query) = uri.query() {
-        target.push('?');
-        target.push_str(query);
-    }
-
-    match Response::builder()
-        .status(StatusCode::SEE_OTHER)
-        .header(axum::http::header::LOCATION, target)
-        .body(Body::empty())
-    {
-        Ok(response) => response,
-        Err(error) => internal_error(&format!("failed to build redirect: {error}")),
-    }
-}
-
 pub async fn master_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(adam_id): axum::extract::Path<String>,
@@ -470,29 +435,6 @@ pub async fn master_handler(
     log::note(response, note)
 }
 
-pub async fn song_handler(uri: Uri, headers: &HeaderMap) -> Response<Body> {
-    let path = uri.path();
-    if parse_song_link(path.strip_prefix('/').unwrap_or(path)).is_err() {
-        return bad_request("Only Apple Music song links are supported");
-    }
-    page_response(headers, include_bytes!("ui/song.html"))
-}
-
-/// 站内页面。浏览器的顶层页面请求（Sec-Fetch-Dest: document）返回外壳 shell.html：播放条常驻，
-/// 页面在其 iframe 中打开，站内跳转时播放不中断（与 music.apple.com 的底部播放条相同）。
-/// iframe 中的请求与不发送该请求头的浏览器直接返回页面，由页面自己创建播放条。
-fn page_response(headers: &HeaderMap, page: &'static [u8]) -> Response<Body> {
-    let top_level = headers
-        .get("sec-fetch-dest")
-        .is_some_and(|value| value.as_bytes() == b"document");
-    let body: &'static [u8] = if top_level { include_bytes!("ui/shell.html") } else { page };
-    let mut response = static_response(headers, "text/html; charset=utf-8", body);
-    response
-        .headers_mut()
-        .insert(axum::http::header::VARY, axum::http::HeaderValue::from_static("Sec-Fetch-Dest"));
-    response
-}
-
 /// 内嵌静态资源：`no-cache` + 内容 ETag。每次使用前都向服务器确认（未变化时 304），
 /// 升级后页面、decrypt.js、Worker 与 wasm 不会因缓存而版本错配。
 fn static_response(headers: &HeaderMap, content_type: &'static str, body: &'static [u8]) -> Response<Body> {
@@ -537,18 +479,4 @@ fn gateway_error(message: &str) -> Response<Body> {
 /// 上游请求失败：响应只带概要，请求日志中附上具体原因
 fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body> {
     log::note(internal_error(message), format!("{message}: {error}"))
-}
-
-fn base_url_from_headers(headers: &HeaderMap) -> Option<String> {
-    let authority = headers
-        .get(axum::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()))?;
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("http");
-
-    Some(format!("{scheme}://{authority}"))
 }

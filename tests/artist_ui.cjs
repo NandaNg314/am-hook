@@ -6,7 +6,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
-const { openPage } = require('./shell.cjs');
+const { openPage } = require('./app.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const shots = process.env.ARTIST_UI_SHOTS;
@@ -114,7 +114,7 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       const first = await frame.locator('.ts-item .track-title').first().textContent();
       await frame.locator('#play-all').click();
       await frame.locator('.ts-item.playing').first().waitFor({ timeout: 60000 });
-      assert.equal(await page.locator('.player-title').textContent(), first);
+      assert.equal(await page.locator('.player-title .marquee-line__chunk:not(.marquee-line__chunk--copy)').textContent(), first);
       if (shots) await page.screenshot({ path: path.join(shots, 'artist-playing.png') });
       await page.close();
     } else {
@@ -139,7 +139,7 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       await frame.locator('#input').fill(circularLink);
       assert.match(await frame.locator('#detect').textContent(), /Artist · CN/);
       await frame.locator('#input').press('Enter');
-      await page.waitForURL('**/artist/taylor-swift/159260351', { timeout: 10000 });
+      await page.waitForURL('**/artist/taylor-swift/159260351', { timeout: 10000, waitUntil: 'commit' });
       frame = await openPage(page, base + '/https://music.apple.com/cn/album/justice-triple-chucks-deluxe-deluxe-video-version/1561058084');
       await frame.locator('#artist a').first().waitFor({ timeout: 20000 });
       assert.match(await frame.locator('#artist a').first().getAttribute('href'), localPage('artist'));

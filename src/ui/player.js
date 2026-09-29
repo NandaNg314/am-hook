@@ -780,25 +780,18 @@
 
   /**
    * 页面底部播放条。
-   * 外壳页（shell.html）中只有一个实例，站内页面在 iframe 中经 connect() 共用它，跳转页面时播放不中断；
-   * 直接打开页面（浏览器不发送 Sec-Fetch-Dest）时每个页面各自创建。
+   * 与 music.apple.com 相同，整站是单页应用（app.html），播放条只有一个实例并常驻；
+   * 各页面视图经 scope() 使用它，站内跳转时播放不中断。
    */
   class AmPlayer {
-    /** options.navigate(href)：外壳传入，播放条上的链接交给它在 iframe 中打开（外壳不刷新，播放不中断） */
-    constructor(root, options = {}) {
+    /** 播放条上的歌名、艺人、专辑链接由前端路由（app.mjs）接管，文档不刷新，播放不中断 */
+    constructor(root) {
       this.root = root;
-      this.navigate = options.navigate || null;
       this.audio = new Audio();
       this.audio.preload = 'auto';
       this.mse = new MseEngine(this.audio);
       this.pcm = null;
       this.$ = (sel) => root.querySelector(sel);
-      this.$('.player-text').addEventListener('click', (event) => {
-        const link = event.target.closest('a');
-        if (!link || !this.navigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
-        this.navigate(link.getAttribute('href'));
-      });
       // 歌名、「艺人 — 专辑」两行滚动字幕；音质标签在歌名右侧，不参与滚动
       const title = this.$('.player-title');
       const titleHost = Object.assign(root.ownerDocument.createElement('span'), { className: 'marquee marquee--primary' });
@@ -814,8 +807,6 @@
       this.queue = null;
       this.queueSerial = 0;
       this.pendingTrack = null;
-      /** 需要为播放条留出底部空间的文档（自身与 iframe 中的页面） */
-      this.docs = new Set([root.ownerDocument]);
       /** 随机播放（true / false）与重复播放（off / all / one），与 Apple Music 相同，下次打开时保留 */
       this.shuffle = false;
       this.repeat = 'off';
@@ -964,9 +955,9 @@
       }
     }
 
-    /** 空格播放 / 暂停，左右方向键快退 / 快进；iframe 中的页面也要绑定，按键不会传到外壳 */
+    /** 空格播放 / 暂停，左右方向键快退 / 快进 */
     bindKeys(doc) {
-      // 待播清单面板：按 Esc 或点击面板与播放条以外的地方（含 iframe 中的页面）时收起
+      // 待播清单面板：按 Esc 或点击面板与播放条以外的地方时收起
       doc.addEventListener('pointerdown', (e) => {
         if (this.queuePanel.hidden || this.queuePanel.contains(e.target) || this.root.contains(e.target)) return;
         this.closeQueue();
@@ -986,7 +977,7 @@
      * 鼠标单击选中、双击播放，拖动整行调整顺序；触屏点按播放，拖动右侧把手调整顺序（与 iOS 相同）。
      * 键盘：↑/↓ 选择，Enter 播放，Delete 移除，Alt+↑/↓ 移动。
      * 窄屏时随机 / 重复按钮从播放条移到清单标题旁（与手机版相同）。
-     * 面板放在播放条所在的文档中（外壳时为外壳），浮在播放条上方。
+     * 面板浮在播放条上方。
      */
     bindQueueUi() {
       const doc = this.root.ownerDocument;
@@ -1319,52 +1310,35 @@
       this.layout();
     }
 
-    /** 播放条上边缘的位置（外壳的 iframe 铺满窗口，与页面中的坐标相同），隐藏时为 Infinity */
+    /** 播放条上边缘的位置（视口坐标），隐藏时为 Infinity */
     barTop() {
       return this.root.hidden ? Infinity : this.root.getBoundingClientRect().top;
     }
 
     layout() {
       const height = `${this.root.getBoundingClientRect().height}px`;
-      for (const doc of this.docs) {
-        if (!doc.defaultView) { this.docs.delete(doc); continue; } // iframe 已跳转到其他页面
-        if (!doc.body) continue;
-        doc.body.style.setProperty('--player-height', height);
-        doc.body.classList.toggle('has-player', !this.root.hidden);
-      }
+      const { body } = this.root.ownerDocument;
+      body.style.setProperty('--player-height', height);
+      body.classList.toggle('has-player', !this.root.hidden);
       this.placeQueue();
     }
 
-    /**
-     * iframe 中的页面使用外壳的播放条：返回与 AmPlayer 相同用法的接口。
-     * 页面跳转后其文档失效，注册的回调随之移除。
-     */
-    connect(win) {
-      const doc = win.document;
-      if (!this.docs.has(doc)) {
-        this.docs.add(doc);
-        this.bindKeys(doc);
-        this.layout();
-      }
+    /** 页面视图使用的接口：用法与 AmPlayer 相同，视图卸载（signal 中止）时注册的回调随之移除 */
+    scope(signal) {
       const player = this;
       const scoped = (set) => (fn) => {
-        const wrapped = (...args) => {
-          if (!doc.defaultView) { set.delete(wrapped); return; }
-          fn(...args);
-        };
-        set.add(wrapped);
+        if (signal.aborted) return;
+        set.add(fn);
+        signal.addEventListener('abort', () => set.delete(fn), { once: true });
       };
-      // 条目在外壳中保存，复制为外壳的对象，页面卸载后仍可使用
-      const copy = (item) => ({ ...item, artists: (item.artists || []).map(({ name, href }) => ({ name, href })) });
       return {
-        shared: true,
         get current() { return player.current; },
         get pendingTrack() { return player.pendingTrack; },
         get audio() { return player.audio; },
         transport: () => player.transport(),
         barTop: () => player.barTop(),
-        play: (item) => player.play(copy(item)),
-        playQueue: (entries, pos, options) => player.playQueue(entries.map(copy), pos, { ...options }),
+        play: (item) => player.play(item),
+        playQueue: (entries, pos, options) => player.playQueue(entries, pos, options),
         toggle: () => player.toggle(),
         pause: () => player.pause(),
         onChange: scoped(this.listeners),
@@ -1657,16 +1631,7 @@
     }
   }
 
-  /** 页面的播放条：在外壳的 iframe 中时使用外壳的播放器（移除页面自己的播放条），否则在页面内创建 */
-  function pagePlayer(root) {
-    let shell = null;
-    try { shell = global.parent !== global && global.parent.AmShell; } catch {}
-    if (!shell) return new AmPlayer(root);
-    root.remove();
-    return shell.attach(global);
-  }
-
-  const api = { AmPlayer, pagePlayer, artistNodes, qualityBadge, qualityIcon, segmentAt, formatTime, detectMode, detectModes, mimeFor };
+  const api = { AmPlayer, artistNodes, qualityBadge, qualityIcon, segmentAt, formatTime, detectMode, detectModes, mimeFor };
   if (typeof module !== 'undefined' && module.exports) module.exports = { ...api, MseEngine };
   else global.AmHook = api;
 })(typeof window !== 'undefined' ? window : globalThis);

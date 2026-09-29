@@ -1,0 +1,57 @@
+<div class="mv-ambient" id="ambient" aria-hidden="true"></div>
+<div class="page mv-page">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></span><span class="brand-name">am-hook</span></a>
+    <div class="topbar-right">
+      <button class="btn lang-btn" type="button" data-lang-toggle><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg><span class="lang-label"></span></button>
+      <a class="btn" href="/"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span data-i18n="nav.home"></span></a>
+    </div>
+  </header>
+  <main class="mv-layout">
+    <div class="mv-stage">
+      <section class="mv-screen" aria-labelledby="title">
+        <video id="video" controls playsinline preload="none" data-i18n-attr="aria-label=mv.preview"></video>
+        <button id="screen-play" class="mv-screen-play" type="button" disabled data-i18n-attr="aria-label=mv.play"><svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5z"/></svg></button>
+      </section>
+      <section class="mv-info">
+        <div class="mv-thumb"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="m10 9 5 3-5 3z"/></svg><img id="artwork" alt="" hidden></div>
+        <div class="mv-info-text">
+          <p class="eyebrow">MUSIC VIDEO</p>
+          <h1 class="mv-title" id="title">MV</h1>
+          <p class="mv-artist" id="artist"></p>
+          <div class="song-meta" id="meta"></div>
+        </div>
+        <a id="apple-link" class="btn mv-apple" target="_blank" rel="noreferrer" hidden>Apple Music<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
+      </section>
+    </div>
+    <aside class="mv-panel" aria-labelledby="quality-title">
+      <div class="mv-panel-head">
+        <div><h2 id="quality-title" data-i18n="mv.quality"></h2><p class="mv-selection" id="selection">—</p></div>
+        <span class="badge" data-i18n="mv.custom"></span>
+      </div>
+      <div id="error" class="alert error" role="alert" hidden></div>
+      <div class="mv-tracks">
+        <fieldset id="video-tracks" class="mv-select" disabled><legend><span data-i18n="mv.video"></span><span class="mv-count" id="video-count">—</span></legend>
+          <button id="video-trigger" class="mv-trigger" type="button" aria-expanded="false" aria-controls="videos"><span class="mv-trigger-value" id="video-value"><span class="mv-trigger-empty" data-i18n="mv.loading"></span></span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div class="mv-options" id="videos" hidden><p class="mv-empty" data-i18n="mv.loading"></p></div>
+        </fieldset>
+        <fieldset id="audio-tracks" class="mv-select" disabled><legend><span data-i18n="mv.audio"></span><span class="mv-count" id="audio-count">—</span></legend>
+          <button id="audio-trigger" class="mv-trigger" type="button" aria-expanded="false" aria-controls="audios"><span class="mv-trigger-value" id="audio-value"><span class="mv-trigger-empty" data-i18n="mv.loading"></span></span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div class="mv-options" id="audios" hidden><p class="mv-empty" data-i18n="mv.loading"></p></div>
+        </fieldset>
+      </div>
+      <div class="mv-dock">
+        <div class="mv-actions">
+          <button id="play" class="btn btn-primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="m7 4 14 8-14 8z"/></svg><span data-i18n="mv.play"></span></button>
+          <button id="download" class="btn" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M5 21h14"/></svg><span data-i18n="mv.download"></span></button>
+        </div>
+        <div class="mv-feedback" id="feedback" data-state="loading">
+          <div class="mv-status-row"><span class="mv-state-dot" aria-hidden="true"></span><p id="status" role="status" aria-live="polite"></p><button id="cancel" class="btn" type="button" hidden data-i18n="mv.cancel"></button><a id="save" class="btn" hidden data-i18n="mv.save"></a></div>
+          <progress id="progress" max="1" value="0" hidden data-i18n-attr="aria-label=mv.download"></progress>
+        </div>
+        <p class="hint" data-i18n="mv.hint"></p>
+      </div>
+    </aside>
+  </main>
+  <footer class="footer"><span data-i18n="footer.tagline"></span><span data-i18n="footer.note"></span></footer>
+</div>

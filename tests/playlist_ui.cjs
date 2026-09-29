@@ -6,7 +6,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
-const { openPage } = require('./shell.cjs');
+const { openPage } = require('./app.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const shots = process.env.PLAYLIST_UI_SHOTS;
@@ -81,7 +81,7 @@ const loaded = () => !document.getElementById('title').classList.contains('skele
       await frame.locator('#play-all').click();
       await frame.locator('.pl-track.playing').first().waitFor({ timeout: 60000 });
       assert.ok(await page.locator('#player').isVisible());
-      assert.equal(await page.locator('.player-title').textContent(), first);
+      assert.equal(await page.locator('.player-title .marquee-line__chunk:not(.marquee-line__chunk--copy)').textContent(), first);
       if (shots) await page.screenshot({ path: path.join(shots, 'playlist-playing.png') });
       await page.close();
     } else {
@@ -109,7 +109,7 @@ const loaded = () => !document.getElementById('title').classList.contains('skele
       await frame.locator('#input').fill(playlistLink);
       assert.match(await frame.locator('#detect').textContent(), /Playlist · CN/);
       await frame.locator('#input').press('Enter');
-      await page.waitForURL('**/playlist/**/pl.921750b485a6496ea58b16d46c097557', { timeout: 10000 });
+      await page.waitForURL('**/playlist/**/pl.921750b485a6496ea58b16d46c097557', { timeout: 10000, waitUntil: 'commit' });
       await page.close();
     }
 

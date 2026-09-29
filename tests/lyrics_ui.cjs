@@ -44,8 +44,10 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
               ? route.fulfill({ body: ttml, contentType: 'application/ttml+xml' })
               : route.fulfill({ status: 404, json: { code: 1, msg: 'lyrics not found' } });
           }
+          // 单页应用：页面地址返回 app.html，页面视图在 /assets/views/
           const file = url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
-            : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'song.html';
+            : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
+            : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
           const type = file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html';
           return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: type });
         });
@@ -57,8 +59,11 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         // Drive the lyric view from a fake transport; real decoding is covered elsewhere.
         await page.evaluate(() => {
           window.fakeTransport = { currentTime: 0, paused: false, play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; } };
-          player.current = { id: 'fake', mode: 'mse', title: 'Lyric song' };
+          // 歌词界面跟随正在播放的歌曲（current.track）
+          const { player } = window.AmApp;
+          player.current = { id: 'fake', track: '123456789', country: 'us', mode: 'mse', title: 'Lyric song' };
           player.transport = () => window.fakeTransport;
+          player.emit();
           const bar = document.getElementById('player');
           bar.hidden = false;
           document.body.classList.add('has-player');
@@ -94,7 +99,16 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
           .filter(el => [el, ...el.querySelectorAll('*')].some(n => [...n.classList].some(c => c.endsWith('_active'))))
           .map(el => el.querySelector('[class*="_lyricMainLine"]').textContent.trim()), lineSel);
         assert.equal(await page.locator('.lyrics-title').textContent(), 'Lyric song');
-        assert.equal(await page.locator('[data-option="pronunciation"]').isDisabled(), true);
+        // 翻译菜单（同 music.apple.com）：点按钮弹出，歌曲没有的一项置灰，Esc 只关闭菜单
+        const openMenu = async () => {
+          await page.locator('.lyrics-translation-button').click();
+          await page.locator('.lyrics-menu:not([hidden])').waitFor();
+        };
+        await openMenu();
+        assert.equal(await page.locator('[data-option="pronunciation"]').isDisabled(), true, 'no pronunciation for this song');
+        await page.keyboard.press('Escape');
+        await page.locator('.lyrics-menu').waitFor({ state: 'hidden' });
+        assert(await page.locator('#lyrics-overlay').isVisible(), 'Escape closes only the menu');
 
         await page.evaluate(() => { fakeTransport.currentTime = 5.5; });
         await page.waitForTimeout(300);
@@ -104,10 +118,14 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         await page.waitForTimeout(300);
         assert.deepEqual(await activeLines(), ['Third line']);
 
+        await openMenu();
         await page.locator('[data-option="translation"]').click();
-        assert.equal(await page.locator('[data-option="translation"]').getAttribute('aria-pressed'), 'true');
-        assert.equal(await page.locator('[data-option="translation"]').evaluate(el => getComputedStyle(el).backgroundColor),
-          'rgb(255, 255, 255)', 'a pressed chip stays light while hovered');
+        assert(await page.locator('.lyrics-menu').isHidden(), 'choosing an option closes the menu');
+        assert.equal(await page.locator('.lyrics-translation-button .invertible-mask--inverted').count(), 1, 'the icon inverts while translations are shown');
+        await openMenu();
+        assert.equal(await page.locator('[data-option="translation"]').getAttribute('title'), await page.evaluate(() => AmI18n.t('lyrics.hideTranslation')));
+        await page.keyboard.press('Escape');
+        await page.locator('.lyrics-menu').waitFor({ state: 'hidden' });
         await page.locator(lineSel).filter({ hasText: 'Tercera línea' }).waitFor({ state: 'visible', timeout: 2000 });
         assert.equal(await page.locator('.credit-names').textContent(), 'Writer A、Writer B');
         await page.evaluate(() => AmI18n.toggle()); // the overlay covers the page's language button

@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
-const { openPage, pageFrame } = require('./shell.cjs');
+const { openPage, pageFrame } = require('./app.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const shots = process.env.SEARCH_UI_SHOTS;
@@ -86,7 +86,7 @@ const shots = process.env.SEARCH_UI_SHOTS;
     if (shots) await frame.locator('.result-group', { has: frame.locator('.artist-card') }).screenshot({ path: path.join(shots, 'search-artists.png') });
     await input.fill('born again');
     await input.press('Enter');
-    await page.waitForURL(/q=born\+again/, { timeout: 15000 });
+    await page.waitForURL(/q=born\+again/, { timeout: 15000, waitUntil: 'commit' });
 
     // ?q= restores results on reload; Close clears it
     await page.reload();

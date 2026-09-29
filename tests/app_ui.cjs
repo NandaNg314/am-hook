@@ -1,38 +1,42 @@
-// Run with: node tests/shell_ui.cjs <path-to-playwright-package> [base]
+// Run with: node tests/app_ui.cjs <path-to-playwright-package> [base]
 // Live: needs a running am-hook with access to music.apple.com / amp-api and an online wrapper-lite
 // (default http://127.0.0.1:8888).
-// Covers the persistent player bar (src/ui/shell.html): top-level requests get the shell, pages open in its iframe,
-// playback and the queue survive in-site navigation, the address bar / title / Back button follow the page,
-// keyboard shortcuts inside the page, lyrics for the playing song and language switching.
+// Covers the single-page app (src/ui/app.html + app.mjs, same as music.apple.com): every page URL gets the app,
+// in-site links switch views without reloading the document, playback and the queue survive navigation,
+// the address bar / title / Back button follow the page, keyboard shortcuts, lyrics for the playing song
+// and language switching.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.argv[2] || 'playwright');
-const { openPage } = require('./shell.cjs');
+const { openPage } = require('./app.cjs');
 
 const base = (process.argv[3] || process.env.AM_HOOK_URL || 'http://127.0.0.1:8888').replace(/\/$/, '');
 const albumPath = '/https://music.apple.com/cn/album/justice-triple-chucks-deluxe-deluxe-video-version/1561058084';
 
-/** 外壳播放器的状态 */
+/** 常驻播放器的状态 */
 const state = (page) => page.evaluate(() => {
-  const p = window.AmShell.player;
+  const p = window.AmApp.player;
   return {
     path: decodeURIComponent(location.pathname), title: document.title,
     track: p.current && p.current.track, paused: p.transport().paused, time: p.transport().currentTime,
     pos: p.queue ? p.queue.pos : null,
   };
 });
-const playing = () => { const p = window.AmShell.player; return !!p.current && !p.transport().paused && p.transport().currentTime > 0.3; };
+const playing = () => { const p = window.AmApp.player; return !!p.current && !p.transport().paused && p.transport().currentTime > 0.3; };
 
 (async () => {
-  // The shell is only served to top-level navigations; other requests (iframe, old browsers) get the page itself
-  const direct = await (await fetch(base + albumPath)).text();
-  assert.match(direct, /id="player"/);
-  const top = await fetch(base + albumPath, { headers: { 'Sec-Fetch-Dest': 'document' } });
-  assert.match(await top.text(), /class="app-frame"/);
-  assert.match(top.headers.get('vary') || '', /Sec-Fetch-Dest/i);
+  // Every page URL gets the app, whether or not the browser sends Sec-Fetch-* (plain HTTP on a LAN IP does not)
+  for (const headers of [{}, { 'Sec-Fetch-Dest': 'document' }]) {
+    const res = await fetch(base + albumPath, { headers });
+    const html = await res.text();
+    assert.match(html, /id="view"/);
+    assert.match(html, /id="player"/);
+    assert.match(html, /\/assets\/app\.mjs/);
+  }
+  assert.equal((await fetch(base + '/assets/views/album.mjs')).status, 200);
 
   const status = await (await fetch(base + '/status')).json().catch(() => ({}));
   if (status.code !== 0) {
-    console.log('wrapper-lite offline: shell playback checks skipped');
+    console.log('wrapper-lite offline: app playback checks skipped');
     return;
   }
 
@@ -47,7 +51,10 @@ const playing = () => { const p = window.AmShell.player; return !!p.current && !
     let s = await state(page);
     assert.equal(s.path, albumPath, 'address bar shows the page');
     assert.match(s.title, /Justice/, 'title follows the page');
-    assert.equal(await frame.locator('#player').count(), 0, "page's own bar removed inside the shell");
+    assert.equal(await page.locator('#player').count(), 1, 'a single player bar');
+    assert.equal(await page.locator('iframe').count(), 0, 'no iframe');
+    // 站内跳转不重新加载文档：标记在整个测试中保留
+    await page.evaluate(() => { window.__noReload = true; });
 
     await frame.locator('#play-all').click();
     await page.waitForFunction(playing, null, { timeout: 60000 });
@@ -65,17 +72,18 @@ const playing = () => { const p = window.AmShell.player; return !!p.current && !
     assert.equal(s.paused, false, 'still playing after navigation');
     assert.ok(s.time > before + 1, 'playback position advancing');
     assert.ok(await frame.locator('body.has-player').count(), 'next page leaves room for the bar');
+    assert.ok(await page.evaluate(() => window.__noReload), 'in-site navigation keeps the document');
 
     // Space inside the page toggles playback
     await frame.locator('body').click({ position: { x: 5, y: 300 } });
     await page.keyboard.press('Space');
-    await page.waitForFunction(() => window.AmShell.player.transport().paused, null, { timeout: 5000 });
+    await page.waitForFunction(() => window.AmApp.player.transport().paused, null, { timeout: 5000 });
     await page.keyboard.press('Space');
-    await page.waitForFunction(() => !window.AmShell.player.transport().paused, null, { timeout: 5000 });
+    await page.waitForFunction(() => !window.AmApp.player.transport().paused, null, { timeout: 5000 });
 
     // The album queue continues after leaving the album page
-    await page.evaluate(() => window.AmShell.player.ended());
-    await page.waitForFunction((id) => { const p = window.AmShell.player; return p.current.track !== id && !p.transport().paused; }, first, { timeout: 60000 });
+    await page.evaluate(() => window.AmApp.player.ended());
+    await page.waitForFunction((id) => { const p = window.AmApp.player; return p.current.track !== id && !p.transport().paused; }, first, { timeout: 60000 });
     assert.equal((await state(page)).pos, 1);
 
     // Back returns to the album with the playing row marked
@@ -83,7 +91,7 @@ const playing = () => { const p = window.AmShell.player; return !!p.current && !
     await page.waitForFunction((path) => decodeURIComponent(location.pathname) === path, albumPath, { timeout: 15000 });
     await frame.locator('.track.playing').waitFor({ timeout: 30000 });
 
-    // Lyrics of the playing song open from the shell bar
+    // Lyrics of the playing song open from the player bar
     const lyrics = page.locator('#player .player-lyrics');
     assert.ok(await lyrics.isVisible(), 'lyrics button for the playing song');
     await lyrics.click();
@@ -91,17 +99,18 @@ const playing = () => { const p = window.AmShell.player; return !!p.current && !
     await page.keyboard.press('Escape');
     await page.locator('#lyrics-overlay').waitFor({ state: 'hidden' });
 
-    // Song page: switching language updates the shell bar; playing a single song ends the queue
+    // Song page: switching language updates the player bar; playing a single song ends the queue
     await frame.locator('.track:not(.video) .track-title').nth(2).click();
     await frame.locator('#variant-list .variant').first().waitFor({ timeout: 30000 });
     await frame.locator('[data-lang-toggle]').click();
     await page.waitForFunction(() => /Play|Pause/.test(document.querySelector('#player .player-toggle').getAttribute('aria-label')), null, { timeout: 5000 });
     await frame.locator('#play-best').click();
-    await page.waitForFunction(() => { const p = window.AmShell.player; return !p.queue && !p.transport().paused && p.current.id.includes(':'); }, null, { timeout: 60000 });
+    await page.waitForFunction(() => { const p = window.AmApp.player; return !p.queue && !p.transport().paused && p.current.id.includes(':'); }, null, { timeout: 60000 });
     await frame.locator('.variant.playing').waitFor({ timeout: 5000 });
 
+    assert.ok(await page.evaluate(() => window.__noReload), 'in-site navigation keeps the document');
     assert.deepEqual(errors, []);
-    console.log('shell UI ok');
+    console.log('app UI ok');
   } finally {
     await browser.close();
   }

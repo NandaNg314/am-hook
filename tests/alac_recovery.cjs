@@ -16,7 +16,9 @@ const origin = process.env.AM_HOOK_URL || 'http://127.0.0.1:8888';
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`${origin}/https://music.apple.com/cn/song/_/1691044818`);
+    await page.waitForFunction(() => window.AmApp);
     await page.evaluate(async () => {
+      const { player } = window.AmApp;
       const response = await fetch('/parse/song/1691044818');
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();

@@ -93,13 +93,12 @@ export function toAmllLines(song, options) {
 /**
  * root：#lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
- * adamId / country：歌曲页固定的歌曲及其地区；外壳页不传，改用返回值的 setTrack(id, country) 跟随正在播放的歌曲。
- * getMeta() 返回当前的 { title, artist, artists, artwork, country? }（artists: [{ name, href }]，用于艺人链接；
- * 有 country 时优先作为请求歌词的地区），
- * 变化后调用返回值的 refreshMeta()；t 为界面文案函数；notify 显示提示。
- * navigate(href)：外壳传入，点击艺人链接时关闭歌词界面并由它在 iframe 中打开；省略时按普通链接跳转。
+ * getMeta() 返回正在播放的歌曲的 { title, artist, artists, artwork, country? }（artists: [{ name, href }]，用于艺人链接；
+ * 有 country 时优先作为请求歌词的地区）；t 为界面文案函数；notify 显示提示。
+ * navigate(href)：前端路由，点击艺人链接时关闭歌词界面并由它打开页面（播放不中断）；省略时按普通链接跳转。
+ * 返回 { setTrack(id, country) }：切歌时调用，歌词界面跟随正在播放的歌曲。
  */
-export function mountLyrics({ root, toggle, bar, player, adamId: initialId, country: initialCountry, getMeta, t, notify, onLangChange, navigate }) {
+export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onLangChange, navigate }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
   // 翻译 / 发音：同 music.apple.com，一个「歌词翻译」按钮弹出菜单切换；开关在切歌后保留
@@ -422,7 +421,6 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, coun
     fetchLyrics().then(() => { if (song) show(); });
   }
 
-  setTrack(initialId, initialCountry);
   toggle.addEventListener('click', toggleOpen);
   bar.addEventListener('click', (event) => {
     if (open || unavailable || !adamId || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;
@@ -469,12 +467,5 @@ export function mountLyrics({ root, toggle, bar, player, adamId: initialId, coun
     if (open) renderHeader();
   });
 
-  /** 页面重新取回歌曲信息（如切换语言）后调用，更新打开中的标题与封面 */
-  function refreshMeta() {
-    if (!open) return;
-    renderHeader();
-    loadArtwork();
-  }
-
-  return { show, hide, refreshMeta, setTrack, view, get song() { return song; } };
+  return { setTrack };
 }

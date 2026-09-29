@@ -30,9 +30,12 @@ hd.m3u8`;
         }
         if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
         if (url.pathname.startsWith('/parse/mv/')) return route.fulfill(fail ? { status: 500, json: { msg: 'Fixture failure' } } : { json: { code: 0, data: { masterBody, masterUrl: 'https://example.com/master.m3u8' } } });
+        // 单页应用：页面地址返回 app.html，页面视图在 /assets/views/
         const file = url.pathname === '/assets/mv/style.css' ? 'mv.css'
           : url.pathname.startsWith('/assets/mv/') ? 'mv-' + path.basename(url.pathname)
-          : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'mv.html';
+          : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
+          : url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
+          : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
         return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html' });
       });
       const page = await context.newPage(), errors = [];

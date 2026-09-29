@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
-use axum::http::{Method, StatusCode};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use regex::Regex;
@@ -46,7 +46,6 @@ pub async fn access_log(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let query = request.uri().query().unwrap_or_default().to_owned();
-    let top_level = request.headers().get("sec-fetch-dest").is_some_and(|v| v.as_bytes() == b"document");
     let started = Instant::now();
 
     let mut response = next.run(request).await;
@@ -54,7 +53,7 @@ pub async fn access_log(request: Request, next: Next) -> Response {
     let elapsed = started.elapsed();
     let status = response.status();
     let note = response.extensions_mut().remove::<LogNote>().map(|n| n.0);
-    let entry = describe(&method, &path, &query, top_level);
+    let entry = describe(&path, &query);
     let mut line = format!("{} {:<4} {:<7} {}", status.as_u16(), method.as_str(), entry.kind, entry.detail);
     if let Some(note) = note.filter(|n| !n.is_empty()) {
         line.push_str(" · ");
@@ -105,7 +104,7 @@ static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// 按路径归类请求，取出日志要点
-fn describe(method: &Method, path: &str, query: &str, top_level: bool) -> Entry {
+fn describe(path: &str, query: &str) -> Entry {
     if let Some(file) = path.strip_prefix("/assets/") {
         return Entry::new("asset", file).quiet();
     }
@@ -114,17 +113,12 @@ fn describe(method: &Method, path: &str, query: &str, top_level: bool) -> Entry 
             "music-video" => "MV",
             other => other,
         };
-        // 顶层文档请求返回播放条外壳，真正的页面随后在 iframe 中加载并记录
-        let entry = Entry::new("page", format!("{kind} {} {}", caps[1].to_uppercase(), &caps[3]));
-        return if top_level { Entry { detail: format!("{} (shell)", entry.detail), ..entry }.quiet() } else { entry };
+        // 单页应用：只有整页加载（打开、刷新）时请求页面，站内跳转不再请求
+        return Entry::new("page", format!("{kind} {} {}", caps[1].to_uppercase(), &caps[3]));
     }
     match path {
-        "/" => {
-            let entry = Entry::new("page", "home");
-            return if top_level { Entry::new("page", "home (shell)").quiet() } else { entry };
-        }
+        "/" => return Entry::new("page", "home"),
         "/status" => return Entry::new("status", "wrapper-lite").quiet(),
-        "/parse" if method == Method::POST => return Entry::new("parse", "song link"),
         "/key" => return Entry::new("key", format!("adamId {}", query_param(query, "adamId").unwrap_or_default())),
         "/mv/license" => return Entry::new("mv", "license"),
         "/amp/v1/storefronts" => return Entry::new("catalog", "storefronts"),
@@ -318,15 +312,14 @@ mod tests {
 
     #[test]
     fn test_describe() {
-        let get = &Method::GET;
-        let e = describe(get, "/https://music.apple.com/cn/album/lover/1468058165", "", false);
+        let e = describe("/https://music.apple.com/cn/album/lover/1468058165", "");
         assert_eq!((e.kind, e.detail.as_str(), e.quiet), ("page", "album CN 1468058165", false));
-        assert!(describe(get, "/https://music.apple.com/cn/song/lover/1468058171", "", true).quiet);
-        let e = describe(get, "/amp/v1/catalog/us/search", "term=a%20b&offset=25", false);
+        assert_eq!(describe("/https://music.apple.com/cn/song/lover/1468058171", "").detail, "song CN 1468058171");
+        let e = describe("/amp/v1/catalog/us/search", "term=a%20b&offset=25");
         assert_eq!(e.detail, "US \"a b\" offset 25");
-        assert!(describe(get, "/amp/v1/catalog/us/search/suggestions", "term=a", false).quiet);
-        assert_eq!(describe(get, "/amp/v1/catalog/cn/albums/1", "", false).kind, "catalog");
-        assert!(describe(get, "/assets/player.js", "", false).quiet);
-        assert_eq!(describe(get, "/lyrics/123", "", false).kind, "lyrics");
+        assert!(describe("/amp/v1/catalog/us/search/suggestions", "term=a").quiet);
+        assert_eq!(describe("/amp/v1/catalog/cn/albums/1", "").kind, "catalog");
+        assert!(describe("/assets/player.js", "").quiet);
+        assert_eq!(describe("/lyrics/123", "").kind, "lyrics");
     }
 }

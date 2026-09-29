@@ -1,0 +1,68 @@
+
+<div class="page">
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+      </span>
+      <span class="brand-name">am-hook</span>
+    </a>
+    <form class="top-search" action="/" method="get" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input name="q" type="search" enterkeyhint="search" autocomplete="off" data-i18n-attr="placeholder=search.placeholder,aria-label=search.placeholder">
+    </form>
+    <div class="topbar-right">
+      <button class="btn lang-btn" type="button" data-lang-toggle>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
+        <span class="lang-label"></span>
+      </button>
+      <a class="btn" href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+        <span data-i18n="nav.home"></span>
+      </a>
+    </div>
+  </header>
+
+  <main>
+    <section class="song">
+      <div class="cover" id="cover"></div>
+      <div class="song-info">
+        <p class="eyebrow">SONG</p>
+        <h1 class="song-title skeleton" id="title">&nbsp;</h1>
+        <p class="song-sub skeleton" id="subtitle">&nbsp;</p>
+        <div class="song-meta" id="meta"></div>
+        <div class="song-actions">
+          <button class="btn btn-primary" id="play-best" type="button" disabled>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
+            <span data-i18n="song.play"></span>
+          </button>
+          <button class="btn" id="ext-best" type="button" disabled hidden aria-haspopup="menu" aria-expanded="false" data-i18n-attr="title=song.externalTitle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="m10 8.5 4.5 2-4.5 2z" fill="currentColor"/><path d="M8 21h8M12 17v4"/></svg>
+            <span data-i18n="song.external"></span>
+          </button>
+          <button class="btn" id="reparse" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
+            <span data-i18n="song.reparse"></span>
+          </button>
+          <a class="btn" id="apple-link" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+            Apple Music
+          </a>
+        </div>
+        <p class="song-source" id="source"></p>
+      </div>
+    </section>
+
+    <div class="alert info" id="alert" hidden aria-live="polite"></div>
+
+    <section class="variants" id="variants" hidden>
+      <div class="variants-head">
+        <h2 class="variants-title" data-i18n="song.variants"></h2>
+        <span class="variants-count" id="count"></span>
+      </div>
+      <div id="variant-list"></div>
+    </section>
+  </main>
+</div>
+
+<div class="menu" id="menu" role="menu" hidden></div>

@@ -18,7 +18,7 @@ use crate::log;
 use crate::monitor::ensure_template;
 use crate::source::{self, SourceKind, WHITELIST};
 use crate::state::{AppState, Track};
-use crate::ui::{album_handler, artist_handler, mv_handler, playlist_handler, song_handler};
+use crate::ui::app_handler;
 
 const M3U8_TYPE: &str = "application/vnd.apple.mpegurl; charset=utf-8";
 const BYTERANGE_PARAM: &str = "hook=byterange";
@@ -28,21 +28,14 @@ const BYTERANGE_PARAM: &str = "hook=byterange";
 pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, uri: Uri, headers: HeaderMap) -> Response<Body> {
     let path = uri.path().strip_prefix('/').unwrap_or(uri.path());
 
-    // Apple Music 页面路径本身也是 "https://..."，交给 song / MV / 专辑 / 歌单 / 艺人 UI
-    if parse_song_link(path).is_ok() {
-        return song_handler(uri, &headers).await;
-    }
-    if parse_mv_link(path).is_ok() {
-        return mv_handler(headers).await;
-    }
-    if parse_album_link(path).is_ok() {
-        return album_handler(headers).await;
-    }
-    if parse_playlist_link(path).is_ok() {
-        return playlist_handler(headers).await;
-    }
-    if parse_artist_link(path).is_ok() {
-        return artist_handler(headers).await;
+    // Apple Music 页面路径本身也是 "https://..."：歌曲 / MV / 专辑 / 歌单 / 艺人页都返回单页应用（见 app_handler）
+    if parse_song_link(path).is_ok()
+        || parse_mv_link(path).is_ok()
+        || parse_album_link(path).is_ok()
+        || parse_playlist_link(path).is_ok()
+        || parse_artist_link(path).is_ok()
+    {
+        return app_handler(headers).await;
     }
 
     // 服务端解密默认关闭（节省服务器流量），此时不代理任何 CDN 请求，解密由浏览器完成

@@ -103,7 +103,6 @@
       'album.playTrack': '播放 {name}',
       'album.quality': '音质与下载',
       'album.video': '音乐视频',
-      'album.preparing': '正在解析《{name}》…',
       'album.trackFailed': '无法播放《{name}》：{msg}',
       'album.noPlayable': '《{name}》没有浏览器可直接播放的音质，请打开歌曲页下载。',
       'album.coverAlt': '《{title}》封面',
@@ -331,7 +330,6 @@
       'album.playTrack': 'Play {name}',
       'album.quality': 'Qualities & download',
       'album.video': 'Music video',
-      'album.preparing': 'Preparing “{name}”…',
       'album.trackFailed': 'Cannot play “{name}”: {msg}',
       'album.noPlayable': '“{name}” has no quality this browser can play directly; open the song page to download it.',
       'album.coverAlt': 'Cover of {title}',
@@ -591,7 +589,7 @@
   document.addEventListener('click', (e) => {
     if (e.target.closest && e.target.closest('[data-lang-toggle]')) setLang(lang === 'zh' ? 'en' : 'zh');
   });
-  // 其他文档切换语言后同步：外壳的播放条与 iframe 中的页面、其他标签页
+  // 其他标签页切换语言后同步
   global.addEventListener('storage', (e) => {
     if (e.key === STORAGE_KEY && e.newValue) setLang(e.newValue);
   });
@@ -601,7 +599,8 @@
     apply,
     setLang,
     toggle: () => setLang(lang === 'zh' ? 'en' : 'zh'),
-    onChange: (fn) => listeners.add(fn),
+    /** 返回取消订阅的函数（页面视图卸载时调用） */
+    onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     catalogLang,
     defaultLang,
     get lang() { return lang; },

@@ -44,23 +44,24 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 
 - 界面支持中文 / English，右上角按钮一键切换（会记住选择；首次访问按浏览器语言决定）。切换时正在进行的播放和下载不受影响。
 - 首页显示 wrapper-lite 状态，以及最近打开的歌曲和 MV；页面底部有本项目的 GitHub 链接和对所用开源项目的致谢。
+- 搜索：首页输入框既能粘贴链接，也能按关键词搜索（与 music.apple.com 相同的 amp-api 请求）。输入时显示补全词与直达结果；结果按最佳结果、艺人、专辑、歌曲、歌单、MV 分组，可「加载更多」。wrapper-lite 账号有多个地区时可切换搜索地区。按 `/` 聚焦输入框；搜索词记在地址栏 `?q=` 中，可前进 / 后退与分享。其他页面顶部的搜索框同样跳到首页搜索结果。
 - 全局播放条：与 music.apple.com 相同，底部播放条常驻，在站内页面之间跳转时播放不中断。
   - 专辑、歌单、艺人页开始的播放队列在离开页面后继续按顺序播放，系统媒体控制的上一首 / 下一首同样可用；在歌曲页单独播放另一首歌会结束队列，切换同一首歌的音质则保留。
   - 播放控件与 music.apple.com 相同：随机播放、上一首（已播放超过 3 秒时回到开头）、播放 / 暂停、下一首、重复播放（关 → 全部 → 单曲）。随机与重复状态会记住；专辑、歌单、艺人页的「随机播放」开启随机，「播放」按顺序播放。快退 / 快进用 ← / → 键或系统媒体控制。
   - 待播清单：点播放条右侧的列表按钮打开。单击选中、双击播放，拖动整行调整顺序；悬停时封面左上角的 − 移出清单，「清除」清空后续歌曲。键盘 ↑/↓ 选择、Enter 播放、Delete 移除、Alt+↑/↓ 移动。触屏上点按播放、拖动右侧把手排序，随机 / 重复按钮在清单标题旁。
   - 地址栏、页面标题和浏览器前进 / 后退跟随当前页面，链接可以直接分享，刷新后仍停留在当前页。
   - 空格 / 方向键在任何页面都能控制播放；播放 MV 时会暂停音乐，反之亦然。
-  - 实现方式：浏览器的顶层页面请求（`Sec-Fetch-Dest: document`）由服务端返回外壳页 `shell.html`，播放条、音频、解密 Worker 和歌词界面都在外壳中，站内页面在其全屏 iframe 中打开。不发送该请求头的浏览器直接得到页面本身，由页面自己创建播放条（跳转页面时播放会停止）。
+  - 实现方式：与 music.apple.com 相同，整站是单页应用。服务端对所有页面地址都返回 `app.html`，播放条、音频、解密 Worker 和歌词界面常驻其中；站内链接与搜索框由前端路由（`app.mjs`）接管，用 `history.pushState` 改地址并切换页面视图（`src/ui/views/`），文档不重新加载。不依赖任何请求头，通过 `http://<局域网 IP>` 访问时同样有效。
 
 ### 歌曲
 
 - 自动解析全部音质（无损 ALAC / 杜比全景声 / AAC / HE-AAC，含双耳、缩混版本），显示封面、歌名等信息（经服务端 `/amp` 代理请求 Apple Music 目录接口 amp-api）。
 - 每个音质的「更多」菜单：
-  - **下载解密文件**：在浏览器内解密，显示进度，可随时取消。
+  - **下载解密文件**：在浏览器内解密，显示进度，可随时取消。离开歌曲页后下载在后台继续，完成后照常保存；回到该歌曲页时接着显示进度（关闭或刷新标签页会中断）。
   - 仅 `--hook` 模式：通过服务器下载；**外部播放器**宫格（VLC、PotPlayer、mpv、IINA、Infuse、nPlayer、MX Player 等 14 款，链接协议与 OpenList 相同），用服务端解密的 media m3u8 播放任意音质，当前平台可用的排在前面；**复制地址**，可选 M3U8（播放器用）或 media file（IDM 等下载工具用）。播放器需已安装并注册链接协议，例如桌面版 VLC 默认不注册 `vlc://`。
   - 页面顶部的「外部播放」按钮直接打开最高音质的外部播放器宫格。
 - 内置播放器：MSE 加浏览器端解密。浏览器不支持 ALAC 时通过 FLAC-in-MP4 无损播放；EC-3 的 MSE 不可用时回退为多声道 PCM，并提示空间音频限制。下载保留原始编码；`--hook` 模式下其他编码可走原生 HLS 或直连 media file。支持空格 / 方向键和系统媒体控制。
-- 歌词：正在播放的歌曲有歌词时，播放条上出现「歌词」按钮（在任何页面都能打开，切歌后自动换成新歌的歌词）。歌词视图由 [AMLL（Apple Music-like Lyrics）](https://github.com/amll-dev/applemusic-like-lyrics) 渲染：逐词 / 逐行高亮与弹簧滚动、和声、对唱、翻译与发音、间奏圆点，点击任意一行即可跳转。背景是 AMLL 由专辑封面生成的流动网格渐变，Esc 收起。
+- 歌词：正在播放的歌曲有歌词时，播放条上出现「歌词」按钮（在任何页面都能打开，切歌后自动换成新歌的歌词）。歌词视图由 [AMLL（Apple Music-like Lyrics）](https://github.com/amll-dev/applemusic-like-lyrics) 渲染：逐词 / 逐行高亮与弹簧滚动、和声、对唱、翻译与发音、间奏圆点，点击任意一行即可跳转。背景是 AMLL 由专辑封面生成的流动网格渐变，Esc 收起。点击播放条的封面、标题或空白处同样可以打开歌词。
 
 ### MV
 
@@ -69,7 +70,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 - 视频内独立的 CEA-608 字幕轨由前端解码为浏览器原生字幕，默认显示首条字幕，可通过视频字幕菜单切换或关闭。
 - 下载逐段解密、按时间交错写入 OPFS 临时文件，不在内存中拼接整部 MV。随后 Worker 把它改写为标准（progressive）MP4，`moov` 位于媒体数据之前；每条轨道切成不超过 1 秒的 chunk 并按时间顺序写入，同一时刻的音频、视频和字幕相邻存放，播放器可以从头到尾顺序读取。不进行转码或写 tag。改写期间两份文件同时存在，OPFS 需要约两倍于 MV 的空间。
 - 下载保留 CEA-608 字幕轨。Apple 的字幕轨以一个格式错误的空 sample 开头，新版 FFmpeg 会拒绝它（基于 mpv 的播放器会在播放不久后退出）；下载时会把它原位改写为等长的合法空字幕 sample。
-- 完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件，离开页面时尝试清理已完成文件。标签页关闭或崩溃留下的文件会在下次打开 MV 页面时删除（浏览器不支持 Web Locks 时，文件超过 24 小时才会删除）。
+- 完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件。离开 MV 页面会停止播放、取消进行中的下载，并尝试清理已完成文件。标签页关闭或崩溃留下的文件会在下次打开 MV 页面时删除（浏览器不支持 Web Locks 时，文件超过 24 小时才会删除）。
 
 ## 工作原理
 
@@ -124,13 +125,13 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 
 | 接口 | 说明 |
 |---|---|
-| `GET /` | 首页 |
+| `GET /` | 首页。下面的各页面地址与首页一样都返回单页应用 `app.html`，页面内容由前端加载 |
 | `GET /https://music.apple.com/<cc>/song/<slug>/<id>` | 歌曲页 |
 | `GET /https://music.apple.com/<cc>/music-video/<slug>/<id>` | MV 页 |
 | `GET /status` | wrapper-lite 状态与可用地区 |
 | `GET /parse/song/<adamId>` | 通过 wrapper-lite 获取歌曲 master m3u8，返回各音质变体 |
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | 转发 wrapper-lite `/key` 返回的歌曲轨道解密模板 JSON |
-| `GET /lyrics/<adamId>` | 通过 wrapper-lite `/lyrics` 获取 TTML 歌词，原样返回 XML；没有歌词时返回 404 |
+| `GET /lyrics/<adamId>?language=<语言>` | 通过 wrapper-lite `/lyrics` 获取 TTML 歌词，原样返回 XML；没有歌词时返回 404。`language` 可选，为歌曲所在地区的默认语言（如 `zh-Hans-CN`） |
 | `GET /parse/mv/<adamId>` | MV master 播放列表文本与最终 CDN 地址 |
 | `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | 专辑页（与 music.apple.com 相同的 `editorialVideo` 动态封面：宽屏方形、手机全宽 3:4；曲目列表、连续播放、相关推荐货架；数据来自与 music.apple.com 相同的 amp-api `albums` 请求）。带 `?i=` 的专辑链接会打开歌曲页 |
 | `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | 歌单页（编辑歌单与公开的用户歌单：与专辑页相同的动态封面；曲目带封面、艺人、专辑列；连续播放；精选艺人、策展人的更多歌单货架；数据来自与 music.apple.com 相同的 amp-api `playlists` 请求，经 `/amp` 获取） |
@@ -138,7 +139,7 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 | `GET /amp/v1/catalog/<path>?<query>` | 代理 Apple Music 目录接口（`amp-api-edge.music.apple.com/v1/catalog/...`，首页搜索使用），自动附带 music.apple.com 网页版 developer token，查询参数原样转发 |
 | `GET /amp/v1/storefronts` | amp-api 全部地区信息（查询参数原样转发，以便跟随分页 `next`）；页面只拉取一次并缓存在 localStorage（30 天），据各地区 `supportedLanguageTags` 选择目录语言 `l`（地区不支持的 `l` 会被静默回退到默认语言，如 `cn` 只支持 `zh-Hans-CN` / `en-GB`） |
 | `GET /mv/webplayback/<adamId>`、`POST /mv/license` | MV 转发到 wrapper-lite `/webplayback` 与 `/license` |
-| `/assets/...` | 内嵌在二进制中的页面、脚本与按需加载的 WASM（`no-cache` + ETag） |
+| `/assets/...` | 内嵌在二进制中的前端路由、页面视图（`/assets/views/`）、脚本、样式与按需加载的 WASM（`no-cache` + ETag） |
 | `/https://aod.itunes.apple.com/itunes-assets/...` | 仅 `--hook`：歌曲解密代理 |
 
 ## 命令行参数
@@ -183,9 +184,9 @@ cargo test --workspace
 |---|---|
 | 离线，仅需 Node | `node --test tests/player_*.cjs`、`node tests/mv_hls.cjs`、`node tests/mv_captions.cjs` |
 | 离线，Playwright + Chrome 与本地 fixture | `node tests/ui_layout.cjs <playwright>`、`node tests/lyrics_ui.cjs <playwright>`、`node tests/mv_ui.cjs <playwright>` |
-| 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`）、`node tests/search_ui.cjs <playwright> [base]`、`node tests/album_ui.cjs <playwright> [base]`、`node tests/playlist_ui.cjs <playwright> [base]`、`node tests/artist_ui.cjs <playwright> [base]`（需能访问 music.apple.com）、`node tests/shell_ui.cjs <playwright> [base]`（全局播放条：跳转后继续播放、队列、前进 / 后退、歌词） |
+| 在线（需运行 am-hook、wrapper-lite 并能访问 Apple CDN） | `node tests/mv_live.cjs <playwright> [base]`、`node tests/mv_captions_live.cjs <playwright> [base]`、`node tests/alac_recovery.cjs <playwright>`、`node tests/alac_source_recovery.cjs <playwright>`（需 `--hook`）、`node tests/search_ui.cjs <playwright> [base]`、`node tests/album_ui.cjs <playwright> [base]`、`node tests/playlist_ui.cjs <playwright> [base]`、`node tests/artist_ui.cjs <playwright> [base]`（需能访问 music.apple.com）、`node tests/app_ui.cjs <playwright> [base]`（单页应用：跳转后继续播放、队列、前进 / 后退、歌词） |
 
-`<playwright>` 为 Playwright 包路径；在线测试默认地址为 `http://127.0.0.1:18888`（MV）或 `AM_HOOK_URL` / `http://127.0.0.1:8888`（ALAC）。
+`<playwright>` 为 Playwright 包路径；在线测试的 `[base]` 省略时：MV 测试默认 `http://127.0.0.1:18888`，其余测试默认 `AM_HOOK_URL` 或 `http://127.0.0.1:8888`（ALAC 测试只读 `AM_HOOK_URL`）。
 
 ## 项目结构
 
@@ -195,24 +196,27 @@ src/
   main.rs              服务启动
   lib.rs               路由构建
   source.rs            源地址规整与类型识别
-  proxy.rs             fallback：歌曲 / MV 页面、--hook 请求分流、Range 流式响应、分片调度
+  amp.rs               amp-api 目录接口代理（自动获取并刷新 music.apple.com 网页版 developer token）
+  log.rs               请求日志
+  proxy.rs             fallback：歌曲 / MV / 专辑 / 歌单 / 艺人页面（返回单页应用）、--hook 请求分流、Range 流式响应、分片调度
   m3u8.rs              Apple Music 链接解析、HLS 播放列表解析和加密标记剥离
   state.rs             轨道上下文（并发去重）和分片缓存
-  wrapper.rs           wrapper-lite 请求客户端（master m3u8、解密模板）
+  wrapper.rs           wrapper-lite 请求客户端（master m3u8、解密模板、歌词）
   monitor.rs           --hook：后台模板拉取和 TTL 清理
   ui.rs                Web 接口（状态、解析、模板、歌词、MV 转发、静态资源）
   ui/
-    home.html / song.html / mv.html / app.css / mv.css   页面与样式
-    shell.html         外壳页：常驻播放条与歌词界面，站内页面在其 iframe 中打开
+    app.html / app.mjs 单页应用：常驻播放条与歌词界面；前端路由接管站内链接并切换页面视图
+    views/             页面视图：<name>.html 页面内容、<name>.mjs 页面脚本（home / song / mv / album / playlist / artist）
+    app.css / mv.css   样式
     i18n.js            中英文文案
-    player.js          歌曲播放器（MSE）与播放队列；外壳中的页面经 pagePlayer() 共用外壳的播放器
+    player.js          歌曲播放器（MSE）与播放队列；页面视图经 scope() 使用常驻的播放器
+    motion-art.mjs     专辑、歌单、艺人页的动态封面（editorialVideo HLS，MSE 播放）
     decrypt.js         歌曲解密：m3u8 解析、Worker 池、模板、下载与 OPFS
     hook-worker.js     Worker：调用 wasm 解密、写入 OPFS
     hook.wasm          crates/am-wasm 的编译产物
     flac.wasm / flac-transcode-worker.js / flac-init.bin   ALAC 转 FLAC 播放
     ec3.wasm / ec3-runtime.mjs / ec3-decode-worker.js      EC-3 PCM 回退
     lyrics/            歌词界面（打包好的 AMLL，见 browser/amll；ttml.mjs 解析 TTML，panel.mjs 接入播放器）
-    mv-page.mjs        MV 页面逻辑
     mv-hls.mjs / mv-engine.mjs                            MV 清单解析、播放与下载
     media-worker.js / media.wasm                          MV 与歌曲 defrag 共用的 Worker；crates/am-media-wasm 的编译产物
     mv-captions.mjs / mv-cea608.mjs                       CEA-608 字幕
@@ -228,7 +232,7 @@ browser/
   cea608/              来自 hls.js 的 CEA-608 解析器
   amll/                AMLL 歌词播放器的打包入口与构建说明
 scripts/               WASM / 资源构建脚本
-tests/                 Rust 集成测试与 Node 浏览器测试
+tests/                 Rust 集成测试与 Node 浏览器测试（app.cjs 为打开页面的公用函数）
 ```
 
 ## 许可证

@@ -1,0 +1,73 @@
+
+<div class="page">
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+      </span>
+      <span class="brand-name">am-hook</span>
+    </a>
+    <form class="top-search" action="/" method="get" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input name="q" type="search" enterkeyhint="search" autocomplete="off" data-i18n-attr="placeholder=search.placeholder,aria-label=search.placeholder">
+    </form>
+    <div class="topbar-right">
+      <button class="btn lang-btn" type="button" data-lang-toggle>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
+        <span class="lang-label"></span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 头部三种样式（官网 artist-expression-header）：circular 圆形头像 / wide 通栏图片 / video 通栏动态视频 -->
+    <section class="artist-hero circular" id="hero">
+      <div class="artist-hero-bg" id="hero-bg" aria-hidden="true"></div>
+      <div class="artist-portrait" id="portrait"></div>
+      <div class="artist-hero-info">
+        <h1 class="artist-name skeleton" id="name">&nbsp;</h1>
+        <div class="album-actions artist-actions">
+          <button class="btn btn-primary btn-pill" id="play-all" type="button" disabled>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
+            <span data-i18n="album.play"></span>
+          </button>
+          <button class="btn btn-primary btn-pill" id="shuffle" type="button" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
+            <span data-i18n="album.shuffle"></span>
+          </button>
+          <a class="btn btn-pill" id="apple-link" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+            Apple Music
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <div class="alert info" id="alert" hidden aria-live="polite"></div>
+
+    <!-- 官网 featured-content-and-tracks：最新发行 + 歌曲排行 -->
+    <section class="artist-featured" id="featured" hidden>
+      <div class="latest-wrap" id="latest-wrap" hidden>
+        <h2 class="shelf-heading" id="latest-title"></h2>
+        <a class="latest" id="latest"></a>
+      </div>
+      <div class="top-songs-wrap" id="top-songs-wrap" hidden>
+        <h2 class="shelf-heading" id="top-songs-title"></h2>
+        <div class="top-songs" id="top-songs"></div>
+      </div>
+    </section>
+
+    <div id="shelves"></div>
+
+    <section class="shelf-section artist-about" id="about" hidden>
+      <h2 class="shelf-heading" id="about-title"></h2>
+      <div class="artist-about-body">
+        <div class="album-notes" id="bio" hidden>
+          <p class="album-notes-text" id="bio-text"></p>
+          <button class="album-notes-more" id="bio-more" type="button" hidden></button>
+        </div>
+        <dl class="artist-facts" id="facts"></dl>
+      </div>
+    </section>
+  </main>
+</div>

@@ -30,8 +30,10 @@ const variants = [
           if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us', 'cn'] } });
           if (url.pathname.startsWith('/parse/song/')) return route.fulfill({ json: { masterUrl: 'https://example.com/master.m3u8', hook: true, variants } });
           if (url.pathname.startsWith('/lyrics/')) return route.fulfill({ status: 404, json: { code: 1, msg: 'lyrics not found' } });
+          // 单页应用：页面地址返回 app.html，页面视图在 /assets/views/
           const file = url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
-            : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : url.pathname === '/' ? 'home.html' : 'song.html';
+            : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
+            : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
           const type = file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html';
           return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: type });
         });
@@ -46,9 +48,11 @@ const variants = [
         if (width === 1440 && lang === 'zh') await page.screenshot({ path: 'target/ui-home.png', fullPage: true });
         await page.locator('#form button').click();
         assert.equal(await page.locator('#input').getAttribute('aria-invalid'), 'true');
-        await page.locator('#input').fill('123456789');
+        // 首页只识别 Apple Music 链接，其余输入按关键词搜索
+        await page.locator('#input').fill('https://music.apple.com/us/song/_/123456789');
         await page.locator('#form button').click();
-        await page.waitForURL('**' + songPath);
+        // 单页应用：站内跳转不触发 load 事件
+        await page.waitForURL('**' + songPath, { waitUntil: 'commit' });
         await page.locator('.variant').first().waitFor();
         await page.waitForFunction(() => !document.getElementById('title').classList.contains('skeleton'));
         assert.match(await page.locator('#title').textContent(), /beautifully long title/, 'song metadata from the /amp fixture');
