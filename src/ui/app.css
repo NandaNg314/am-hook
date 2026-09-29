@@ -692,6 +692,88 @@ body.app-shell, body.app-shell.has-player { overflow: hidden; padding: 0; }
 .player-notice { grid-column: 1 / -1; margin: -2px 0 0; color: var(--muted); font-size: 12px; }
 .player-notice[hidden] { display: none; }
 
+/* 随机 / 重复：与 music.apple.com 相同，放在播放控件两侧，开启时反色；窄屏时移到待播清单标题旁 */
+.player-switch {
+  width: 32px; height: 28px; flex: 0 0 auto; display: grid; place-items: center;
+  border: 0; border-radius: 6px; background: none; color: var(--muted);
+}
+.player-switch svg { width: 17px; height: 17px; }
+.player-switch:hover { color: var(--text); background: var(--surface-3); }
+.player-switch[aria-pressed="true"] { background: var(--muted); color: var(--surface); }
+.player-switch[aria-pressed="true"]:hover { background: var(--text); color: var(--surface); }
+.skip-prev svg, .skip-next svg { width: 20px; height: 20px; }
+.player-skip:disabled { opacity: .35; cursor: default; }
+.player-skip:disabled:hover { color: var(--muted); background: none; }
+
+/* 待播清单：播放条右侧按钮打开，浮在播放条上方，右边缘与播放条对齐（位置由 player.js 设置）。
+   行的尺寸参照 music.apple.com：55px 高、40px 封面、分隔线从歌名处开始（第一行通栏），右侧时长 */
+.player-queue {
+  width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center;
+  border: 0; border-radius: 8px; background: none; color: var(--muted);
+}
+.player-queue svg { width: 19px; height: 19px; }
+.player-queue:hover { color: var(--text); background: var(--surface-3); }
+.player-queue[aria-expanded="true"] { color: var(--accent); }
+.queue-panel {
+  position: fixed; z-index: 11; width: min(400px, calc(100vw - 24px)); max-height: min(600px, 66dvh);
+  display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent); backdrop-filter: blur(24px); box-shadow: var(--shadow);
+  animation: queue-in .18s ease-out;
+}
+.queue-panel[hidden] { display: none; }
+@keyframes queue-in { from { opacity: 0; transform: translateY(8px); } }
+.queue-head { display: flex; align-items: center; gap: 8px; padding: 18px 12px 10px 20px; }
+.queue-title { flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 700; }
+.queue-switches { display: none; align-items: center; gap: 8px; }
+.queue-clear { min-height: 32px; padding: 0 8px; border: 0; border-radius: 7px; background: none; color: var(--accent); font-size: 15px; }
+.queue-clear:hover { color: var(--accent-hover); }
+.queue-clear[hidden] { display: none; }
+.queue-empty { margin: 0; padding: 24px 28px 32px; color: var(--muted); font-size: 13px; line-height: 1.5; text-align: center; }
+.queue-empty[hidden] { display: none; }
+.queue-list {
+  margin: 0; padding: 0 10px 10px; list-style: none; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.queue-item {
+  position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; column-gap: 12px;
+  height: 55px; padding: 0 10px; border-radius: 6px; cursor: default; user-select: none;
+}
+.queue-item::before { content: ""; position: absolute; top: 0; left: 62px; right: 10px; border-top: 1px solid var(--line); }
+.queue-item:first-child::before { left: 10px; }
+.queue-item.selected, .queue-item.dragging { background: var(--surface-3); }
+.queue-item.selected::before, .queue-item.selected + .queue-item::before,
+.queue-item.dragging::before, .queue-item.dragging + .queue-item::before { border-top-color: transparent; }
+.queue-item:focus { outline: none; }
+.queue-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.queue-item.dragging { z-index: 1; box-shadow: var(--shadow); }
+.queue-list.sorting, .queue-list.sorting .queue-item { cursor: grabbing; }
+.queue-art-wrap { position: relative; width: 40px; height: 40px; }
+.queue-art {
+  display: block; width: 40px; height: 40px; border-radius: 4px; object-fit: cover;
+  background: var(--surface-3); box-shadow: 0 3px 5px -4px rgba(0, 0, 0, .3); -webkit-user-drag: none;
+}
+.queue-remove {
+  position: absolute; top: -5px; left: -6px; width: 22px; height: 22px; padding: 0; display: grid; place-items: center;
+  border: 0; border-radius: 50%; background: #8e8e93; color: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  opacity: 0; pointer-events: none;
+}
+.queue-remove svg { width: 14px; height: 14px; }
+.queue-item:hover .queue-remove, .queue-item.selected .queue-remove { opacity: 1; pointer-events: auto; }
+.queue-remove:hover { background: #6e6e73; }
+.queue-list.sorting .queue-remove { opacity: 0; }
+.queue-text { min-width: 0; }
+.queue-name, .queue-artist { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-name { font-size: 13px; }
+.queue-artist { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.queue-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.queue-grip { display: none; width: 32px; height: 44px; place-items: center; margin-right: -6px; color: var(--faint); touch-action: none; }
+.queue-grip svg { width: 18px; height: 18px; }
+/* 触屏：点按播放，拖动右侧把手排序（与 iOS 相同），移除按钮常显 */
+@media (hover: none), (pointer: coarse) {
+  .queue-grip { display: grid; }
+  .queue-remove { opacity: 1; pointer-events: auto; }
+}
+
 .menu-item, .menu-toggle, .seg-btn { min-height: 44px; }
 .menu-hint { white-space: normal; overflow-wrap: anywhere; }
 .player { bottom: max(14px, env(safe-area-inset-bottom)); }
@@ -788,6 +870,8 @@ body.app-shell, body.app-shell.has-player { overflow: hidden; padding: 0; }
   .seek-thumb { transform: translateY(-50%); }
   .player-right { grid-column: 2; grid-row: 1; }
   .player-right .volume { display: none; }
+  .player-center .player-switch { display: none; }
+  .queue-switches { display: flex; }
   .player-mode { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
   .menu { width: calc(100vw - 24px); min-width: 0; border-radius: 18px; padding: 10px; }
   .menu-row { flex-wrap: wrap; }
@@ -1029,13 +1113,18 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-controls .player .time { grid-row: 2; min-width: 0; font-size: 11px; color: var(--faint); }
 .lyrics-controls .player .time-cur { grid-column: 1; justify-self: start; text-align: left; }
 .lyrics-controls .player .time-total { grid-column: 5; justify-self: end; text-align: right; }
-.lyrics-controls .player .skip-back { grid-row: 3; grid-column: 2; }
+.lyrics-controls .player .skip-prev { grid-row: 3; grid-column: 2; }
 .lyrics-controls .player .player-toggle { grid-row: 3; grid-column: 3; width: 52px; height: 52px; margin: 8px 6px; background: #f5f3f1; color: #1b1a19; }
 .lyrics-controls .player .player-toggle svg { width: 20px; height: 20px; }
-.lyrics-controls .player .skip-fwd { grid-row: 3; grid-column: 4; }
+.lyrics-controls .player .skip-next { grid-row: 3; grid-column: 4; }
+/* 随机 / 重复在歌词界面排在播放控件两端，窄屏时也显示 */
+.lyrics-controls .player .player-switch { display: grid; grid-row: 3; color: rgba(255, 255, 255, .7); }
+.lyrics-controls .player .player-shuffle { grid-column: 1; justify-self: start; }
+.lyrics-controls .player .player-repeat { grid-column: 5; justify-self: end; }
+.lyrics-controls .player .player-switch[aria-pressed="true"] { background: rgba(255, 255, 255, .85); color: #1b1a19; }
 .lyrics-controls .player .player-skip { color: rgba(255, 255, 255, .8); }
 /* 歌词按钮在这里由右上角的收起按钮代替；音量单独一行 */
-.lyrics-controls .player .player-lyrics { display: none; }
+.lyrics-controls .player .player-lyrics, .lyrics-controls .player .player-queue { display: none; }
 .lyrics-controls .player .player-right { grid-row: 4; grid-column: 1 / -1; }
 .lyrics-controls .player .volume { width: 100%; height: 24px; accent-color: #e8e6e3; opacity: .75; }
 /* 播放方式提示（FLAC 转码、EC-3 / Atmos 回退）只在普通播放条显示；播放错误仍显示 */

@@ -112,6 +112,14 @@
   let probe = null;
 
   /** entry: { track, name, artist, album, artwork } → play() 使用的 item */
+  /** 就地打乱 list[start..]（Fisher-Yates） */
+  function shuffleFrom(list, start) {
+    for (let i = list.length - 1; i > start; i--) {
+      const j = start + Math.floor(Math.random() * (i - start + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
+
   async function resolveEntry(entry) {
     const res = await fetch(`/parse/song/${entry.track}`);
     const data = await res.json().catch(() => ({}));
@@ -617,6 +625,12 @@
   const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>';
   const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
   const ICON_LOADING = '<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>';
+  const ICON_QUEUE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11M4 11h11M4 16h7"/><path d="M16 14.5v5.5"/><circle cx="14" cy="20" r="2"/><path d="M16 14.5 20 13"/></svg>';
+  const ICON_GRIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 8h14M5 12h14M5 16h14"/></svg>';
+  const ICON_REMOVE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M7 12h10"/></svg>';
+  const ICON_SHUFFLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3c2.2 0 3.4 1 4.5 2.8l3 4.4C14.6 16 15.8 17 18 17h2.5"/><path d="M3 17h3c1.6 0 2.7-.6 3.6-1.6M14.4 8.6C15.3 7.6 16.4 7 18 7h2.5"/><path d="m18 4 3 3-3 3M18 14l3 3-3 3"/></svg>';
+  const ICON_REPEAT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12V9.5A3.5 3.5 0 0 1 7.5 6H20"/><path d="m17 3 3 3-3 3"/><path d="M20 12v2.5a3.5 3.5 0 0 1-3.5 3.5H4"/><path d="m7 21-3-3 3-3"/></svg>';
+  const ICON_REPEAT_ONE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12V9.5A3.5 3.5 0 0 1 7.5 6H20"/><path d="m17 3 3 3-3 3"/><path d="M20 12v2.5a3.5 3.5 0 0 1-3.5 3.5H4"/><path d="m7 21-3-3 3-3"/><path d="M11 10.5 12.5 9.5v5" stroke-width="1.8"/></svg>';
 
   /**
    * 页面底部播放条。
@@ -640,8 +654,17 @@
       this.pendingTrack = null;
       /** 需要为播放条留出底部空间的文档（自身与 iframe 中的页面） */
       this.docs = new Set([root.ownerDocument]);
+      /** 随机播放（true / false）与重复播放（off / all / one），与 Apple Music 相同，下次打开时保留 */
+      this.shuffle = false;
+      this.repeat = 'off';
+      try {
+        this.shuffle = localStorage.getItem('am-hook:shuffle') === '1';
+        const repeat = localStorage.getItem('am-hook:repeat');
+        if (repeat === 'all' || repeat === 'one') this.repeat = repeat;
+      } catch {}
       new ResizeObserver(() => this.layout()).observe(root);
       this.bindUi();
+      this.bindQueueUi();
       this.bindKeys(root.ownerDocument);
       try {
         const v = parseFloat(localStorage.getItem('am-hook:volume'));
@@ -659,6 +682,7 @@
         this.$('.player-title').textContent = this.current.title || t('player.unknownTitle');
       }
       this.renderError();
+      this.renderQueueLang();
     }
 
     renderMode() {
@@ -684,13 +708,19 @@
     }
 
     onChange(fn) { this.listeners.add(fn); }
-    emit() { this.listeners.forEach((fn) => fn(this.current, !this.transport().paused)); }
+    emit() {
+      this.listeners.forEach((fn) => fn(this.current, !this.transport().paused));
+      this.renderModes();
+      this.renderQueue();
+    }
 
     bindUi() {
       const a = this.audio;
       this.$('.player-toggle').addEventListener('click', () => this.toggle());
-      this.$('.skip-back').addEventListener('click', () => this.seekBy(-10));
-      this.$('.skip-fwd').addEventListener('click', () => this.seekBy(10));
+      this.$('.skip-prev').addEventListener('click', () => this.previous());
+      this.$('.skip-next').addEventListener('click', () => this.next());
+      this.$('.player-shuffle').addEventListener('click', () => this.setShuffle(!this.shuffle));
+      this.$('.player-repeat').addEventListener('click', () => this.cycleRepeat());
       this.$('.volume').addEventListener('input', (e) => {
         a.volume = Number(e.target.value);
         if (this.pcm) this.pcm.gain.gain.value = a.volume;
@@ -746,20 +776,359 @@
         ms.setActionHandler('seekforward', () => this.seekBy(10));
         try { ms.setActionHandler('seekto', (d) => { this.transport().currentTime = d.seekTime; }); } catch {}
         try {
-          ms.setActionHandler('nexttrack', () => this.skipTrack(1));
-          ms.setActionHandler('previoustrack', () => this.skipTrack(-1));
+          ms.setActionHandler('nexttrack', () => this.next());
+          ms.setActionHandler('previoustrack', () => this.previous());
         } catch {}
       }
     }
 
     /** 空格播放 / 暂停，左右方向键快退 / 快进；iframe 中的页面也要绑定，按键不会传到外壳 */
     bindKeys(doc) {
+      // 待播清单面板：按 Esc 或点击面板与播放条以外的地方（含 iframe 中的页面）时收起
+      doc.addEventListener('pointerdown', (e) => {
+        if (this.queuePanel.hidden || this.queuePanel.contains(e.target) || this.root.contains(e.target)) return;
+        this.closeQueue();
+      });
       doc.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !this.queuePanel.hidden) { this.closeQueue(true); return; }
         if (!this.current || e.defaultPrevented || e.target.closest('input, textarea, button, a, [role="slider"]')) return;
         if (e.code === 'Space') { e.preventDefault(); this.toggle(); }
         if (e.key === 'ArrowLeft') this.seekBy(-5);
         if (e.key === 'ArrowRight') this.seekBy(5);
       });
+    }
+
+    /**
+     * 待播清单，布局与交互参照 music.apple.com 的「待播清单」侧栏：
+     * 标题与「清除」、55px 的行（封面 / 歌名与艺人 / 时长），悬停时封面左上角出现移除按钮；
+     * 鼠标单击选中、双击播放，拖动整行调整顺序；触屏点按播放，拖动右侧把手调整顺序（与 iOS 相同）。
+     * 键盘：↑/↓ 选择，Enter 播放，Delete 移除，Alt+↑/↓ 移动。
+     * 窄屏时随机 / 重复按钮从播放条移到清单标题旁（与手机版相同）。
+     * 面板放在播放条所在的文档中（外壳时为外壳），浮在播放条上方。
+     */
+    bindQueueUi() {
+      const doc = this.root.ownerDocument;
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.className = 'player-queue';
+      button.innerHTML = ICON_QUEUE;
+      button.setAttribute('aria-expanded', 'false');
+      this.$('.player-right').insertBefore(button, this.$('.player-mode'));
+
+      const panel = doc.createElement('section');
+      panel.className = 'queue-panel';
+      panel.id = 'queue-panel';
+      panel.hidden = true;
+      panel.innerHTML = '<header class="queue-head"><h2 class="queue-title"></h2>'
+        + `<div class="queue-switches"><button class="player-switch player-shuffle" type="button" aria-pressed="false">${ICON_SHUFFLE}</button>`
+        + '<button class="player-switch player-repeat" type="button" aria-pressed="false"></button></div>'
+        + '<button class="queue-clear" type="button"></button></header>'
+        + '<p class="queue-empty" hidden></p><ol class="queue-list"></ol>';
+      doc.body.appendChild(panel);
+      button.setAttribute('aria-controls', panel.id);
+      this.queueButton = button;
+      this.queuePanel = panel;
+      this.queueKey = '';
+      this.queueSelected = null;
+
+      button.addEventListener('click', () => (panel.hidden ? this.openQueue() : this.closeQueue()));
+      panel.querySelector('.player-shuffle').addEventListener('click', () => this.setShuffle(!this.shuffle));
+      panel.querySelector('.player-repeat').addEventListener('click', () => this.cycleRepeat());
+      panel.querySelector('.queue-clear').addEventListener('click', () => {
+        if (this.queue) {
+          this.queue.entries.splice(this.queue.pos + 1);
+          if (this.queue.ordered) this.queue.ordered = this.queue.entries.slice();
+        }
+        this.renderQueue(true);
+        this.renderModes();
+      });
+
+      const list = panel.querySelector('.queue-list');
+      const rowOf = (target) => target.closest('.queue-item');
+      const indexOf = (row) => Number(row.dataset.index);
+      let pointerType = 'mouse';
+      list.addEventListener('click', (e) => {
+        const row = rowOf(e.target);
+        if (!row || !this.queue || this.queueDrag) return;
+        if (e.target.closest('.queue-remove')) this.removeQueueEntry(indexOf(row));
+        else if (pointerType === 'mouse') this.selectQueueRow(row);
+        else this.playAt(indexOf(row));
+      });
+      list.addEventListener('dblclick', (e) => {
+        const row = rowOf(e.target);
+        if (row && this.queue && !e.target.closest('.queue-remove')) this.playAt(indexOf(row));
+      });
+      list.addEventListener('keydown', (e) => {
+        const row = rowOf(e.target);
+        if (!row || !this.queue || e.target !== row) return;
+        const index = indexOf(row);
+        const rows = [...list.querySelectorAll('.queue-item')];
+        const at = rows.indexOf(row);
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.playAt(index); return; }
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); this.removeQueueEntry(index); return; }
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        const step = e.key === 'ArrowUp' ? -1 : 1;
+        if (!e.altKey) {
+          const next = rows[at + step];
+          if (next) { this.selectQueueRow(next); next.focus(); }
+          return;
+        }
+        const to = index + step;
+        if (to <= this.queue.pos || to >= this.queue.entries.length) return;
+        this.moveQueueEntry(index, to);
+        list.querySelector(`.queue-item[data-index="${to}"]`).focus();
+      });
+
+      // 拖动排序：经过其他行的中线时交换位置，松开后按新顺序写回队列。
+      // 鼠标按住整行移动超过 4px 开始拖动；把手（触屏时显示）按下即开始。
+      // 指针捕获放在列表上：拖动的行会在 DOM 中移动，移动会让行内元素失去捕获
+      list.addEventListener('pointerdown', (e) => {
+        pointerType = e.pointerType || 'mouse';
+        const row = rowOf(e.target);
+        if (!row || !this.queue || e.button !== 0 || e.target.closest('.queue-remove')) return;
+        const entry = this.queue.entries[indexOf(row)];
+        const grip = e.target.closest('.queue-grip');
+        if (!entry || (!grip && pointerType !== 'mouse')) return;
+        if (grip) e.preventDefault();
+        const startY = e.clientY;
+        let active = false;
+        const begin = () => {
+          active = true;
+          list.setPointerCapture(e.pointerId);
+          row.classList.add('dragging');
+          list.classList.add('sorting');
+          this.queueDrag = { row };
+          this.selectQueueRow(row);
+        };
+        const move = (ev) => {
+          if (!active) {
+            if (Math.abs(ev.clientY - startY) < 4) return;
+            begin();
+          }
+          ev.preventDefault();
+          // 靠近列表上下边缘时自动滚动
+          const box = list.getBoundingClientRect();
+          if (ev.clientY < box.top + 28) list.scrollTop -= 8;
+          else if (ev.clientY > box.bottom - 28) list.scrollTop += 8;
+          for (const other of list.querySelectorAll('.queue-item:not(.dragging)')) {
+            const r = other.getBoundingClientRect();
+            const mid = r.top + r.height / 2;
+            // other 在拖动行之前：指针越过它的中线往上时移到它前面；在之后：越过中线往下时移到它后面
+            const above = other.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING;
+            if (above && ev.clientY < mid) other.before(row);
+            else if (!above && ev.clientY > mid) other.after(row);
+          }
+        };
+        const end = () => {
+          list.removeEventListener('pointermove', move);
+          list.removeEventListener('pointerup', end);
+          list.removeEventListener('pointercancel', end);
+          if (!active) return;
+          row.classList.remove('dragging');
+          list.classList.remove('sorting');
+          // 点击事件在 pointerup 之后触发，等它过去再允许点击
+          setTimeout(() => { this.queueDrag = null; }, 0);
+          // 拖动期间可能已播完一首（pos 变化）或队列被替换，按曲目重新定位
+          const q = this.queue;
+          const from = q ? q.entries.indexOf(entry) : -1;
+          const to = q ? q.pos + 1 + [...list.querySelectorAll('.queue-item')].indexOf(row) : -1;
+          if (q && from > q.pos && to > q.pos && to < q.entries.length && to !== from) this.moveQueueEntry(from, to);
+          else this.renderQueue(true);
+        };
+        list.addEventListener('pointermove', move);
+        list.addEventListener('pointerup', end);
+        list.addEventListener('pointercancel', end);
+        if (grip) begin();
+      });
+
+      this.renderQueueLang();
+    }
+
+    /** 选中一行（鼠标单击、方向键），重绘后按曲目保留 */
+    selectQueueRow(row) {
+      this.queueSelected = this.queue ? this.queue.entries[Number(row.dataset.index)] : null;
+      for (const other of this.queuePanel.querySelectorAll('.queue-item')) other.classList.toggle('selected', other === row);
+    }
+
+    /** 把队列中 from 处的曲目移到 to（均在当前曲目之后） */
+    moveQueueEntry(from, to) {
+      const entries = this.queue.entries;
+      const [entry] = entries.splice(from, 1);
+      entries.splice(to, 0, entry);
+      this.renderQueue(true);
+    }
+
+    removeQueueEntry(index) {
+      const q = this.queue;
+      const [entry] = q.entries.splice(index, 1);
+      if (q.ordered) q.ordered.splice(q.ordered.indexOf(entry), 1);
+      this.renderQueue(true);
+      this.renderModes();
+      // 焦点移到原位置的下一行，没有时回到上一行或清单按钮
+      const rows = this.queuePanel.querySelectorAll('.queue-item');
+      const next = rows[Math.min(index - q.pos - 1, rows.length - 1)];
+      if (next) { this.selectQueueRow(next); next.focus(); } else this.queueButton.focus();
+    }
+
+    openQueue() {
+      this.queuePanel.hidden = false;
+      this.queueButton.setAttribute('aria-expanded', 'true');
+      this.renderQueue(true);
+      this.placeQueue();
+      this.queuePanel.querySelector('.queue-list').scrollTop = 0;
+    }
+
+    closeQueue(refocus = false) {
+      if (this.queuePanel.hidden) return;
+      this.queuePanel.hidden = true;
+      this.queueButton.setAttribute('aria-expanded', 'false');
+      this.queueSelected = null;
+      if (refocus) this.queueButton.focus();
+    }
+
+    /** 面板右边缘与播放条对齐，底部在播放条上方；播放条并入歌词界面或隐藏时收起 */
+    placeQueue() {
+      if (this.queuePanel.hidden) return;
+      if (this.root.hidden || this.root.closest('.lyrics-controls')) { this.closeQueue(); return; }
+      const win = this.root.ownerDocument.defaultView;
+      const bar = this.root.getBoundingClientRect();
+      this.queuePanel.style.right = `${Math.max(12, win.innerWidth - bar.right)}px`;
+      this.queuePanel.style.bottom = `${win.innerHeight - bar.top + 10}px`;
+    }
+
+    renderQueueLang() {
+      const label = t('player.queue');
+      this.queueButton.setAttribute('aria-label', label);
+      this.queueButton.title = label;
+      this.queuePanel.setAttribute('aria-label', label);
+      this.queuePanel.querySelector('.queue-title').textContent = label;
+      this.queuePanel.querySelector('.queue-clear').textContent = t('player.queueClear');
+      this.queuePanel.querySelector('.queue-empty').textContent = t('player.queueEmpty');
+      this.renderModes();
+      this.renderQueue(true);
+    }
+
+    /** 面板打开时重绘列表；队列与播放状态未变时跳过，拖动中不重绘 */
+    renderQueue(force = false) {
+      if (!this.queuePanel || this.queuePanel.hidden || (this.queueDrag && !force)) return;
+      const q = this.queue;
+      const upcoming = q ? q.entries.slice(q.pos + 1) : [];
+      const key = q ? `${q.pos}|${q.entries.map((e) => e.track).join(',')}` : '';
+      if (!force && key === this.queueKey) return;
+      this.queueKey = key;
+      this.queuePanel.querySelector('.queue-empty').hidden = upcoming.length > 0;
+      this.queuePanel.querySelector('.queue-clear').hidden = !upcoming.length;
+      const doc = this.root.ownerDocument;
+      const list = this.queuePanel.querySelector('.queue-list');
+      const focused = doc.activeElement && list.contains(doc.activeElement);
+      list.replaceChildren(...upcoming.map((entry, i) => {
+        const li = doc.createElement('li');
+        li.className = 'queue-item';
+        li.classList.toggle('selected', entry === this.queueSelected);
+        li.dataset.index = String(q.pos + 1 + i);
+        li.tabIndex = 0;
+        li.title = t('player.queueHint');
+        li.innerHTML = '<span class="queue-art-wrap"><img class="queue-art" alt="" loading="lazy" draggable="false">'
+          + `<button class="queue-remove" type="button">${ICON_REMOVE}</button></span>`
+          + '<span class="queue-text"><span class="queue-name"></span><span class="queue-artist"></span></span>'
+          + `<span class="queue-time"></span><span class="queue-grip" aria-hidden="true">${ICON_GRIP}</span>`;
+        const art = li.querySelector('.queue-art');
+        if (entry.artwork) art.src = entry.artwork; else art.removeAttribute('src');
+        li.querySelector('.queue-name').textContent = entry.name || t('player.unknownTitle');
+        li.querySelector('.queue-artist').textContent = entry.artist || '';
+        li.querySelector('.queue-time').textContent = entry.duration ? formatTime(entry.duration / 1000) : '';
+        const remove = li.querySelector('.queue-remove');
+        remove.tabIndex = -1;
+        remove.setAttribute('aria-label', t('player.queueRemove', { name: entry.name || '' }));
+        remove.title = t('player.queueRemove', { name: entry.name || '' });
+        return li;
+      }));
+      if (focused && !list.contains(doc.activeElement)) this.queueButton.focus();
+    }
+
+    /* ---------- 随机播放与重复播放：状态保存在本地，与 Apple Music 相同，开启时按钮反色 ---------- */
+
+    /** 开启随机时打乱当前曲目之后的歌曲并记住原顺序；关闭时从当前曲目在原顺序中的位置继续 */
+    setShuffle(on) {
+      this.shuffle = on;
+      try { localStorage.setItem('am-hook:shuffle', on ? '1' : '0'); } catch {}
+      const q = this.queue;
+      if (q && on && !q.ordered) {
+        q.ordered = q.entries.slice();
+        shuffleFrom(q.entries, q.pos + 1);
+      } else if (q && !on && q.ordered) {
+        const rest = new Set(q.entries.slice(q.pos + 1));
+        const at = q.ordered.indexOf(q.entries[q.pos]);
+        q.entries.splice(q.pos + 1, Infinity, ...q.ordered.slice(at + 1).filter((entry) => rest.has(entry)));
+        q.ordered = null;
+      }
+      this.renderModes();
+      this.renderQueue(true);
+    }
+
+    /** 关 → 全部重复 → 单曲重复 → 关 */
+    cycleRepeat() {
+      this.repeat = { off: 'all', all: 'one', one: 'off' }[this.repeat];
+      try { localStorage.setItem('am-hook:repeat', this.repeat); } catch {}
+      this.renderModes();
+    }
+
+    /** 播放条与清单标题旁的随机 / 重复按钮，以及上一首 / 下一首是否可用 */
+    renderModes() {
+      if (!this.queuePanel) return;
+      const shuffleLabel = t('player.shuffle');
+      const repeatLabel = t(`player.repeat.${this.repeat}`);
+      for (const scope of [this.root, this.queuePanel]) {
+        for (const btn of scope.querySelectorAll('.player-shuffle')) {
+          btn.setAttribute('aria-pressed', String(this.shuffle));
+          btn.setAttribute('aria-label', shuffleLabel);
+          btn.title = shuffleLabel;
+        }
+        for (const btn of scope.querySelectorAll('.player-repeat')) {
+          btn.setAttribute('aria-pressed', String(this.repeat !== 'off'));
+          btn.setAttribute('aria-label', repeatLabel);
+          btn.title = repeatLabel;
+          if (btn.dataset.mode !== this.repeat) {
+            btn.dataset.mode = this.repeat;
+            btn.innerHTML = this.repeat === 'one' ? ICON_REPEAT_ONE : ICON_REPEAT;
+          }
+        }
+      }
+      const prev = this.$('.skip-prev');
+      const next = this.$('.skip-next');
+      if (prev) prev.disabled = !this.current;
+      if (next) next.disabled = !this.hasNext();
+    }
+
+    hasNext() {
+      const q = this.queue;
+      return !!this.current && (!!(q && q.entries[q.pos + 1]) || this.repeat === 'all');
+    }
+
+    /** 下一首；auto 为播放到结尾时自动切换（单曲重复只在这时生效，手动下一首照常切歌） */
+    next(auto = false) {
+      if (!this.current) return;
+      const q = this.queue;
+      if (auto && this.repeat === 'one') { this.restart(); return; }
+      if (q && q.entries[q.pos + 1]) { this.playAt(q.pos + 1); return; }
+      if (this.repeat !== 'all') return;
+      if (q && q.entries.length > 1) this.playAt(0); else this.restart();
+    }
+
+    /** 与 Apple Music 相同：已播放超过 3 秒时回到开头，否则上一首（全部重复时从第一首回到最后一首） */
+    previous() {
+      if (!this.current) return;
+      const q = this.queue;
+      const first = !q || q.pos === 0;
+      if (this.transport().currentTime > 3 || (first && (this.repeat !== 'all' || !q || q.entries.length < 2))) { this.restart(); return; }
+      this.playAt(first ? q.entries.length - 1 : q.pos - 1);
+    }
+
+    restart() {
+      const transport = this.transport();
+      transport.currentTime = 0;
+      if (transport.paused) transport.play().catch((err) => this.showError(err.message));
     }
 
     /** 显示播放条，页面按其高度留出底部空间（通知、错误信息换行时高度会变） */
@@ -781,6 +1150,7 @@
         doc.body.style.setProperty('--player-height', height);
         doc.body.classList.toggle('has-player', !this.root.hidden);
       }
+      this.placeQueue();
     }
 
     /**
@@ -811,7 +1181,7 @@
         transport: () => player.transport(),
         barTop: () => player.barTop(),
         play: (item) => player.play({ ...item }),
-        playQueue: (entries, pos) => player.playQueue(entries.map((entry) => ({ ...entry })), pos),
+        playQueue: (entries, pos, options) => player.playQueue(entries.map((entry) => ({ ...entry })), pos, { ...options }),
         toggle: () => player.toggle(),
         pause: () => player.pause(),
         onChange: scoped(this.listeners),
@@ -834,20 +1204,30 @@
       return this.start(item);
     }
 
-    /** entries：按播放顺序排列的曲目（见 resolveEntry）；从 pos 开始，播完一首自动播放下一首 */
-    playQueue(entries, pos = 0) {
-      this.queue = { entries, pos };
-      return this.playAt(pos);
+    /**
+     * entries：按原顺序排列的曲目（见 resolveEntry）；从 pos 开始，播完一首自动播放下一首。
+     * options.shuffle 同时开启 / 关闭随机播放（页面上的「随机播放」「播放」按钮），省略时沿用当前状态。
+     * 随机播放时 pos 处的歌曲排在最前，其余打乱；原顺序记在 ordered 中，关闭随机时恢复。
+     */
+    playQueue(entries, pos = 0, options = {}) {
+      if (typeof options.shuffle === 'boolean' && options.shuffle !== this.shuffle) {
+        this.shuffle = options.shuffle;
+        try { localStorage.setItem('am-hook:shuffle', this.shuffle ? '1' : '0'); } catch {}
+      }
+      this.queue = { entries, pos, ordered: null };
+      if (this.shuffle) {
+        this.queue.ordered = entries.slice();
+        entries.unshift(...entries.splice(pos, 1));
+        shuffleFrom(entries, 1);
+        this.queue.pos = 0;
+      }
+      return this.playAt(this.queue.pos);
     }
 
     clearQueue() {
       this.queue = null;
       this.queueSerial++;
       this.pendingTrack = null;
-    }
-
-    skipTrack(delta) {
-      if (this.queue && this.queue.entries[this.queue.pos + delta]) this.playAt(this.queue.pos + delta);
     }
 
     async playAt(pos) {
@@ -962,8 +1342,8 @@
     /** 某编码经实际尝试确认无法播放时回调 */
     onUnsupported(fn) { this.unsupportedListeners.add(fn); }
 
-    /** 当前曲目播放到结尾（audio 与 EC-3 PCM 两种方式）：播放队列中的下一首 */
-    ended() { if (this.current) this.skipTrack(1); }
+    /** 当前曲目播放到结尾（audio 与 EC-3 PCM 两种方式）：按重复模式播放下一首或重新播放 */
+    ended() { if (this.current) this.next(true); }
 
     toggle() {
       if (!this.current) return;
