@@ -26,18 +26,19 @@
           <h2 class="lyrics-title"></h2>
           <p class="lyrics-artist"></p>
         </div>
-        <div class="lyrics-options">
-          <button class="lyrics-chip" type="button" data-option="translation" aria-pressed="false" data-i18n="lyrics.translation"></button>
-          <button class="lyrics-chip" type="button" data-option="pronunciation" aria-pressed="false" data-i18n="lyrics.pronunciation"></button>
-        </div>
       </div>
       <div class="lyric-panel"></div>
+      <div class="lyrics-translation-menu" hidden>
+        <button class="lyrics-translation-button" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-attr="aria-label=lyrics.translationMenu,title=lyrics.translationMenu"></button>
+      </div>
       <div class="lyrics-controls"></div>
     </div>
     <button class="lyrics-follow" type="button" data-i18n="lyrics.follow" hidden></button>
     <button class="lyrics-close" type="button" data-i18n-attr="aria-label=lyrics.close,title=lyrics.close">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
     </button>
+    <button class="lyrics-menu-scrim" type="button" tabindex="-1" aria-hidden="true" hidden></button>
+    <ul class="lyrics-menu" role="menu" data-i18n-attr="aria-label=lyrics.translationMenu" hidden></ul>
   </section>
 
   <div class="player" id="player" hidden>
