@@ -14,6 +14,7 @@ use crate::m3u8::{
     parse_album_link, parse_artist_link, parse_media_m3u8, parse_mv_link, parse_playlist_link, parse_song_link,
     to_compat_playlist,
 };
+use crate::log;
 use crate::monitor::ensure_template;
 use crate::source::{self, SourceKind, WHITELIST};
 use crate::state::{AppState, Track};
@@ -72,12 +73,12 @@ pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, ur
     }
 
     if !target.contains(WHITELIST) {
-        warn!(%target, "Rejected request not matching whitelist");
         return text(StatusCode::FORBIDDEN, format!("Only requests containing '{WHITELIST}' are supported.\n"));
     }
 
     let kind = source::classify(source::filename(&target));
-    info!(%method, ?kind, file = source::filename(&target), range = ?headers.get(RANGE), ua = ?headers.get(header::USER_AGENT), "Proxy request");
+    // 请求结果由请求日志输出，这里只在 debug 级别补充 Range / UA
+    debug!(%method, ?kind, file = source::filename(&target), range = ?headers.get(RANGE), ua = ?headers.get(header::USER_AGENT), "Proxy request");
 
     match kind {
         SourceKind::MasterPlaylist => forward(&state, method, &target, None, Some(M3U8_TYPE)).await,
@@ -398,11 +399,13 @@ fn parse_range(header: Option<&HeaderValue>, total: u64) -> Option<(u64, u64, bo
 }
 
 fn text(status: StatusCode, body: String) -> Response<Body> {
-    Response::builder()
+    let note = body.trim_end().to_owned();
+    let response = Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from(body))
-        .unwrap()
+        .unwrap();
+    log::note(response, note)
 }
 
 #[cfg(test)]

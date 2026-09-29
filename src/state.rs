@@ -128,6 +128,7 @@ impl Track {
 type TrackSlot = Arc<OnceCell<Arc<Track>>>;
 pub type SegmentKey = (Arc<str>, usize);
 
+#[derive(Clone)]
 pub struct Config {
     pub wrapper_url: String,
     /// 是否启用服务端解密代理（media m3u8 / media file 地址）

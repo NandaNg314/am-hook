@@ -1,0 +1,332 @@
+//! 运行输出：日志初始化、启动摘要与请求日志。
+//!
+//! 每个请求在响应后输出一行：`状态码 方法 分类 要点 · 备注 · 耗时`。
+//! 高频且无信息量的请求（静态资源、页面轮询的 /status、输入联想、分片）降为 debug，
+//! 需要时用 `RUST_LOG=am_hook=debug` 查看。
+
+use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+use axum::extract::Request;
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
+use regex::Regex;
+use tracing::{debug, info, warn, Level};
+use tracing_subscriber::fmt::time::ChronoLocal;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+use crate::source::{self, SourceKind};
+use crate::state::Config;
+
+pub fn init() {
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "am_hook=info".into()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_timer(ChronoLocal::new("%m-%d %H:%M:%S".into())),
+        )
+        .init();
+}
+
+/// 处理函数附加到响应上的补充说明（如音质数量、wrapper-lite 状态），由请求日志一并输出
+#[derive(Clone)]
+pub struct LogNote(pub String);
+
+/// 给响应附加 [`LogNote`]
+pub fn note<B>(mut response: Response<B>, note: impl Into<String>) -> Response<B> {
+    response.extensions_mut().insert(LogNote(note.into()));
+    response
+}
+
+/// 请求日志中间件
+pub async fn access_log(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let query = request.uri().query().unwrap_or_default().to_owned();
+    let top_level = request.headers().get("sec-fetch-dest").is_some_and(|v| v.as_bytes() == b"document");
+    let started = Instant::now();
+
+    let mut response = next.run(request).await;
+
+    let elapsed = started.elapsed();
+    let status = response.status();
+    let note = response.extensions_mut().remove::<LogNote>().map(|n| n.0);
+    let entry = describe(&method, &path, &query, top_level);
+    let mut line = format!("{} {:<4} {:<7} {}", status.as_u16(), method.as_str(), entry.kind, entry.detail);
+    if let Some(note) = note.filter(|n| !n.is_empty()) {
+        line.push_str(" · ");
+        line.push_str(&note);
+    }
+    line.push_str(" · ");
+    line.push_str(&format_elapsed(elapsed));
+
+    match level(status, entry.quiet) {
+        Level::WARN => warn!("{line}"),
+        Level::INFO => info!("{line}"),
+        _ => debug!("{line}"),
+    }
+    response
+}
+
+/// 5xx 与非 404 的 4xx 为 warn；quiet 请求（含 favicon 等无关路径）的 4xx 仍只在 debug 输出
+fn level(status: StatusCode, quiet: bool) -> Level {
+    if status.is_server_error() || (!quiet && status.is_client_error() && status != StatusCode::NOT_FOUND) {
+        Level::WARN
+    } else if quiet {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    }
+}
+
+struct Entry {
+    kind: &'static str,
+    detail: String,
+    /// 仅在 debug 级别输出
+    quiet: bool,
+}
+
+impl Entry {
+    fn new(kind: &'static str, detail: impl Into<String>) -> Self {
+        Self { kind, detail: detail.into(), quiet: false }
+    }
+
+    fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+}
+
+static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/https:/{1,2}music\.apple\.com/([a-z]{2})/(song|album|playlist|artist|music-video)/(?:[^/]*/)?([^/?#]+)").unwrap()
+});
+
+/// 按路径归类请求，取出日志要点
+fn describe(method: &Method, path: &str, query: &str, top_level: bool) -> Entry {
+    if let Some(file) = path.strip_prefix("/assets/") {
+        return Entry::new("asset", file).quiet();
+    }
+    if let Some(caps) = PAGE_RE.captures(path) {
+        let kind = match &caps[2] {
+            "music-video" => "MV",
+            other => other,
+        };
+        // 顶层文档请求返回播放条外壳，真正的页面随后在 iframe 中加载并记录
+        let entry = Entry::new("page", format!("{kind} {} {}", caps[1].to_uppercase(), &caps[3]));
+        return if top_level { Entry { detail: format!("{} (shell)", entry.detail), ..entry }.quiet() } else { entry };
+    }
+    match path {
+        "/" => {
+            let entry = Entry::new("page", "home");
+            return if top_level { Entry::new("page", "home (shell)").quiet() } else { entry };
+        }
+        "/status" => return Entry::new("status", "wrapper-lite").quiet(),
+        "/parse" if method == Method::POST => return Entry::new("parse", "song link"),
+        "/key" => return Entry::new("key", format!("adamId {}", query_param(query, "adamId").unwrap_or_default())),
+        "/mv/license" => return Entry::new("mv", "license"),
+        "/amp/v1/storefronts" => return Entry::new("catalog", "storefronts"),
+        _ => {}
+    }
+    if let Some(id) = path.strip_prefix("/parse/song/") {
+        return Entry::new("song", format!("master {id}"));
+    }
+    if let Some(id) = path.strip_prefix("/parse/mv/") {
+        return Entry::new("mv", format!("master {id}"));
+    }
+    if let Some(id) = path.strip_prefix("/mv/webplayback/") {
+        return Entry::new("mv", format!("webplayback {id}"));
+    }
+    if let Some(id) = path.strip_prefix("/lyrics/") {
+        return Entry::new("lyrics", id);
+    }
+    if let Some(rest) = path.strip_prefix("/amp/v1/catalog/") {
+        let term = query_param(query, "term").unwrap_or_default();
+        if let Some(cc) = rest.strip_suffix("/search/suggestions") {
+            return Entry::new("search", format!("suggest {} {term:?}", cc.to_uppercase())).quiet();
+        }
+        if let Some(cc) = rest.strip_suffix("/search") {
+            let offset = query_param(query, "offset").map(|o| format!(" offset {o}")).unwrap_or_default();
+            return Entry::new("search", format!("{} {term:?}{offset}", cc.to_uppercase()));
+        }
+        return Entry::new("catalog", rest);
+    }
+    // 其余为 --hook 解密代理（URL 前缀式）
+    let file = source::filename(path);
+    match source::classify(file) {
+        SourceKind::MediaSegment => Entry::new("hook", format!("segment {file}")).quiet(),
+        SourceKind::MasterPlaylist => Entry::new("hook", format!("master {file}")),
+        SourceKind::MediaPlaylist => Entry::new("hook", format!("media m3u8 {file}")),
+        SourceKind::MediaFile => Entry::new("hook", format!("media file {file}")),
+        SourceKind::Other if path.contains(source::WHITELIST) => Entry::new("hook", format!("file {file}")),
+        SourceKind::Other => Entry::new("other", path).quiet(),
+    }
+}
+
+/// 取查询参数并做百分号解码（`+` 视为空格）
+fn query_param(query: &str, key: &str) -> Option<String> {
+    let raw = query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))?;
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                Some(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                None => out.push(b'%'),
+            },
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let ms = elapsed.as_secs_f64() * 1000.0;
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else if ms >= 10.0 {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{ms:.1} ms")
+    }
+}
+
+/// 启动摘要：访问地址、wrapper-lite、解密模式与功能入口
+pub fn print_banner(listen: SocketAddr, config: &Config, lru_cache_mb: usize) {
+    let mut lines = vec![format!("am-hook v{}", env!("CARGO_PKG_VERSION"))];
+    let urls = access_urls(listen);
+    lines.push(format!("  Web UI        {}", urls[0]));
+    for url in &urls[1..] {
+        lines.push(format!("                {url}"));
+    }
+    lines.push(format!("  wrapper-lite  {}", config.wrapper_url));
+    if config.hook {
+        lines.push("  Decryption    browser + server-side proxy (--hook)".into());
+        lines.push(format!(
+            "                track TTL {}, segment cache {lru_cache_mb} MB, prefetch {}, template timeout {}s",
+            format_ttl(config.cache_ttl),
+            config.prefetch,
+            config.template_timeout.as_secs()
+        ));
+        lines.push(format!("                usage: {}/<Apple CDN m3u8 URL>", urls[0]));
+    } else {
+        lines.push("  Decryption    browser only (start with --hook for VLC / IDM URLs)".into());
+    }
+    lines.push("  Pages         home & search · song · album · playlist · artist · music video".into());
+    lines.push("  Features      lyrics · motion artwork · ALAC / FLAC / Dolby Atmos (EC-3) · MV PlayReady".into());
+    lines.push("  Verbose log   RUST_LOG=am_hook=debug (assets, status, suggestions, segments)".into());
+    let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let rule = "─".repeat(width + 2);
+    println!("{rule}");
+    for line in &lines {
+        println!(" {line}");
+    }
+    println!("{rule}");
+}
+
+fn format_ttl(ttl: Duration) -> String {
+    let secs = ttl.as_secs();
+    if secs >= 60 && secs % 60 == 0 {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// 监听 0.0.0.0 / :: 时列出本机与局域网地址，便于从其他设备访问
+fn access_urls(listen: SocketAddr) -> Vec<String> {
+    let port = listen.port();
+    let url = |ip: IpAddr| match ip {
+        IpAddr::V6(v6) => format!("http://[{v6}]:{port}"),
+        IpAddr::V4(v4) => format!("http://{v4}:{port}"),
+    };
+    if !listen.ip().is_unspecified() {
+        return vec![url(listen.ip())];
+    }
+    let mut urls = vec![format!("http://localhost:{port}")];
+    if let Some(ip) = lan_ip() {
+        urls.push(format!("{} (LAN)", url(ip)));
+    }
+    urls
+}
+
+/// 本机对外的局域网地址：UDP connect 只选路由、不发送数据
+fn lan_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// 启动后检查 wrapper-lite 是否可用，并输出账号地区
+pub async fn check_wrapper(client: reqwest::Client, wrapper_url: String) {
+    let result = client
+        .get(format!("{wrapper_url}/status"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| e.to_string());
+    let value = match result {
+        Ok(resp) => resp.json::<serde_json::Value>().await.map_err(|e| format!("invalid response: {e}")),
+        Err(e) => Err(e),
+    };
+    match value {
+        Ok(v) if v.get("code").and_then(serde_json::Value::as_i64) == Some(0) => {
+            info!("wrapper-lite online · regions {}", regions_summary(&v));
+        }
+        Ok(v) => {
+            let msg = v.get("msg").and_then(serde_json::Value::as_str).unwrap_or("unknown error");
+            warn!("wrapper-lite at {wrapper_url} returned an error: {msg}");
+        }
+        Err(e) => warn!("wrapper-lite at {wrapper_url} is unreachable: {e}"),
+    }
+}
+
+/// wrapper-lite `/status` 中的账号地区，如 `CN, US`
+pub fn regions_summary(status: &serde_json::Value) -> String {
+    let regions: Vec<String> = status
+        .pointer("/data/regions")
+        .and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(serde_json::Value::as_str).map(str::to_uppercase).collect())
+        .unwrap_or_default();
+    if regions.is_empty() {
+        "none".into()
+    } else {
+        regions.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_param() {
+        assert_eq!(query_param("term=taylor+swift&l=en-US", "term").as_deref(), Some("taylor swift"));
+        assert_eq!(query_param("l=zh&term=%E5%91%A8%E6%9D%B0%E4%BC%A6", "term").as_deref(), Some("周杰伦"));
+        assert_eq!(query_param("termx=1", "term"), None);
+        assert_eq!(query_param("term=100%", "term").as_deref(), Some("100%"));
+    }
+
+    #[test]
+    fn test_describe() {
+        let get = &Method::GET;
+        let e = describe(get, "/https://music.apple.com/cn/album/lover/1468058165", "", false);
+        assert_eq!((e.kind, e.detail.as_str(), e.quiet), ("page", "album CN 1468058165", false));
+        assert!(describe(get, "/https://music.apple.com/cn/song/lover/1468058171", "", true).quiet);
+        let e = describe(get, "/amp/v1/catalog/us/search", "term=a%20b&offset=25", false);
+        assert_eq!(e.detail, "US \"a b\" offset 25");
+        assert!(describe(get, "/amp/v1/catalog/us/search/suggestions", "term=a", false).quiet);
+        assert_eq!(describe(get, "/amp/v1/catalog/cn/albums/1", "", false).kind, "catalog");
+        assert!(describe(get, "/assets/player.js", "", false).quiet);
+        assert_eq!(describe(get, "/lyrics/123", "", false).kind, "lyrics");
+    }
+}

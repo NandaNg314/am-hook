@@ -16,8 +16,9 @@ use axum::response::Response;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::info;
 
+use crate::log;
 use crate::state::AppState;
 
 const WEB_ORIGIN: &str = "https://music.apple.com";
@@ -140,8 +141,7 @@ async fn forward(state: &AppState, url: &str) -> Response<Body> {
         let token = match state.amp_token.get(client).await {
             Ok(token) => token,
             Err(msg) => {
-                warn!(%msg, "Apple Music developer token unavailable");
-                return error(StatusCode::BAD_GATEWAY, &msg);
+                return log::note(error(StatusCode::BAD_GATEWAY, &msg), format!("developer token unavailable: {msg}"));
             }
         };
         let response = client
@@ -156,12 +156,12 @@ async fn forward(state: &AppState, url: &str) -> Response<Body> {
         let response = match response {
             Ok(response) => response,
             Err(e) => {
-                warn!(error = %e, "amp-api request failed");
-                return error(StatusCode::BAD_GATEWAY, "amp-api request failed");
+                return log::note(error(StatusCode::BAD_GATEWAY, "amp-api request failed"), format!("amp-api request failed: {e}"));
             }
         };
         let status = response.status();
         if matches!(status.as_u16(), 401 | 403) && !retried {
+            info!(%status, "amp-api rejected the developer token, fetching a new one");
             state.amp_token.invalidate(&token).await;
             retried = true;
             continue;
@@ -172,22 +172,33 @@ async fn forward(state: &AppState, url: &str) -> Response<Body> {
         };
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let cache = if status.is_success() { "private, max-age=300" } else { "no-store" };
-        return Response::builder()
+        let note = if status.is_success() { String::new() } else { api_error_summary(&body) };
+        let response = Response::builder()
             .status(status)
             .header(CONTENT_TYPE, "application/json; charset=utf-8")
             .header(CACHE_CONTROL, cache)
             .body(Body::from(body))
             .unwrap();
+        return log::note(response, note);
     }
 }
 
+/// amp-api 错误响应 `{"errors":[{"title","detail"}]}` 的首条说明，供请求日志输出
+fn api_error_summary(body: &[u8]) -> String {
+    let value: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    let first = value.pointer("/errors/0");
+    let field = |key| first.and_then(|e| e.get(key)).and_then(serde_json::Value::as_str);
+    field("detail").or_else(|| field("title")).unwrap_or_default().to_owned()
+}
+
 fn error(status: StatusCode, msg: &str) -> Response<Body> {
-    Response::builder()
+    let response = Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
         .header(CACHE_CONTROL, "no-store")
         .body(Body::from(json!({ "code": 1, "msg": msg }).to_string()))
-        .unwrap()
+        .unwrap();
+    log::note(response, msg)
 }
 
 #[cfg(test)]

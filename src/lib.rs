@@ -1,5 +1,6 @@
 pub mod amp;
 pub mod cli;
+pub mod log;
 pub mod m3u8;
 pub mod monitor;
 pub mod proxy;
@@ -47,5 +48,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/assets/ec3-runtime.mjs", get(ui::ec3_runtime_handler))
         .route("/assets/ec3.wasm", get(ui::ec3_wasm_handler))
         .fallback(proxy::handle_proxy)
+        .layer(axum::middleware::from_fn(log::access_log))
         .with_state(state)
 }

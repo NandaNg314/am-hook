@@ -7,8 +7,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
-use tracing::warn;
-
+use crate::log;
 use crate::m3u8::{parse_master_variants, parse_song_link};
 use crate::state::AppState;
 use crate::wrapper::{fetch_key_json, fetch_lyrics, Lyrics};
@@ -95,13 +94,14 @@ pub async fn mv_master_handler(
         Err(_) => None,
     };
     let Some(payload) = payload else {
-        return json_response(StatusCode::BAD_GATEWAY, json!({"code":1,"msg":"Invalid wrapper-lite response"}));
+        return gateway_error("Invalid wrapper-lite response");
     };
     if payload.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
-        return json_response(StatusCode::BAD_GATEWAY, payload);
+        let msg = payload.get("msg").and_then(serde_json::Value::as_str).unwrap_or("wrapper-lite returned an error").to_owned();
+        return log::note(json_response(StatusCode::BAD_GATEWAY, payload), msg);
     }
     let Some(master_url) = payload.pointer("/data/m3u8").and_then(serde_json::Value::as_str).filter(|url| !url.is_empty()) else {
-        return json_response(StatusCode::BAD_GATEWAY, json!({"code":1,"msg":"Missing MV master URL"}));
+        return gateway_error("Missing MV master URL");
     };
     let response = state.http_client.get(master_url)
         .header(axum::http::header::USER_AGENT, "AM")
@@ -110,15 +110,15 @@ pub async fn mv_master_handler(
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            warn!(%error, "MV master request failed");
-            return json_response(StatusCode::BAD_GATEWAY, json!({"code":1,"msg":"Failed to fetch MV master playlist"}));
+            let response = gateway_error("Failed to fetch MV master playlist");
+            return log::note(response, format!("Failed to fetch MV master playlist: {error}"));
         }
     };
     // Resolve relative track URLs against the final CDN URL after any redirects.
     let master_url = response.url().to_string();
     let master_body = match response.text().await {
         Ok(body) => body,
-        Err(_) => return json_response(StatusCode::BAD_GATEWAY, json!({"code":1,"msg":"Failed to read MV master playlist"})),
+        Err(_) => return gateway_error("Failed to read MV master playlist"),
     };
     let mut response = json_response(StatusCode::OK, json!({
         "code": 0, "data": { "masterUrl": master_url, "masterBody": master_body }
@@ -176,16 +176,10 @@ async fn mv_forward(request: reqwest::RequestBuilder) -> Response<Body> {
                     .header(axum::http::header::CACHE_CONTROL, "no-store")
                     .body(Body::from(body))
                     .unwrap(),
-                Err(_) => json_response(
-                    StatusCode::BAD_GATEWAY,
-                    json!({"code":1,"msg":"Failed to read wrapper-lite response"}),
-                ),
+                Err(_) => gateway_error("Failed to read wrapper-lite response"),
             }
         }
-        Err(_) => json_response(
-            StatusCode::BAD_GATEWAY,
-            json!({"code":1,"msg":"wrapper-lite request failed"}),
-        ),
+        Err(error) => log::note(gateway_error("wrapper-lite request failed"), format!("wrapper-lite request failed: {error}")),
     }
 }
 
@@ -279,11 +273,11 @@ pub async fn lyrics_handler(
             .header(axum::http::header::CACHE_CONTROL, "private, max-age=3600")
             .body(Body::from(ttml))
             .unwrap_or_else(|error| internal_error(&format!("failed to build response: {error}"))),
-        Ok(Lyrics::NotFound) => json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "lyrics not found" })),
-        Err(error) => {
-            warn!(adam_id = %adam_id, %error, "Lyrics fetch failed");
-            json_response(StatusCode::BAD_GATEWAY, json!({ "code": 1, "msg": error }))
-        }
+        Ok(Lyrics::NotFound) => log::note(
+            json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "lyrics not found" })),
+            "no lyrics",
+        ),
+        Err(error) => gateway_error(&error),
     }
 }
 
@@ -313,10 +307,7 @@ pub async fn key_handler(
             .header(axum::http::header::CACHE_CONTROL, "private, max-age=3600")
             .body(Body::from(data))
             .unwrap_or_else(|error| internal_error(&format!("failed to build response: {error}"))),
-        Err(error) => {
-            warn!(adam_id = %query.adam_id, uri = %query.uri, %error, "Template fetch for browser failed");
-            json_response(StatusCode::BAD_GATEWAY, json!({ "code": 1, "msg": error }))
-        }
+        Err(error) => gateway_error(&error),
     }
 }
 
@@ -330,11 +321,13 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
         "hook": state.config.hook,
     });
     let mut status = StatusCode::BAD_GATEWAY;
+    let mut note = String::from("wrapper-lite unavailable");
 
     match state.http_client.get(&wrapper_url).send().await {
         Ok(resp) => {
             if let Ok(value) = resp.json::<serde_json::Value>().await {
                 if value.get("code").and_then(serde_json::Value::as_i64) == Some(0) {
+                    note = format!("regions {}", log::regions_summary(&value));
                     status = StatusCode::OK;
                     body["code"] = json!(0);
                     body["msg"] = value
@@ -349,10 +342,10 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
                 }
             }
         }
-        Err(error) => warn!(error = %error, "wrapper-lite status request failed"),
+        Err(error) => note = format!("wrapper-lite request failed: {error}"),
     }
 
-    json_response(status, body)
+    log::note(json_response(status, body), note)
 }
 
 pub async fn parse_handler(
@@ -414,18 +407,12 @@ pub async fn master_handler(
 
     let response = match response {
         Ok(response) => response,
-        Err(error) => {
-            warn!(error = %error, "wrapper-lite m3u8 request failed");
-            return internal_error("failed to fetch master m3u8 from wrapper-lite");
-        }
+        Err(error) => return upstream_error("failed to fetch master m3u8 from wrapper-lite", error),
     };
 
     let payload = match response.json::<serde_json::Value>().await {
         Ok(value) => value,
-        Err(error) => {
-            warn!(error = %error, "failed to decode wrapper-lite response");
-            return internal_error("invalid response from wrapper-lite");
-        }
+        Err(error) => return upstream_error("invalid response from wrapper-lite", error),
     };
 
     if payload.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
@@ -443,28 +430,23 @@ pub async fn master_handler(
     let master_response = state.http_client.get(master_url).send().await;
     let master_response = match master_response {
         Ok(response) => response,
-        Err(error) => {
-            warn!(error = %error, url = %master_url, "failed to fetch master m3u8");
-            return internal_error("failed to fetch master m3u8 from Apple");
-        }
+        Err(error) => return upstream_error("failed to fetch master m3u8 from Apple", error),
     };
     let master_body = match master_response.text().await {
         Ok(text) => text,
-        Err(error) => {
-            warn!(error = %error, "failed to read master m3u8 body");
-            return internal_error("failed to read master m3u8");
-        }
+        Err(error) => return upstream_error("failed to read master m3u8", error),
     };
 
     let variants = match parse_master_variants(&master_body) {
         Ok(variants) => variants,
-        Err(error) => {
-            warn!(error = %error, "failed to parse master m3u8");
-            return internal_error(&error);
-        }
+        Err(error) => return internal_error(&error),
     };
 
-    json_response(
+    let mut codecs: Vec<&str> = variants.iter().filter_map(|v| v.codecs.as_deref()).collect();
+    codecs.sort_unstable();
+    codecs.dedup();
+    let note = format!("{} variants ({})", variants.len(), codecs.join(", "));
+    let response = json_response(
         StatusCode::OK,
         json!({
             "adamId": adam_id,
@@ -473,7 +455,8 @@ pub async fn master_handler(
             // 为 true 时前端额外提供服务端解密地址（VLC / IDM / 原生 HLS）
             "hook": state.config.hook,
         }),
-    )
+    );
+    log::note(response, note)
 }
 
 pub async fn song_handler(uri: Uri, headers: &HeaderMap) -> Response<Body> {
@@ -529,17 +512,20 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Body>
 }
 
 fn bad_request(message: &str) -> Response<Body> {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        json!({ "code": 1, "msg": message }),
-    )
+    log::note(json_response(StatusCode::BAD_REQUEST, json!({ "code": 1, "msg": message })), message)
 }
 
 fn internal_error(message: &str) -> Response<Body> {
-    json_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        json!({ "code": 1, "msg": message }),
-    )
+    log::note(json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "code": 1, "msg": message })), message)
+}
+
+fn gateway_error(message: &str) -> Response<Body> {
+    log::note(json_response(StatusCode::BAD_GATEWAY, json!({ "code": 1, "msg": message })), message)
+}
+
+/// 上游请求失败：响应只带概要，请求日志中附上具体原因
+fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body> {
+    log::note(internal_error(message), format!("{message}: {error}"))
 }
 
 fn base_url_from_headers(headers: &HeaderMap) -> Option<String> {
