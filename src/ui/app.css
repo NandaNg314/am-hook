@@ -235,24 +235,15 @@ body.home-page {
 }
 .home { padding: clamp(56px, 11vh, 120px) 0 64px; }
 .home-hero { display: flex; flex-direction: column; align-items: center; text-align: center; }
-.home-eyebrow {
-  height: 30px; margin: 0 0 26px; padding: 0 14px 0 11px; display: inline-flex; align-items: center; gap: 9px;
-  border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--surface) 70%, transparent);
-  color: var(--muted); font: 600 11px/1 var(--mono); letter-spacing: .08em;
-}
 .eq { height: 12px; display: inline-flex; align-items: flex-end; gap: 2px; color: var(--accent); }
 .eq i { width: 2px; height: 100%; border-radius: 1px; background: currentColor; transform-origin: bottom; animation: eq 1.1s ease-in-out infinite alternate; }
 .eq i:nth-child(2) { animation-delay: -.35s; animation-duration: .9s; }
 .eq i:nth-child(3) { animation-delay: -.7s; animation-duration: 1.3s; }
 .eq i:nth-child(4) { animation-delay: -.2s; }
 @keyframes eq { from { transform: scaleY(.25); } to { transform: scaleY(1); } }
-.hero-lead {
-  max-width: 32em; margin: 0; font-size: clamp(22px, 2.6vw, 30px); line-height: 1.4; font-weight: 750;
-  letter-spacing: -.02em; text-wrap: balance;
-}
 
 .search {
-  width: min(760px, 100%); margin-top: 40px; padding: 7px; display: flex; align-items: center; gap: 8px;
+  width: min(760px, 100%); margin-top: 0; padding: 7px; display: flex; align-items: center; gap: 8px;
   border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
@@ -278,7 +269,6 @@ body.home-page {
 .search-field input:focus ~ .kbd, .search-field input:not(:placeholder-shown) ~ .kbd { display: none; }
 @media (hover: none) { .kbd { display: none; } }
 .home-hero .alert { width: min(760px, 100%); text-align: left; }
-.home-hero .hint { margin-top: 14px; }
 .examples { margin: 10px 0 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; color: var(--faint); font-size: 12px; }
 .example {
   min-height: 32px; padding: 0 12px 0 5px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line);
@@ -915,9 +905,8 @@ body.has-player { padding-bottom: calc(var(--player-height, 110px) + 32px + env(
   .status-pill { max-width: 100%; height: auto; min-height: 28px; white-space: normal; }
   .status-dot { flex-shrink: 0; }
   .home { padding: 44px 0 40px; }
-  .home-eyebrow { margin-bottom: 20px; }
   /* 手机上按钮与输入框同行，按钮收成紧凑胶囊，把宽度留给链接 */
-  .search { margin-top: 28px; padding: 5px; gap: 4px; }
+  .search { padding: 5px; gap: 4px; }
   .search-field { height: 44px; padding: 0 2px 0 12px; gap: 8px; }
   .search-field > svg { width: 18px; height: 18px; }
   .search-field input { font-size: 16px; }
