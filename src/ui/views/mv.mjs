@@ -185,11 +185,6 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
         $('artwork').onload = () => { $('ambient').style.setProperty('--art', `url("${art}")`); $('ambient').classList.add('on'); };
         $('artwork').onerror = () => { $('artwork').hidden = true; };
       }
-      try {
-        const old = JSON.parse(localStorage.getItem('am-hook:recent') || '[]');
-        const recent = { id, title, artist, artwork: artUrl(100), link: `https://music.apple.com/${country}/music-video/_/${id}` };
-        localStorage.setItem('am-hook:recent', JSON.stringify([recent, ...(Array.isArray(old) ? old.filter(r => r.id !== id) : [])].slice(0, 12)));
-      } catch {}
     } catch (e) { if (e.name !== 'AbortError') console.info('MV metadata unavailable'); }
   }
   $('play').onclick = async () => {

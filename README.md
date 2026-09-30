@@ -43,7 +43,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 ## Web UI
 
 - Chinese and English UI; the top-right button switches instantly (remembered; the first visit follows the browser language). Playback and downloads in progress are not interrupted.
-- The home page shows wrapper-lite status and recently opened songs and MVs; its footer links to this GitHub repository and credits the projects am-hook builds on.
+- The home page shows wrapper-lite status and your recent searches (click to search again, or remove them one by one); its footer links to this GitHub repository and credits the projects am-hook builds on.
 - Search: the home input takes either a link or keywords (the same amp-api requests as music.apple.com). Typing shows suggested terms and direct results; results are grouped into top results, artists, albums, songs, playlists and music videos, with "Load more". When the wrapper-lite account has several storefronts, the search storefront can be switched. `/` focuses the input; the term is kept in the address bar as `?q=`, so Back / Forward and sharing work. The search box at the top of other pages goes to the home page results.
 - Persistent player bar: like music.apple.com, the player bar stays at the bottom and playback continues while you move between pages.
   - A queue started on an album, playlist or artist page keeps playing in order after you leave the page, including previous / next from system media controls. Playing a different song on its song page ends the queue; switching quality of the same song keeps it.

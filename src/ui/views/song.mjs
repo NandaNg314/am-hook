@@ -592,13 +592,6 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
     metaLoaded = true;
     renderMeta();
     if (rows.size) renderVariants(); // 下载文件名需要歌名
-
-    try {
-      const key = 'am-hook:recent';
-      const list = JSON.parse(localStorage.getItem(key) || '[]').filter((i) => i.id !== adamId);
-      list.unshift({ id: adamId, link: songUrl, title: meta.title || '', artist: meta.artist || '', artwork: meta.artwork || '' });
-      localStorage.setItem(key, JSON.stringify(list.slice(0, 12)));
-    } catch {}
   }
 
   $('reparse').addEventListener('click', loadVariants);

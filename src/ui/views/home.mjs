@@ -339,10 +339,13 @@ export function mount({ root, signal, navigate, onLangChange }) {
   // 分组顺序按接口返回的 meta.results.order（与官网一致），缺失时用这里的顺序
   const GROUPS = [['top', 'search.top'], ['artist', 'search.artists'], ['album', 'search.albums'], ['song', 'search.songs'], ['playlist', 'search.playlists'], ['music_video', 'search.mvs']];
   const GROUP_LABELS = Object.fromEntries(GROUPS);
-  // 首屏每组显示的条数（能被 3 / 2 / 1 列与 6 / 4 / 2 列整除），其余点“加载更多”展开；最佳结果只取前 6 条
-  const PREVIEW = 12;
+  // “全部”视图里每组只露一行（歌曲为 3 列 × 3 行），多出的在对应分类标签页里看；桌面宽度下的行宽由 app.css 控制
+  const PREVIEW = { song: 9, music_video: 4 };
+  const PREVIEW_CARDS = 6;
   const TOP_LIMIT = 6;
-  const search = { term: '', controller: null };
+  const LAYOUTS = { music_video: ['mv-grid', mvCard], album: ['album-grid', albumCard], playlist: ['album-grid', playlistCard], artist: ['album-grid', artistCard] };
+  /** groups: [{ key, items, next }]；view: 'all' 或某个分组 key */
+  const search = { term: '', controller: null, groups: [], view: 'all' };
   // next 分页地址只带 groups / offset / term / types / l，其余参数需补上，否则返回空结果
   const PAGE_PARAMS = { limit: '21', platform: 'web', with: 'serverBubbles', 'omit[resource]': 'autos' };
 
@@ -352,7 +355,10 @@ export function mount({ root, signal, navigate, onLangChange }) {
 
   /** history: 'push' / 'replace' 同步地址栏 ?q=，省略时不改动（切换地区、语言后重新搜索） */
   async function runSearch(term, history) {
+    // 同一关键词重新搜索（切换地区、语言）时保留当前分类标签
+    const keepView = term === search.term ? search.view : 'all';
     search.term = term;
+    addRecent(term);
     if (search.controller) search.controller.abort();
     const controller = search.controller = new AbortController();
     if (history) {
@@ -365,6 +371,7 @@ export function mount({ root, signal, navigate, onLangChange }) {
     }
     resultsEl.hidden = false;
     $('results-title').textContent = t('search.results', { term });
+    $('results-tabs').hidden = true;
     resultsBody.replaceChildren(statusNode(t('search.loading'), 'loading'));
     try {
       await statusReady;
@@ -374,56 +381,101 @@ export function mount({ root, signal, navigate, onLangChange }) {
       if (controller !== search.controller) return;
       const results = data.results || {};
       const order = (data.meta && data.meta.results && data.meta.results.order) || GROUPS.map(([key]) => key);
-      const groups = order.filter((key) => GROUP_LABELS[key] && results[key] && results[key].data && results[key].data.some(toItem));
-      resultsBody.replaceChildren(...(groups.length
-        ? groups.map((key) => key === 'top' ? topNode(results.top) : groupNode(key, GROUP_LABELS[key], results[key], controller))
-        : [statusNode(t('search.none'))]));
+      search.groups = order
+        .filter((key) => GROUP_LABELS[key] && results[key] && results[key].data)
+        .map((key) => {
+          const items = results[key].data.map(toItem).filter(Boolean);
+          return key === 'top' ? { key, items: items.slice(0, TOP_LIMIT), next: null } : { key, items, next: results[key].next || null };
+        })
+        .filter((group) => group.items.length);
+      search.view = search.groups.some((group) => group.key === keepView) ? keepView : 'all';
+      renderResults();
     } catch (error) {
       if (controller !== search.controller || error.name === 'AbortError') return;
       resultsBody.replaceChildren(statusNode(t('search.failed', { msg: error.message }), 'error'));
     }
   }
 
-  /** 最佳结果：混合类型，按相关度排序，不分页 */
-  function topNode(block) {
-    const section = el('div', 'result-group top-group');
-    const list = el('div', 'song-grid');
-    list.append(...block.data.map(toItem).filter(Boolean).slice(0, TOP_LIMIT).map(topRow));
-    section.append(el('h3', 'group-title', t('search.top')), list);
+  /** 分类标签（全部 / 歌曲 / 专辑 …）与当前视图 */
+  function renderResults() {
+    const { groups, view } = search;
+    const tabs = $('results-tabs');
+    const tabKeys = ['all', ...groups.map((group) => group.key).filter((key) => key !== 'top')];
+    tabs.hidden = tabKeys.length < 3; // 只有一个分类时标签没有意义
+    tabs.replaceChildren(...tabKeys.map((key) => {
+      const tab = el('button', 'results-tab', t(key === 'all' ? 'search.all' : GROUP_LABELS[key]));
+      tab.type = 'button';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(key === view));
+      tab.addEventListener('click', () => setView(key));
+      return tab;
+    }));
+    if (!groups.length) { resultsBody.replaceChildren(statusNode(t('search.none'))); return; }
+    resultsBody.replaceChildren(...(view === 'all'
+      ? groups.map(previewNode)
+      : [fullNode(groups.find((group) => group.key === view))]));
+  }
+
+  function setView(key) {
+    if (key === search.view) return;
+    search.view = key;
+    renderResults();
+    // 标签栏吸顶；切换后回到结果开头
+    if (resultsEl.getBoundingClientRect().top < 0) resultsEl.scrollIntoView({ block: 'start' });
+  }
+
+  function groupHead(label, action) {
+    const head = el('div', 'group-head');
+    head.append(el('h3', 'group-title', t(label)));
+    if (action) head.append(action);
+    return head;
+  }
+
+  /** “全部”视图中的一组：只显示一行，更多的通过“查看全部”进入分类标签 */
+  function previewNode(group) {
+    const { key, items, next } = group;
+    const section = el('div', `result-group${key === 'top' ? ' top-group' : ''}`);
+    const [listClass, render] = key === 'top' ? ['song-grid', topRow] : LAYOUTS[key] || ['song-grid', songRow];
+    const limit = key === 'top' ? TOP_LIMIT : PREVIEW[key] || PREVIEW_CARDS;
+    const list = el('div', `${listClass} preview`);
+    list.append(...items.slice(0, limit).map(render));
+    let action = null;
+    if (key !== 'top' && (items.length > limit || next)) {
+      action = el('button', 'see-all', t('search.seeAll'));
+      action.type = 'button';
+      action.addEventListener('click', () => setView(key));
+    }
+    section.append(groupHead(GROUP_LABELS[key], action), list);
     return section;
   }
 
-  function groupNode(key, label, block, controller) {
-    const [listClass, render] = { music_video: ['mv-grid', mvCard], album: ['album-grid', albumCard], playlist: ['album-grid', playlistCard], artist: ['album-grid', artistCard] }[key] || ['song-grid', songRow];
+  /** 分类标签页：该组全部结果，底部“加载更多”按 next 翻页 */
+  function fullNode(group) {
+    const { key } = group;
+    const [listClass, render] = LAYOUTS[key] || ['song-grid', songRow];
     const section = el('div', 'result-group');
     const list = el('div', listClass);
+    list.append(...group.items.map(render));
     const more = el('button', 'btn load-more', t('search.more'));
     more.type = 'button';
-    let next = block.next;
-    // 已取到的条目；首屏只渲染前 PREVIEW 条，“加载更多”先展开已取到的，再按 next 翻页
-    const items = block.data.map(toItem).filter(Boolean);
-    let shown = 0;
-    const show = (count) => {
-      list.append(...items.slice(shown, count).map(render));
-      shown = Math.max(shown, Math.min(count, items.length));
-      more.hidden = shown >= items.length && !next;
-    };
-    show(PREVIEW);
+    more.hidden = !group.next;
+    const controller = search.controller;
     more.addEventListener('click', async () => {
-      if (shown < items.length) { show(items.length); return; }
       more.disabled = true;
       try {
-        const data = await amp(next, PAGE_PARAMS, controller.signal);
+        const data = await amp(group.next, PAGE_PARAMS, controller.signal);
         const page = (data.results && (data.results[key] || Object.values(data.results)[0])) || {};
-        items.push(...(page.data || []).map(toItem).filter(Boolean));
-        next = page.next;
-        show(items.length);
+        const added = (page.data || []).map(toItem).filter(Boolean);
+        group.items.push(...added);
+        group.next = page.next || null;
+        list.append(...added.map(render));
+        more.hidden = !group.next;
       } catch (error) {
         if (error.name === 'AbortError') return;
       }
       more.disabled = false;
     });
-    section.append(el('h3', 'group-title', t(label)), list, more);
+    section.append(list, more);
     return section;
   }
 
@@ -497,6 +549,8 @@ export function mount({ root, signal, navigate, onLangChange }) {
 
   function closeResults() {
     search.term = '';
+    search.groups = [];
+    search.view = 'all';
     if (search.controller) search.controller.abort();
     resultsEl.hidden = true;
     resultsBody.replaceChildren();
@@ -528,37 +582,61 @@ export function mount({ root, signal, navigate, onLangChange }) {
     closeSuggest();
     if (!errorEl.hidden && errorKey) errorEl.textContent = t(errorKey);
     if (search.term) runSearch(search.term);
+    renderRecent();
   });
+
+  // 最近搜索：关键词列表，新的在前，同词（不分大小写）去重
+  const RECENT_KEY = 'am-hook:searches';
+  const RECENT_LIMIT = 12;
+  // 清理旧版“最近解析”留下的记录
+  try { localStorage.removeItem('am-hook:recent'); } catch {}
 
   function readRecent() {
     try {
-      const items = JSON.parse(localStorage.getItem('am-hook:recent') || '[]');
-      return Array.isArray(items) ? items.filter((item) => item && typeof item.link === 'string' && toSongLink(item.link)).slice(0, 12) : [];
+      const items = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+      return Array.isArray(items) ? items.filter((term) => typeof term === 'string' && term.trim()).slice(0, RECENT_LIMIT) : [];
     } catch { return []; }
+  }
+
+  function writeRecent(items) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(items.slice(0, RECENT_LIMIT))); } catch {}
+    renderRecent();
+  }
+
+  function addRecent(term) {
+    const key = term.toLowerCase();
+    writeRecent([term, ...readRecent().filter((item) => item.toLowerCase() !== key)]);
   }
 
   function renderRecent() {
     const items = readRecent();
-    const section = $('recent');
-    section.hidden = items.length === 0;
-    $('recent-list').replaceChildren(...items.map((item) => {
-      const a = document.createElement('a');
-      a.className = 'recent-item';
-      a.href = '/' + toSongLink(item.link);
-      const cover = Object.assign(document.createElement('span'), { className: 'recent-cover' });
-      cover.append(item.artwork ? Object.assign(document.createElement('img'), { src: item.artwork.replace('600x600bb', '300x300bb'), alt: '', loading: 'lazy' })
-                                : Object.assign(document.createElement('span'), { className: 'ph' }));
-      a.append(
-        cover,
-        Object.assign(document.createElement('span'), { className: 'recent-title', textContent: item.title || item.id }),
-        Object.assign(document.createElement('span'), { className: 'recent-sub', textContent: item.artist || '' })
-      );
-      return a;
+    $('recent').hidden = items.length === 0;
+    $('recent-list').replaceChildren(...items.map((term) => {
+      const open = el('button', 'recent-term');
+      open.type = 'button';
+      open.append(el('span', 'suggest-icon'), el('span', 'recent-text', term));
+      open.addEventListener('click', () => {
+        input.value = term;
+        input.removeAttribute('aria-invalid');
+        errorEl.hidden = true;
+        renderDetect();
+        closeSuggest();
+        runSearch(term, 'push');
+        resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      const remove = el('button', 'recent-remove');
+      remove.type = 'button';
+      remove.title = t('home.removeRecent', { term });
+      remove.setAttribute('aria-label', remove.title);
+      remove.addEventListener('click', () => writeRecent(readRecent().filter((item) => item !== term)));
+      const li = el('li', 'recent-item');
+      li.append(open, remove);
+      return li;
     }));
   }
 
   $('clear-recent').addEventListener('click', () => {
-    try { localStorage.removeItem('am-hook:recent'); } catch {}
+    try { localStorage.removeItem(RECENT_KEY); } catch {}
     renderRecent();
   });
 
