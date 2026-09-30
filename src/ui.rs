@@ -44,6 +44,8 @@ pub async fn view_asset_handler(
         "playlist.mjs" => (JS, include_bytes!("ui/views/playlist.mjs")),
         "artist.html" => (HTML, include_bytes!("ui/views/artist.html")),
         "artist.mjs" => (JS, include_bytes!("ui/views/artist.mjs")),
+        // 各页面共用的条目操作（封面悬停按钮、「更多」菜单）
+        "actions.mjs" => (JS, include_bytes!("ui/views/actions.mjs")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)

@@ -1,4 +1,6 @@
 // 艺人页（/https://music.apple.com/{cc}/artist/{slug}/{id}），由 app.mjs 挂载
+import { createActions, targetOf } from './actions.mjs';
+
 const { formatTime } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
 const { t } = AmI18n;
@@ -7,6 +9,7 @@ export const bodyClass = 'artist-page';
 
 export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
   document.title = t('artist.pageTitle');
+  const actions = createActions({ signal, player, navigate, toast });
   const $ = (id) => root.querySelector(`#${id}`);
   const pageUrl = decodeURIComponent(url.pathname.slice(1));
   const linkMatch = pageUrl.match(/music\.apple\.com\/([a-z]{2})\/artist\/(?:[^/?#]+\/)?(\d+)/i) || [];
@@ -23,7 +26,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const ICON = {
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
     pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
-    more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   };
 
   function el(tag, props = {}, ...children) {
@@ -223,6 +225,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         el('span', { className: 'latest-date', textContent: formatDate(a.releaseDate) }),
         title,
         el('span', { className: 'latest-sub', textContent: a.trackCount ? t('album.songs', { n: a.trackCount }) : '' }));
+      $('latest-card').querySelector('.cover-actions')?.remove();
+      $('latest-card').append(actions.coverActions(targetOf(latest, country)));
     }
 
     const topView = view('top-songs');
@@ -241,8 +245,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const main = el('div', { className: 'track-main' },
         el('div', { className: 'track-line' }, el('a', { className: 'track-title', href, textContent: a.name }), a.contentRating === 'explicit' ? explicitBadge() : ''),
         el('div', { className: 'track-artist' }, ...trackAlbum(track)));
-      const more = el('a', { className: 'track-more', href, innerHTML: ICON.more, title: t('album.quality') });
-      more.setAttribute('aria-label', `${t('album.quality')} · ${a.name}`);
+      // 「更多」菜单：播放按歌曲排行排队
+      const more = actions.moreButton(targetOf(track, country, { albumHref: a.albumName ? albumHref(track) : '', onPlay: () => playTrack(track) }));
       const row = el('div', { className: 'track ts-item' }, cover, main, more);
       row.addEventListener('dblclick', (e) => { if (!e.target.closest('a, button')) playTrack(track); });
       rows.set(track.id, { row, playBtn });
@@ -273,8 +277,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (a.contentRating === 'explicit') title.append(explicitBadge());
     const sub = person ? null : res.type === 'playlists' ? a.curatorName
       : OWN_WORK.has(key) ? (a.releaseDate || '').slice(0, 4) : a.artistName;
-    return el('a', { className: `shelf-item${mv ? ' mv' : ''}${person ? ' artist' : ''}`, href: pagePath(res) },
-      cover, title, person ? null : el('span', { className: 'shelf-sub', textContent: sub || '' }));
+    return actions.wrapCard(el('a', { className: `shelf-item${mv ? ' mv' : ''}${person ? ' artist' : ''}`, href: pagePath(res) },
+      cover, title, person ? null : el('span', { className: 'shelf-sub', textContent: sub || '' })), targetOf(res, country));
   }
 
   function renderShelves() {

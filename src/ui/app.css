@@ -387,9 +387,8 @@ body.home-page {
 /* 与专辑封面同样的圆角与描边，避免两种卡片风格不一 */
 .mv-thumb {
   position: relative; margin-bottom: 8px; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 8px; background: var(--surface-3);
-  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px; transition: transform .2s ease;
+  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
 }
-.mv-card:hover .mv-thumb, .mv-card:focus-visible .mv-thumb { transform: translateY(-3px); }
 .mv-time, .mv-q {
   position: absolute; bottom: 8px; height: 20px; padding: 0 6px; display: inline-flex; align-items: center; border: 0; border-radius: 5px;
   background: rgba(0, 0, 0, .65); color: #fff; font: 600 11px var(--mono);
@@ -400,16 +399,62 @@ body.home-page {
 .album-card { min-width: 0; display: flex; flex-direction: column; gap: 2px; color: inherit; text-decoration: none; }
 .album-thumb {
   margin-bottom: 8px; aspect-ratio: 1; overflow: hidden; border-radius: 8px; background: var(--surface-3);
-  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px; transition: transform .2s ease;
+  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
 }
 .album-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .album-thumb .ph { width: 100%; height: 100%; display: grid; place-items: center; }
 .album-thumb .ph::before { content: "♫"; color: var(--faint); }
-.album-card:hover .album-thumb, .album-card:focus-visible .album-thumb { transform: translateY(-3px); }
 /* 搜索结果中的艺人：圆形头像，文字居中 */
 .album-thumb.round { border-radius: 50%; }
 .artist-card { text-align: center; }
 .load-more { height: 38px; margin-top: 14px; padding: 0 18px; border-radius: 999px; font-size: 13px; }
+
+/* 封面悬停按钮（见 views/actions.mjs）：与官网一样，封面压暗，左下「播放」、右下「更多」；按钮不能放进链接，故叠在 .card-wrap 上 */
+.card-wrap { position: relative; min-width: 0; display: flex; flex-direction: column; scroll-snap-align: start; }
+.card-wrap > a { flex: 1; }
+.cover-actions {
+  position: absolute; top: 0; left: 0; width: 100%; aspect-ratio: 1; border-radius: 8px; pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, .08) 60%); opacity: 0; transition: opacity .15s ease;
+}
+.card-wrap.mv .cover-actions { aspect-ratio: 16 / 9; }
+.card-wrap.artist .cover-actions { border-radius: 50%; background: none; }
+.card-wrap:hover .cover-actions, .card-wrap:focus-within .cover-actions, .card-wrap.menu-open .cover-actions { opacity: 1; }
+.cover-btn {
+  position: absolute; bottom: 8px; width: 34px; height: 34px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%;
+  background: rgba(30, 30, 30, .55); color: #fff; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  cursor: pointer; pointer-events: none; transition: background .15s ease, transform .15s ease;
+}
+.card-wrap:hover .cover-btn, .card-wrap:focus-within .cover-btn, .card-wrap.menu-open .cover-btn { pointer-events: auto; }
+.cover-btn svg { width: 15px; height: 15px; }
+.cover-play { left: 8px; }
+.cover-play svg { margin-left: 2px; }
+.cover-more { right: 8px; }
+.card-wrap.artist .cover-more { right: 6%; bottom: 6%; }
+.cover-btn:hover, .cover-btn:focus-visible, .cover-more[aria-expanded="true"] { background: var(--accent); transform: scale(1.06); }
+.cover-btn.busy, .row-play.busy { opacity: 1; cursor: progress; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .55; } }
+
+/* 搜索结果行：行末「更多」，方形封面上叠「播放」 */
+.row-wrap { position: relative; min-width: 0; margin-inline: -8px; display: flex; align-items: center; border-radius: 12px; transition: background .15s ease; }
+.row-wrap > .song-row { flex: 1; margin-inline: 0; }
+.row-wrap .song-row:hover, .row-wrap .song-row:focus-visible { background: none; }
+.row-wrap:hover, .row-wrap:focus-within, .row-wrap.menu-open { background: var(--surface-3); }
+.row-more { flex: 0 0 auto; margin-right: 4px; opacity: 0; }
+.row-wrap:hover .row-more, .row-wrap:focus-within .row-more, .row-wrap.menu-open .row-more { opacity: 1; }
+.row-play {
+  position: absolute; top: 50%; left: 8px; width: 48px; height: 48px; padding: 0; display: grid; place-items: center; transform: translateY(-50%);
+  border: 0; border-radius: 8px; background: rgba(0, 0, 0, .45); color: #fff; cursor: pointer; opacity: 0; transition: opacity .15s ease;
+}
+.row-play svg { width: 18px; height: 18px; }
+.top-group .row-play { left: 16px; }
+.row-wrap:hover .row-play, .row-play:focus-visible { opacity: 1; }
+/* 触屏没有悬停：常显「更多」，播放点进页面再操作 */
+@media (hover: none) {
+  .cover-actions { opacity: 1; background: none; }
+  .cover-btn { width: 30px; height: 30px; pointer-events: auto; }
+  .cover-play, .row-play { display: none; }
+  .row-more { opacity: 1; }
+}
 
 .recent { margin-top: 88px; }
 .recent[hidden] { display: none; }
@@ -640,9 +685,13 @@ body.home-page {
 .track-artist a { color: inherit; text-decoration: none; }
 .track-artist a:hover { color: var(--text); text-decoration: underline; }
 .track-time { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.track-more { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); text-decoration: none; }
+.track-more {
+  width: 36px; height: 36px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%;
+  background: none; color: var(--muted); text-decoration: none; cursor: pointer;
+}
 .track-more svg { width: 17px; height: 17px; }
-.track-more:hover, .track-more:focus-visible { color: var(--accent); background: var(--surface-3); }
+.track-more:hover, .track-more:focus-visible, .track-more[aria-expanded="true"] { color: var(--accent); background: var(--surface-3); }
+.row-wrap .track-more:hover, .row-wrap .track-more[aria-expanded="true"] { background: var(--surface-2); }
 .album-footer { margin-top: 18px; padding-left: 10px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .album-footer[hidden] { display: none; }
 .album-footer p { margin: 0; }
@@ -1093,6 +1142,7 @@ body.artist-page { overflow-x: clip; }
   .artist-featured.has-latest { grid-template-columns: minmax(0, 1fr); }
   .latest { display: grid; grid-template-columns: 120px minmax(0, 1fr); grid-template-rows: auto auto 1fr; column-gap: 16px; }
   .latest-art { grid-row: 1 / -1; margin-bottom: 0; }
+  .latest-card .cover-actions { width: 120px; }
   .top-songs, .artist-featured.has-latest .top-songs { grid-auto-columns: calc((100% - 16px) / 2); }
   .shelf.expanded { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .shelf.expanded:has(.shelf-item.mv) { grid-template-columns: repeat(3, minmax(0, 1fr)); }

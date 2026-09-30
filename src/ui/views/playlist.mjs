@@ -1,4 +1,6 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
+import { createActions, targetOf } from './actions.mjs';
+
 const { formatTime, qualityIcon } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
 const { t } = AmI18n;
@@ -7,6 +9,7 @@ export const bodyClass = 'album-page playlist-page';
 
 export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
   document.title = t('playlist.pageTitle');
+  const actions = createActions({ signal, player, navigate, toast });
   const $ = (id) => root.querySelector(`#${id}`);
   const pageUrl = decodeURIComponent(url.pathname.slice(1));
   const linkMatch = pageUrl.match(/music\.apple\.com\/([a-z]{2})\/playlist\/(?:[^/?#]+\/)?(pl\.[\w-]+)/i) || [];
@@ -24,7 +27,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
     pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
     video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z" fill="currentColor"/></svg>',
-    more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   };
 
   function el(tag, props = {}, ...children) {
@@ -275,8 +277,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const albumHref = albumPath(track);
       const albumCol = albumHref && a.albumName ? el('a', { className: 'track-album', href: albumHref, textContent: a.albumName })
         : el('span', { className: 'track-album', textContent: a.albumName || '' });
-      const more = el('a', { className: 'track-more', href, innerHTML: video ? ICON.video : ICON.more, title: t(video ? 'album.video' : 'album.quality') });
-      more.setAttribute('aria-label', `${t(video ? 'album.video' : 'album.quality')} · ${a.name}`);
+      // 「更多」菜单：播放按歌单顺序排队
+      const more = actions.moreButton(targetOf(track, country, { albumHref, ...(video ? {} : { onPlay: () => playTrack(track) }) }));
 
       const row = el('div', { className: `track pl-track${video ? ' video' : ''}` }, cover,
         chart ? el('span', { className: 'track-rank', textContent: String(i + 1) }) : null, main, albumCol,
@@ -320,7 +322,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         const sub = res.type === 'playlists' ? a.curatorName : a.artistName;
         const item = el('a', { className: artist ? 'shelf-item artist' : 'shelf-item', href: pagePath(res) },
           cover, el('span', { className: 'shelf-title', textContent: a.name }), artist ? null : el('span', { className: 'shelf-sub', textContent: sub || '' }));
-        return item;
+        return actions.wrapCard(item, targetOf(res, country));
       }));
       sections.push(el('section', { className: 'shelf-section' },
         el('h2', { className: 'shelf-heading', textContent: (view.attributes && view.attributes.title) || key }), shelf));

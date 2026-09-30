@@ -1,11 +1,14 @@
 // 首页（/，搜索结果为 /?q=），由 app.mjs 挂载
+import { albumPathOf, createActions } from './actions.mjs';
+
 const { AmI18n } = window;
 const { t } = AmI18n;
 
 export const bodyClass = 'home-page';
 
-export function mount({ root, signal, navigate, onLangChange }) {
+export function mount({ root, signal, player, navigate, onLangChange, toast }) {
   const $ = (id) => root.querySelector(`#${id}`);
+  const actions = createActions({ signal, player, navigate, toast });
   const input = $('input');
   const errorEl = $('error');
   const detectEl = $('detect');
@@ -203,6 +206,8 @@ export function mount({ root, signal, navigate, onLangChange }) {
       year: (attrs.releaseDate || '').slice(0, 4), genre: (attrs.genreNames || [])[0] || '',
       artwork: attrs.artwork, duration: attrs.durationInMillis, explicit: attrs.contentRating === 'explicit',
       traits: attrs.audioTraits || [], has4K: !!attrs.has4K, subtitle: attrs.subtitle || '',
+      // 封面按钮与「更多」菜单（见 actions.mjs）
+      resource, apple: attrs.url || link,
     };
   }
 
@@ -479,6 +484,14 @@ export function mount({ root, signal, navigate, onLangChange }) {
     return section;
   }
 
+  /** 搜索结果条目 → actions.mjs 的条目；歌曲单独播放，菜单里可前往专辑 */
+  function targetOf(item) {
+    return {
+      kind: item.kind, href: item.href, apple: item.apple, name: item.title, country: storefront(), resource: item.resource,
+      albumHref: item.kind === 'song' ? albumPathOf(item.resource) : '',
+    };
+  }
+
   /** 最佳结果的一行：与歌曲行同样的布局，副标题带类型；艺人圆形头像，MV 用 16:9 缩略图 */
   function topRow(item) {
     const row = el('a', 'song-row');
@@ -495,7 +508,7 @@ export function mount({ root, signal, navigate, onLangChange }) {
       meta.append(...qualityBadges(item), el('span', 'row-time', fmtDuration(item.duration)));
       row.append(meta);
     }
-    return row;
+    return actions.wrapRow(row, targetOf(item));
   }
 
   function songRow(item) {
@@ -508,7 +521,7 @@ export function mount({ root, signal, navigate, onLangChange }) {
     const meta = el('span', 'row-meta');
     meta.append(...qualityBadges(item), el('span', 'row-time', fmtDuration(item.duration)));
     row.append(artNode('row-cover', artUrl(item.artwork, 96, 96)), main, meta);
-    return row;
+    return actions.wrapRow(row, targetOf(item));
   }
 
   function albumCard(item) {
@@ -517,7 +530,7 @@ export function mount({ root, signal, navigate, onLangChange }) {
     const title = el('span', 'recent-title', item.title);
     if (item.explicit) title.append(explicitBadge());
     card.append(artNode('album-thumb', artUrl(item.artwork, 360, 360)), title, el('span', 'recent-sub', [item.artist, item.year].filter(Boolean).join(' · ')));
-    return card;
+    return actions.wrapCard(card, targetOf(item));
   }
 
   /** 艺人：圆形头像，副标题为主要流派（与官网搜索结果一致） */
@@ -525,14 +538,14 @@ export function mount({ root, signal, navigate, onLangChange }) {
     const card = el('a', 'album-card artist-card');
     card.href = item.href;
     card.append(artNode('album-thumb round', artUrl(item.artwork, 360, 360)), el('span', 'recent-title', item.title), el('span', 'recent-sub', item.genre));
-    return card;
+    return actions.wrapCard(card, targetOf(item));
   }
 
   function playlistCard(item) {
     const card = el('a', 'album-card');
     card.href = item.href;
     card.append(artNode('album-thumb', artUrl(item.artwork, 360, 360)), el('span', 'recent-title', item.title), el('span', 'recent-sub', item.artist));
-    return card;
+    return actions.wrapCard(card, targetOf(item));
   }
 
   function mvCard(item) {
@@ -544,7 +557,7 @@ export function mount({ root, signal, navigate, onLangChange }) {
     const title = el('span', 'recent-title', item.title);
     if (item.explicit) title.append(explicitBadge());
     card.append(thumb, title, el('span', 'recent-sub', item.artist));
-    return card;
+    return actions.wrapCard(card, targetOf(item));
   }
 
   function closeResults() {

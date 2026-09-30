@@ -1,4 +1,6 @@
 // 专辑页（/https://music.apple.com/{cc}/album/{slug}/{id}），由 app.mjs 挂载
+import { createActions, targetOf } from './actions.mjs';
+
 const { formatTime, qualityIcon } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
 const { t } = AmI18n;
@@ -7,6 +9,7 @@ export const bodyClass = 'album-page';
 
 export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
   document.title = t('album.pageTitle');
+  const actions = createActions({ signal, player, navigate, toast });
   const $ = (id) => root.querySelector(`#${id}`);
   const pageUrl = decodeURIComponent(url.pathname.slice(1));
   const linkMatch = pageUrl.match(/music\.apple\.com\/([a-z]{2})\/album\/(?:([^/?#]+)\/)?(\d+)/i) || [];
@@ -31,7 +34,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
     pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
     video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z" fill="currentColor"/></svg>',
-    more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   };
 
   function el(tag, props = {}, ...children) {
@@ -256,8 +258,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const main = el('div', { className: 'track-main' },
         el('div', { className: 'track-line' }, title, a.contentRating === 'explicit' ? explicitBadge() : ''),
         a.artistName && a.artistName !== albumArtist ? el('div', { className: 'track-artist' }, ...trackArtists(track)) : null);
-      const more = el('a', { className: 'track-more', href, innerHTML: video ? ICON.video : ICON.more, title: t(video ? 'album.video' : 'album.quality') });
-      more.setAttribute('aria-label', `${t(video ? 'album.video' : 'album.quality')} · ${a.name}`);
+      // 「更多」菜单：播放按专辑顺序排队
+      const more = actions.moreButton(targetOf(track, country, video ? {} : { onPlay: () => playTrack(track) }));
 
       const row = el('div', { className: `track${video ? ' video' : ''}` }, num, main,
         el('span', { className: 'track-time', textContent: a.durationInMillis ? formatTime(a.durationInMillis / 1000) : '' }), more);
@@ -307,8 +309,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         const title = el('span', { className: 'shelf-title', textContent: a.name });
         if (a.contentRating === 'explicit') title.append(explicitBadge());
         const sub = key === 'other-versions' || key === 'more-by-artist' ? (a.releaseDate || '').slice(0, 4) : a.artistName;
-        return el('a', { className: mv ? 'shelf-item mv' : 'shelf-item', href: pagePath(res) },
-          cover, title, el('span', { className: 'shelf-sub', textContent: sub || '' }));
+        return actions.wrapCard(el('a', { className: mv ? 'shelf-item mv' : 'shelf-item', href: pagePath(res) },
+          cover, title, el('span', { className: 'shelf-sub', textContent: sub || '' })), targetOf(res, country));
       }));
       sections.push(el('section', { className: 'shelf-section' },
         el('h2', { className: 'shelf-heading', textContent: (view.attributes && view.attributes.title) || key }), shelf));
