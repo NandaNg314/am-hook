@@ -806,17 +806,19 @@
     /** 让 SourceBuffer 解析 track 的分段：必要时切换编码、重新追加 init，并设置时间偏移 */
     async useTrack(track, gen) {
       if (this.initId === track.trackId) return;
-      if (track !== this && track.base === null) track.base = this.bufferedEnd();
+      // 下一首的 base 在 init 追加成功后才确定：此前播放到接缝不会切换曲目（见 checkBoundary）
+      const base = track.base === null ? this.bufferedEnd() : track.base;
       if (!track.initBuf) track.initBuf = await this.fetchRange(track.playlist.init, gen, this.segmentController.signal, track);
       if (track.mime !== this.sbMime) {
         this.sb.changeType(track.mime);
         this.sbMime = track.mime;
       }
-      this.sb.timestampOffset = track.base;
+      this.sb.timestampOffset = base;
       await this.append(track.initBuf, gen);
+      track.base = base;
       this.initId = track.trackId;
       // 允许在下一首里拖动到尚未缓冲的位置
-      const end = track.base + track.playlist.duration;
+      const end = base + track.playlist.duration;
       if (this.ms.readyState === 'open' && !this.sb.updating && !(this.ms.duration >= end)) {
         try { this.ms.duration = end; } catch {}
       }
@@ -842,9 +844,11 @@
         // After seeking, earlier segments may never have been loaded. Signal
         // EOF once the remaining audio is appended so the decoder can flush
         // its final samples. A later seek/append reopens the MediaSource.
+        // 有下一首（已打开或还在准备）时不结束：数据暂时没到（如断网）时停在接缝处等待，
+        // 媒体保持播放状态而不是 ended，网络恢复后自动接上，与 MusicKit 相同。
         const { segments } = this.playlist;
         const tailDone = segments.every((_, i) => i < next.startIndex || this.ready(i));
-        if (tailDone && this.ms.readyState === 'open' && !this.sb.updating) {
+        if (tailDone && !this.next && !this.expectNext && this.ms.readyState === 'open' && !this.sb.updating) {
           try { this.ms.endOfStream(); } catch {}
         }
         return;
@@ -1628,17 +1632,34 @@
         ? this.upcomingEntry() : null;
       if (entry && entry === this.nextEntry) return;
       const serial = ++this.nextSerial;
+      clearTimeout(this.nextRetry);
       this.nextEntry = entry;
       this.mse.setNext(null);
-      if (!entry) return;
+      // 准备期间当前曲目不结束（见 MseEngine.pump），数据断档时停在接缝处等待
+      this.mse.expectNext = !!entry;
+      const giveUp = () => {
+        this.nextEntry = null;
+        this.mse.expectNext = false;
+        this.mse.pump(this.mse.generation); // 没有可接续的下一首：照常结束，由 ended 切歌
+      };
+      if (!entry) { giveUp(); return; }
       resolveEntry(entry)
         .then((item) => {
           if (serial !== this.nextSerial) return null;
           const mode = detectMode(item.codecs, this.audio, !!item.hookM3u8Url);
           return this.mse.setNext({ ...item, mode });
         })
-        .then((chained) => { if (serial === this.nextSerial && !chained) this.nextEntry = null; })
-        .catch(() => { if (serial === this.nextSerial) this.nextEntry = null; });
+        .then((chained) => { if (serial === this.nextSerial && !chained) giveUp(); })
+        .catch((err) => {
+          if (serial !== this.nextSerial) return;
+          // 网络错误（fetch 抛出 TypeError）稍后重试；歌曲不可播放等其他错误放弃接续
+          if (!(err instanceof TypeError)) { giveUp(); return; }
+          this.nextRetry = setTimeout(() => {
+            if (serial !== this.nextSerial) return;
+            this.nextEntry = null;
+            this.prepareNext();
+          }, 3000);
+        });
     }
 
     /** MseEngine 播放到下一首（接缝处或 skipToNext）：更新队列位置与曲目信息，再准备之后的一首 */
