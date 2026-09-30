@@ -562,6 +562,7 @@
       this.audio = audio;
       this.generation = 0;
       this.base = 0;
+      this.quotaWaitUntil = 0;
       this.next = null;
       this.nextSerial = 0;
       this.trackSerial = 0;
@@ -616,6 +617,7 @@
     /** 中止进行中的分段请求并从播放位置重新缓冲（拖动进度、放弃已接上的下一首时） */
     interrupt(gen) {
       if (!this.sb) return;
+      this.quotaWaitUntil = 0;
       this.seekSerial++;
       const seekSerial = this.seekSerial;
       this.pumpSerial++;
@@ -783,7 +785,8 @@
     /** 下一个要追加的分段：先当前曲目，结尾之后是下一首；都在缓冲窗口内已就绪时返回 null */
     target() {
       const now = this.audio.currentTime;
-      const ahead = this.transcoder ? 14 : AHEAD_SECONDS;
+      // FLAC 也缓冲 45 秒，锁屏断网时不易耗尽；码率高碰到配额时由 evict / 等待播放消化（见 pump）
+      const ahead = AHEAD_SECONDS;
       const { segments } = this.playlist;
       const startIndex = segmentAt(segments, now - this.base);
       for (let i = startIndex; i < segments.length; i++) {
@@ -826,6 +829,8 @@
 
     async pump(gen) {
       if (this.busy || gen !== this.generation || !this.sb) return;
+      // 配额已满：等播放前进、已播部分可以淘汰后再试，不在每次 timeupdate 重复追加
+      if (this.audio.currentTime < this.quotaWaitUntil) return;
       if (this.discardFrom !== undefined && this.discardFrom !== null) {
         const from = this.discardFrom;
         this.busy = true;
@@ -886,6 +891,7 @@
               } catch (retryError) {
                 if (!retryError || retryError.name !== 'QuotaExceededError') throw retryError;
                 waitForPlayback = true;
+                this.quotaWaitUntil = this.audio.currentTime + 2;
                 break;
               }
             }
@@ -949,6 +955,7 @@
       this.onTick = this.onSeeking = this.controller = this.segmentController = this.objectUrl = this.sb = this.ms = this.playlist = this.transcoder = this.pendingSegments = this.appendedSegments = null;
       this.next = this.initBuf = this.initId = this.discardFrom = null;
       this.base = 0;
+      this.quotaWaitUntil = 0;
       this.busy = false;
       this.failed = false;
     }

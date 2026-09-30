@@ -46,7 +46,11 @@ test('quota retry finishes the FLAC tail before appending the next segment', asy
   assert.deepEqual(mse.pendingSegments.get(1), [tail]);
   assert.equal(mse.appendedSegments.has(1), false);
 
+  // Quota frees up as playback advances; retries wait for that instead of every timeupdate.
+  await mse.pump(0);
+  assert.deepEqual(appended, []);
   quotaFull = false;
+  mse.audio.currentTime += 2;
   await mse.pump(0);
   await new Promise(setImmediate); // pump schedules the next segment itself
   assert.deepEqual(appended, [tail, next]);
@@ -78,6 +82,7 @@ test('seeking to the tail still signals EOF to flush the final samples', async (
   assert.equal(ended, false);
 
   mse.append = async () => {};
+  mse.audio.currentTime += 2;
   await mse.pump(0);
   assert.equal(mse.pendingSegments.size, 0);
   assert.equal(ended, true); // unvisited segments before the seek are irrelevant
