@@ -550,10 +550,21 @@
     }
   }
 
+  /**
+   * MSE 播放。与 music.apple.com（MusicKit）相同，整个队列共用一个 MediaSource / SourceBuffer：
+   * 当前曲目的分段全部追加后，把下一首（setNext）的 init 与分段以 timestampOffset 接在它的缓冲末尾，
+   * <audio> 不换 src、不暂停、不触发 ended，播放位置越过接缝时 onTrackChange 通知播放器换曲目信息。
+   * 这样 Android 后台切歌时媒体会话一直处于播放状态，通知栏的媒体卡片不会消失，也不需要在后台重新 play()。
+   * 引擎自身的 playlist / transcoder / base 等字段即当前曲目；next 为已接上或待接上的下一首，字段相同。
+   */
   class MseEngine {
     constructor(audio) {
       this.audio = audio;
       this.generation = 0;
+      this.base = 0;
+      this.next = null;
+      this.nextSerial = 0;
+      this.trackSerial = 0;
     }
 
     /** m3u8Url：Apple CDN 上的原始 media m3u8 */
@@ -565,6 +576,9 @@
       const playlist = await global.AmDecrypt.openTrack(m3u8Url, this.controller.signal);
       if (gen !== this.generation) return;
       this.playlist = playlist;
+      this.base = 0;
+      this.trackId = ++this.trackSerial;
+      this.mime = mimeFor(transcode ? 'flac' : codecs);
       if (transcode) this.transcoder = new FlacTranscoder();
 
       const MS = global.ManagedMediaSource || global.MediaSource;
@@ -577,8 +591,11 @@
       if (gen !== this.generation) return;
 
       ms.duration = playlist.duration;
-      this.sb = ms.addSourceBuffer(mimeFor(transcode ? 'flac' : codecs));
-      await this.append(await this.fetchRange(playlist.init, gen), gen);
+      this.sb = ms.addSourceBuffer(this.mime);
+      this.sbMime = this.mime;
+      this.initBuf = await this.fetchRange(playlist.init, gen);
+      await this.append(this.initBuf, gen);
+      this.initId = this.trackId;
 
       // 只记录成功追加的分段；时间戳与 EXTINF 有偏差时避免反复拉取。
       this.appendedSegments = new Set();
@@ -586,37 +603,119 @@
       this.segmentController = new AbortController();
       this.seekSerial = 0;
       this.pumpSerial = 0;
-      this.onTick = () => this.pump(gen);
+      this.onTick = () => { this.checkBoundary(); this.pump(gen); };
       this.onSeeking = () => {
-        this.seekSerial++;
-        const seekSerial = this.seekSerial;
-        this.pumpSerial++;
-        this.segmentController.abort();
-        this.segmentController = new AbortController();
-        this.appendedSegments.clear();
-        this.pendingSegments.clear();
-        if (this.sb.updating) {
-          this.sb.addEventListener('updateend', () => {
-            if (gen !== this.generation || seekSerial !== this.seekSerial) return;
-            this.busy = false;
-            this.pump(gen);
-          }, { once: true });
-        } else {
-          this.busy = false;
-          this.pump(gen);
-        }
+        this.checkBoundary();
+        this.interrupt(gen);
       };
       this.audio.addEventListener('timeupdate', this.onTick);
       this.audio.addEventListener('seeking', this.onSeeking);
       this.pump(gen);
     }
 
-    /** 获取并解密一个分段 */
-    async fetchRange(range, gen, signal = this.controller.signal) {
-      let buf = await this.playlist.load(range, signal);
+    /** 中止进行中的分段请求并从播放位置重新缓冲（拖动进度、放弃已接上的下一首时） */
+    interrupt(gen) {
+      if (!this.sb) return;
+      this.seekSerial++;
+      const seekSerial = this.seekSerial;
+      this.pumpSerial++;
+      this.segmentController.abort();
+      this.segmentController = new AbortController();
+      this.appendedSegments.clear();
+      this.pendingSegments.clear();
+      if (this.next) this.next.pendingSegments.clear();
+      if (this.sb.updating) {
+        this.sb.addEventListener('updateend', () => {
+          if (gen !== this.generation || seekSerial !== this.seekSerial) return;
+          this.busy = false;
+          this.pump(gen);
+        }, { once: true });
+      } else {
+        this.busy = false;
+        this.pump(gen);
+      }
+    }
+
+    /**
+     * 设置队列中的下一首（item 带 m3u8Url、codecs、mode，见 resolveEntry），null 表示没有。
+     * 只打开 media m3u8；当前曲目缓冲到结尾后，下一首的分段在 pump 里按缓冲窗口追加。
+     * 编码不同时需要 SourceBuffer.changeType，不支持时不接续（播完后由播放器按原方式切歌）。
+     */
+    async setNext(item) {
+      const serial = ++this.nextSerial;
+      const gen = this.generation;
+      this.dropNext();
+      if (!item || !this.sb || (item.mode !== 'mse' && item.mode !== 'flac')) return false;
+      const transcode = item.mode === 'flac';
+      const mime = mimeFor(transcode ? 'flac' : item.codecs);
+      if (mime !== this.mime && typeof this.sb.changeType !== 'function') return false;
+      const playlist = await global.AmDecrypt.openTrack(item.m3u8Url, this.controller.signal);
+      if (gen !== this.generation || serial !== this.nextSerial) return false;
+      this.next = {
+        item, playlist, mime,
+        trackId: ++this.trackSerial,
+        transcoder: transcode ? new FlacTranscoder() : null,
+        base: null,
+        initBuf: null,
+        appendedSegments: new Set(),
+        pendingSegments: new Map(),
+      };
+      this.pump(gen);
+      return true;
+    }
+
+    /** 放弃下一首；已接上的部分从缓冲中移除，并让媒体重新在当前曲目末尾结束 */
+    dropNext() {
+      const next = this.next;
+      if (!next) return;
+      this.next = null;
+      if (next.transcoder) next.transcoder.destroy();
+      if (next.base === null) return;
+      this.discardFrom = next.base;
+      if (this.initId === next.trackId) this.initId = null;
+      this.interrupt(this.generation);
+    }
+
+    /** 播放位置越过接缝时切到下一首 */
+    checkBoundary() {
+      const next = this.next;
+      if (!next || next.base === null || this.audio.currentTime < next.base - 0.05) return;
+      this.promote();
+    }
+
+    promote() {
+      const next = this.next;
+      this.next = null;
+      const old = this.transcoder;
+      Object.assign(this, {
+        playlist: next.playlist,
+        mime: next.mime,
+        trackId: next.trackId,
+        transcoder: next.transcoder,
+        base: next.base,
+        initBuf: next.initBuf,
+        appendedSegments: next.appendedSegments,
+        pendingSegments: next.pendingSegments,
+      });
+      if (old) old.destroy();
+      if (this.onTrackChange) this.onTrackChange(next.item);
+    }
+
+    /** 手动下一首：下一首已接上时直接跳到接缝处，不重新加载 */
+    skipToNext() {
+      const next = this.next;
+      if (!next || next.base === null) return false;
+      this.audio.currentTime = next.base;
+      this.promote();
+      return true;
+    }
+
+    /** 获取并解密一个分段；track 为当前曲目（this）或下一首 */
+    async fetchRange(range, gen, signal = this.controller.signal, track = this) {
+      let buf = await track.playlist.load(range, signal);
       signal.throwIfAborted();
       if (gen !== this.generation) throw new DOMException('stale', 'AbortError');
-      if (this.transcoder) buf = await this.transcoder.run(range.init ? 'open' : 'transcode', buf);
+      if (track.transcoder) buf = await track.transcoder.run(range.init ? 'open' : 'transcode', buf);
       signal.throwIfAborted();
       if (gen !== this.generation) throw new DOMException('stale', 'AbortError');
       return buf;
@@ -639,71 +738,140 @@
       });
     }
 
-    isBuffered(seg) {
+    remove(start, end, gen) {
+      return new Promise((resolve) => {
+        this.sb.addEventListener('updateend', resolve, { once: true });
+        this.sb.remove(start, end);
+      }).then(() => { if (gen !== this.generation) throw new DOMException('stale', 'AbortError'); });
+    }
+
+    isBuffered(seg, base = this.base) {
       const b = this.sb.buffered;
-      const from = seg.time + 0.25;
-      const to = seg.time + Math.max(seg.duration - 0.25, 0.3);
+      const from = base + seg.time + 0.25;
+      const to = base + seg.time + Math.max(seg.duration - 0.25, 0.3);
       for (let i = 0; i < b.length; i++) {
         if (b.start(i) <= from && b.end(i) >= to) return true;
       }
       return false;
     }
 
+    /** 当前曲目缓冲的实际结尾（下一首从这里接上，无缝且不重叠）；取不到时按 EXTINF 计算 */
+    bufferedEnd() {
+      const { segments, duration } = this.playlist;
+      const last = this.base + segments[segments.length - 1].time;
+      const b = this.sb.buffered;
+      for (let i = b.length - 1; i >= 0; i--) {
+        if (b.start(i) <= last + 0.25 && b.end(i) > last) return b.end(i);
+      }
+      return this.base + duration;
+    }
+
     async evict(gen) {
       const cut = this.audio.currentTime - (this.transcoder ? 2 : BEHIND_SECONDS);
       if (cut <= 1 || this.sb.updating) return;
-      await new Promise((resolve) => {
-        this.sb.addEventListener('updateend', resolve, { once: true });
-        this.sb.remove(0, cut);
-      });
-      if (gen !== this.generation) throw new DOMException('stale', 'AbortError');
+      await this.remove(0, cut, gen);
     }
 
-    ready(i) {
+    ready(i, track = this) {
       // A nearly complete buffered range can still have queued FLAC fragments.
       // Finish those before starting the next segment: backfilling them later
       // changes MSE's append position and lets quota eviction remove future audio.
-      if (this.pendingSegments.has(i)) return false;
-      return this.isBuffered(this.playlist.segments[i]) || this.appendedSegments.has(i);
+      if (track.pendingSegments.has(i)) return false;
+      return this.isBuffered(track.playlist.segments[i], track.base) || track.appendedSegments.has(i);
+    }
+
+    /** 下一个要追加的分段：先当前曲目，结尾之后是下一首；都在缓冲窗口内已就绪时返回 null */
+    target() {
+      const now = this.audio.currentTime;
+      const ahead = this.transcoder ? 14 : AHEAD_SECONDS;
+      const { segments } = this.playlist;
+      const startIndex = segmentAt(segments, now - this.base);
+      for (let i = startIndex; i < segments.length; i++) {
+        if (this.base + segments[i].time > now + ahead) return null;
+        if (!this.ready(i)) return { track: this, index: i };
+      }
+      const next = this.next;
+      if (!next) return { tail: true, startIndex };
+      const base = next.base === null ? this.base + this.playlist.duration : next.base;
+      if (base > now + ahead) return { tail: true, startIndex };
+      if (next.base === null) return { track: next, index: 0 };
+      const nextSegments = next.playlist.segments;
+      for (let i = 0; i < nextSegments.length; i++) {
+        if (base + nextSegments[i].time > now + ahead) return null;
+        if (!this.ready(i, next)) return { track: next, index: i };
+      }
+      return null;
+    }
+
+    /** 让 SourceBuffer 解析 track 的分段：必要时切换编码、重新追加 init，并设置时间偏移 */
+    async useTrack(track, gen) {
+      if (this.initId === track.trackId) return;
+      if (track !== this && track.base === null) track.base = this.bufferedEnd();
+      if (!track.initBuf) track.initBuf = await this.fetchRange(track.playlist.init, gen, this.segmentController.signal, track);
+      if (track.mime !== this.sbMime) {
+        this.sb.changeType(track.mime);
+        this.sbMime = track.mime;
+      }
+      this.sb.timestampOffset = track.base;
+      await this.append(track.initBuf, gen);
+      this.initId = track.trackId;
+      // 允许在下一首里拖动到尚未缓冲的位置
+      const end = track.base + track.playlist.duration;
+      if (this.ms.readyState === 'open' && !this.sb.updating && !(this.ms.duration >= end)) {
+        try { this.ms.duration = end; } catch {}
+      }
     }
 
     async pump(gen) {
       if (this.busy || gen !== this.generation || !this.sb) return;
-      const { segments } = this.playlist;
-      const now = this.audio.currentTime;
-      const startIndex = segmentAt(segments, now);
-      let target = -1;
-      const ahead = this.transcoder ? 14 : AHEAD_SECONDS;
-      for (let i = startIndex; i < segments.length; i++) {
-        if (segments[i].time > now + ahead) break;
-        if (!this.ready(i)) { target = i; break; }
+      if (this.discardFrom !== undefined && this.discardFrom !== null) {
+        const from = this.discardFrom;
+        this.busy = true;
+        try {
+          if (this.sb.updating) await new Promise((resolve) => this.sb.addEventListener('updateend', resolve, { once: true }));
+          await this.remove(from, Infinity, gen);
+          if (this.ms.readyState === 'open' && !this.sb.updating) this.ms.duration = from;
+        } catch {}
+        if (this.discardFrom === from) this.discardFrom = null;
+        this.busy = false;
+        if (gen !== this.generation) return;
       }
-      if (target < 0) {
+      const next = this.target();
+      if (!next) return;
+      if (next.tail) {
         // After seeking, earlier segments may never have been loaded. Signal
         // EOF once the remaining audio is appended so the decoder can flush
         // its final samples. A later seek/append reopens the MediaSource.
-        const tailDone = segments.every((_, i) => i < startIndex || this.ready(i));
+        const { segments } = this.playlist;
+        const tailDone = segments.every((_, i) => i < next.startIndex || this.ready(i));
         if (tailDone && this.ms.readyState === 'open' && !this.sb.updating) {
           try { this.ms.endOfStream(); } catch {}
         }
         return;
       }
 
+      const { track, index: target } = next;
       this.busy = true;
       const pumpSerial = ++this.pumpSerial;
       const seekSerial = this.seekSerial;
       const signal = this.segmentController.signal;
+      // 下一首在请求期间成为当前曲目（promote）时数据仍然有效；被放弃时作废
+      const stale = () => seekSerial !== this.seekSerial
+        || (track.trackId !== this.trackId && !(this.next && this.next.trackId === track.trackId));
       let waitForPlayback = false;
       try {
-        if (this.transcoder) {
-          let queue = this.pendingSegments.get(target);
+        await this.useTrack(track, gen);
+        if (stale()) throw new DOMException('stale seek', 'AbortError');
+        const segments = track.playlist.segments;
+        if (track.transcoder) {
+          let queue = track.pendingSegments.get(target);
           if (!queue) {
-            queue = await this.fetchRange(segments[target], gen, signal);
-            if (seekSerial !== this.seekSerial) throw new DOMException('stale seek', 'AbortError');
-            this.pendingSegments.set(target, queue);
+            queue = await this.fetchRange(segments[target], gen, signal, track);
+            if (stale()) throw new DOMException('stale seek', 'AbortError');
+            track.pendingSegments.set(target, queue);
           }
           while (queue.length) {
-            if (seekSerial !== this.seekSerial) throw new DOMException('stale seek', 'AbortError');
+            if (stale()) throw new DOMException('stale seek', 'AbortError');
             try {
               await this.append(queue[0], gen);
             } catch (err) {
@@ -717,16 +885,16 @@
                 break;
               }
             }
-            if (seekSerial !== this.seekSerial) throw new DOMException('stale seek', 'AbortError');
+            if (stale()) throw new DOMException('stale seek', 'AbortError');
             queue.shift();
           }
           if (!queue.length) {
-            this.pendingSegments.delete(target);
-            this.appendedSegments.add(target);
+            track.pendingSegments.delete(target);
+            track.appendedSegments.add(target);
           }
         } else {
-          const buf = await this.fetchRange(segments[target], gen, signal);
-          if (seekSerial !== this.seekSerial) throw new DOMException('stale seek', 'AbortError');
+          const buf = await this.fetchRange(segments[target], gen, signal, track);
+          if (stale()) throw new DOMException('stale seek', 'AbortError');
           try {
             await this.append(buf, gen);
           } catch (err) {
@@ -737,13 +905,21 @@
               throw err;
             }
           }
-          if (seekSerial !== this.seekSerial) throw new DOMException('stale seek', 'AbortError');
-          this.appendedSegments.add(target);
+          if (stale()) throw new DOMException('stale seek', 'AbortError');
+          track.appendedSegments.add(target);
+        }
+        if (this.failed) {
+          this.failed = false;
+          if (this.onRecover) this.onRecover();
         }
       } catch (err) {
         if (pumpSerial === this.pumpSerial && (!err || err.name !== 'AbortError')) {
           this.busy = false;
-          if (this.onError) this.onError(err);
+          // 网络中断等错误：提示后继续重试，不让缓冲耗尽后一直卡住
+          if (!this.failed && this.onError) this.onError(err);
+          this.failed = true;
+          clearTimeout(this.retryTimer);
+          this.retryTimer = setTimeout(() => this.pump(gen), 3000);
           return;
         }
       }
@@ -755,17 +931,41 @@
 
     destroy(bump = true) {
       if (bump) this.generation++;
+      this.nextSerial++;
+      clearTimeout(this.retryTimer);
       if (this.controller) this.controller.abort();
       if (this.segmentController) this.segmentController.abort();
       if (this.transcoder) this.transcoder.destroy();
+      if (this.next && this.next.transcoder) this.next.transcoder.destroy();
       if (this.onTick) {
         this.audio.removeEventListener('timeupdate', this.onTick);
         this.audio.removeEventListener('seeking', this.onSeeking);
       }
       if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
       this.onTick = this.onSeeking = this.controller = this.segmentController = this.objectUrl = this.sb = this.ms = this.playlist = this.transcoder = this.pendingSegments = this.appendedSegments = null;
+      this.next = this.initBuf = this.initId = this.discardFrom = null;
+      this.base = 0;
       this.busy = false;
+      this.failed = false;
     }
+  }
+
+  /**
+   * <audio> 的播放控制，时间相对当前曲目：MSE 接续播放时整个队列在同一条时间线上，
+   * 当前曲目从 base()（MseEngine.base）开始；其他方式 base 为 0。
+   */
+  class AudioClock {
+    constructor(audio, base) {
+      this.audio = audio;
+      this.base = base;
+    }
+
+    get currentTime() { return Math.max(0, this.audio.currentTime - this.base()); }
+    set currentTime(value) { this.audio.currentTime = this.base() + value; }
+    get paused() { return this.audio.paused; }
+    get readyState() { return this.audio.readyState; }
+    play() { return this.audio.play(); }
+    pause() { this.audio.pause(); }
   }
 
   const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>';
@@ -790,6 +990,11 @@
       this.audio = new Audio();
       this.audio.preload = 'auto';
       this.mse = new MseEngine(this.audio);
+      this.mse.onTrackChange = (item) => this.advance(item);
+      this.clock = new AudioClock(this.audio, () => (this.current && (this.current.mode === 'mse' || this.current.mode === 'flac') ? this.mse.base : 0));
+      /** 已交给 MseEngine 接续播放的下一首在队列中的条目（见 prepareNext） */
+      this.nextEntry = null;
+      this.nextSerial = 0;
       this.pcm = null;
       this.$ = (sel) => root.querySelector(sel);
       // 歌名、「艺人 — 专辑」两行滚动字幕；音质标签在歌名右侧，不参与滚动
@@ -858,6 +1063,15 @@
       this.subMarquee.set([...artists, ...(artists.length && album.length ? [' — '] : []), ...album]);
     }
 
+    renderArtwork(item) {
+      const art = this.$('.player-art');
+      if (item.artwork) {
+        if (art.getAttribute('src') !== item.artwork) art.src = item.artwork;
+      } else if (art.hasAttribute('src')) {
+        art.removeAttribute('src');
+      }
+    }
+
     renderMode() {
       if (!this.current) return;
       const ec3 = this.current.mode === 'ec3';
@@ -871,7 +1085,7 @@
       notice.hidden = !noticeKey;
     }
 
-    transport() { return this.current && this.current.mode === 'ec3' && this.pcm ? this.pcm : this.audio; }
+    transport() { return this.current && this.current.mode === 'ec3' && this.pcm ? this.pcm : this.clock; }
 
     updatePcm() {
       this.renderToggle();
@@ -1014,6 +1228,7 @@
         }
         this.renderQueue(true);
         this.renderModes();
+        this.prepareNext();
       });
 
       const list = panel.querySelector('.queue-list');
@@ -1130,6 +1345,7 @@
       const [entry] = entries.splice(from, 1);
       entries.splice(to, 0, entry);
       this.renderQueue(true);
+      this.prepareNext();
     }
 
     removeQueueEntry(index) {
@@ -1138,6 +1354,7 @@
       if (q.ordered) q.ordered.splice(q.ordered.indexOf(entry), 1);
       this.renderQueue(true);
       this.renderModes();
+      this.prepareNext();
       // 焦点移到原位置的下一行，没有时回到上一行或清单按钮
       const rows = this.queuePanel.querySelectorAll('.queue-item');
       const next = rows[Math.min(index - q.pos - 1, rows.length - 1)];
@@ -1238,6 +1455,7 @@
       }
       this.renderModes();
       this.renderQueue(true);
+      this.prepareNext();
     }
 
     /** 关 → 全部重复 → 单曲重复 → 关 */
@@ -1245,6 +1463,7 @@
       this.repeat = { off: 'all', all: 'one', one: 'off' }[this.repeat];
       try { localStorage.setItem('am-hook:repeat', this.repeat); } catch {}
       this.renderModes();
+      this.prepareNext();
     }
 
     /** 播放条与清单标题旁的随机 / 重复按钮，以及上一首 / 下一首是否可用 */
@@ -1284,6 +1503,8 @@
       if (!this.current) return;
       const q = this.queue;
       if (auto && this.repeat === 'one') { this.restart(); return; }
+      // 下一首已接在当前曲目之后时直接跳到接缝处，不重新加载（后台从通知栏切歌也不中断）
+      if (this.nextEntry && this.nextEntry === this.upcomingEntry() && this.mse.skipToNext()) return;
       if (q && q.entries[q.pos + 1]) { this.playAt(q.pos + 1); return; }
       if (this.repeat !== 'all') return;
       if (q && q.entries.length > 1) this.playAt(0); else this.restart();
@@ -1387,6 +1608,57 @@
       this.queue = null;
       this.queueSerial++;
       this.pendingTrack = null;
+      this.prepareNext();
+    }
+
+    /** 播完当前曲目后要播放的队列条目（与 next(true) 一致）；单曲重复或没有时为 null */
+    upcomingEntry() {
+      const q = this.queue;
+      if (!q || this.repeat === 'one') return null;
+      return q.entries[q.pos + 1] || (this.repeat === 'all' && q.entries.length > 1 ? q.entries[0] : null);
+    }
+
+    /**
+     * 与 music.apple.com 相同，提前解析下一首并交给 MseEngine，在当前曲目之后无缝接上。
+     * 队列、随机、重复变化后重新调用；下一首不变时不重复请求。只有 MSE / FLAC 方式能接续，
+     * 其他情况仍由 ended 事件按原方式切歌。
+     */
+    prepareNext() {
+      const entry = this.current && (this.current.mode === 'mse' || this.current.mode === 'flac') && this.mse.sb
+        ? this.upcomingEntry() : null;
+      if (entry && entry === this.nextEntry) return;
+      const serial = ++this.nextSerial;
+      this.nextEntry = entry;
+      this.mse.setNext(null);
+      if (!entry) return;
+      resolveEntry(entry)
+        .then((item) => {
+          if (serial !== this.nextSerial) return null;
+          const mode = detectMode(item.codecs, this.audio, !!item.hookM3u8Url);
+          return this.mse.setNext({ ...item, mode });
+        })
+        .then((chained) => { if (serial === this.nextSerial && !chained) this.nextEntry = null; })
+        .catch(() => { if (serial === this.nextSerial) this.nextEntry = null; });
+    }
+
+    /** MseEngine 播放到下一首（接缝处或 skipToNext）：更新队列位置与曲目信息，再准备之后的一首 */
+    advance(item) {
+      const q = this.queue;
+      const pos = q ? q.entries.indexOf(this.nextEntry) : -1;
+      if (pos >= 0) q.pos = pos;
+      this.nextEntry = null;
+      this.queueSerial++;
+      this.pendingTrack = null;
+      this.current = { ...item, duration: this.mse.playlist.duration };
+      this.showError('');
+      this.renderTrackText();
+      this.renderArtwork(item);
+      this.renderMode();
+      this.updateMediaSession();
+      this.renderToggle();
+      this.renderProgress();
+      this.emit();
+      this.prepareNext();
     }
 
     async playAt(pos) {
@@ -1422,12 +1694,7 @@
       this.show();
       this.showError('');
       this.renderTrackText();
-      const art = this.$('.player-art');
-      if (item.artwork) {
-        if (art.getAttribute('src') !== item.artwork) art.src = item.artwork;
-      } else if (art.hasAttribute('src')) {
-        art.removeAttribute('src');
-      }
+      this.renderArtwork(item);
       this.setLoading(true);
       this.emit();
       this.updateMediaSession();
@@ -1444,6 +1711,10 @@
           await this.tryMode(mode, item, resumeAt, token);
           this.attempting = false;
           this.renderProgress();
+          if (token === this.playToken) {
+            this.nextEntry = null; // 新的 MediaSource 上还没有接任何曲目
+            this.prepareNext();
+          }
           return;
         } catch (err) {
           this.attempting = false;
@@ -1487,6 +1758,7 @@
         return;
       }
       if (mode === 'mse' || mode === 'flac') {
+        this.mse.onRecover = () => this.showError('');
         await this.mse.load(item.m3u8Url, item.codecs, (err) => this.showError(err.message || String(err)), mode === 'flac');
         if (token !== this.playToken) return;
         this.current.duration = this.mse.playlist ? this.mse.playlist.duration : 0;
@@ -1547,8 +1819,9 @@
         bufEnd = this.pcm.loadedUntil;
       } else {
         const b = this.audio.buffered;
+        const now = this.audio.currentTime;
         for (let i = 0; i < b.length; i++) {
-          if (b.start(i) <= transport.currentTime + 0.5) bufEnd = Math.max(bufEnd, b.end(i));
+          if (b.start(i) <= now + 0.5) bufEnd = Math.max(bufEnd, b.end(i) - (now - transport.currentTime));
         }
       }
       this.$('.seek-buffer').style.width = `${d ? Math.min(1, bufEnd / d) * 100 : 0}%`;
