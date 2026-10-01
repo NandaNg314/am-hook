@@ -24,6 +24,9 @@
   --info-soft: rgba(58, 103, 177, .13);
   --shadow: 0 16px 40px rgba(0, 0, 0, .45);
   --radius: 14px;
+  /* 官网 glassMaterial：手机顶栏的半透明底色与 0.5px 描边 */
+  --glass-bg: rgba(38, 38, 40, .6);
+  --glass-stroke: rgba(255, 255, 255, .2);
   /* 西文字体在前、中文字体在后：中文字体里的 ’ “ 等标点是全角宽度，排在前面时西文（如 I’m）会出现空隙；汉字仍逐字回落到中文字体 */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "Segoe UI", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
@@ -53,6 +56,8 @@
     --info: #2d5aa0;
     --info-soft: rgba(45, 90, 160, .08);
     --shadow: 0 12px 36px rgba(0, 0, 0, .12);
+    --glass-bg: rgba(245, 245, 247, .55);
+    --glass-stroke: rgba(0, 0, 0, .05);
   }
 }
 
@@ -544,6 +549,8 @@ body.album-page { overflow-x: clip; }
 body.detail-themed { background: var(--joe); }
 body.detail-themed.joe-light .page {
   color-scheme: light;
+  --glass-bg: rgba(245, 245, 247, .55);
+  --glass-stroke: rgba(0, 0, 0, .05);
   --bg: var(--joe);
   --surface: color-mix(in srgb, #000 4%, var(--joe));
   --surface-2: color-mix(in srgb, #000 6%, var(--joe));
@@ -605,6 +612,7 @@ body.detail-themed.joe-light .page {
 /* 手机竖屏的全宽 3:4 动态封面：下部 48% 渐隐到主题色（官网 artwork__main--tall 的遮罩），标题从 94vw 处叠在上面 */
 .album-page.tall-art .album-tall {
   position: absolute; z-index: -1; top: 0; left: 50%; width: 100vw; display: block; transform: translateX(-50%); pointer-events: none;
+  overflow-x: clip; /* 滚出时的放大动画不撑宽页面（否则手机布局视口变宽，固定顶栏随之超出屏幕） */
 }
 .album-tall-inner {
   position: relative; aspect-ratio: 3 / 4; overflow: hidden;
@@ -1120,6 +1128,8 @@ body.artist-page { overflow-x: clip; }
 body.artist-themed { background: var(--joe); }
 body.artist-themed .page, body.detail-themed:not(.joe-light) .page {
   color-scheme: dark;
+  --glass-bg: rgba(38, 38, 40, .6);
+  --glass-stroke: rgba(255, 255, 255, .2);
   --bg: var(--joe);
   --surface: color-mix(in srgb, #fff 6%, var(--joe));
   --surface-2: color-mix(in srgb, #fff 9%, var(--joe));
@@ -1548,4 +1558,33 @@ body.lyrics-open { overflow: hidden; }
 @media (prefers-contrast: more) { .lyrics-backdrop { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ---------- 手机顶栏（官网 < 484px 的 .navigation）：固定在顶部、不随页面滚走，52px 高的玻璃材质
+   （半透明底色 + saturate(220%) blur(16px) + 底部 0.5px 描边），页面内容从下面滚过；放在文件末尾以覆盖各页面的顶栏规则 ---------- */
+@media (max-width: 483px) {
+  .page { padding-top: calc(52px + env(safe-area-inset-top) + 16px); }
+  /* 主题色页面（官网 has-theme-override 的 scrollable-page：margin-top -56px + padding-top 56px）：内容紧贴顶栏下沿开始，
+     艺人页头部、专辑 / 歌单的竖版大图都从 52px 处开始，既不留缝也不被顶栏盖住 */
+  .artist-page .page, .album-page .page { padding-top: calc(52px + env(safe-area-inset-top)); }
+  .album-page.tall-art .detail-header { margin-top: 0; }
+  /* 艺人头部不再垫在顶栏下面：去掉为顶栏加的压暗与偏移，圆形头像按官网 40px 上边距（光晕在头像上方 36px） */
+  .artist-hero.fixed .artist-hero-bg::before { display: none; }
+  .artist-hero.circular { padding-top: 40px; }
+  .artist-hero.no-artwork { padding-top: 20px; }
+  .artist-portrait-glow { top: 4px; }
+  .page > .topbar {
+    position: fixed; z-index: 8; top: 0; left: 0; right: 0; height: calc(52px + env(safe-area-inset-top)); margin: 0;
+    padding: calc(4px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 4px max(14px, env(safe-area-inset-left));
+    flex-wrap: nowrap; border-bottom: .5px solid var(--glass-stroke); background: var(--glass-bg);
+    -webkit-backdrop-filter: saturate(220%) blur(16px); backdrop-filter: saturate(220%) blur(16px);
+  }
+  /* 固定高度只容一行：状态胶囊不再换行，过长时省略 */
+  .page > .topbar .topbar-right { flex-wrap: nowrap; min-width: 0; }
+  .page > .topbar .status-pill { order: 0; min-width: 0; height: 30px; white-space: nowrap; }
+  .page > .topbar .status-pill > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+}
+/* 提高对比度：去掉模糊，改用不透明底色与正文色描边（官网改为 #f2f2f2 / #0e0e0e 实色） */
+@media (max-width: 483px) and (prefers-contrast: more) {
+  .page > .topbar { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--bg); border-bottom-color: var(--text); }
 }
