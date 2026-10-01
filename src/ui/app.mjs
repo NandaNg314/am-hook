@@ -214,7 +214,9 @@ function navigate(href, { replace = false } = {}) {
   }
   clearTimeout(scrollTimer);
   scrollPositions.set(entryKey(), scrollY);
-  const state = { amKey: newKey() };
+  // amBack：上一条历史记录是站内页面，「返回」按钮可以直接 history.back()
+  const amBack = replace ? !!(history.state && history.state.amBack) : true;
+  const state = { amKey: newKey(), amBack };
   if (replace) history.replaceState(state, '', url.href);
   else history.pushState(state, '', url.href);
   render(url);
@@ -240,15 +242,12 @@ document.addEventListener('click', (event) => {
   navigate(url.href);
 });
 
-/** 页面顶部的搜索框（GET 表单，提交到首页 ?q=） */
-document.addEventListener('submit', (event) => {
-  const form = event.target;
-  if (event.defaultPrevented || !(form instanceof HTMLFormElement) || form.method !== 'get') return;
-  const url = new URL(form.action, location.href);
-  if (!route(url)) return;
-  url.search = new URLSearchParams(new FormData(form)).toString();
-  event.preventDefault();
-  navigate(url.href);
+/** 页面顶部的「返回」按钮：从站内页面进入时回到上一页（恢复其滚动位置），直接打开链接进入时回到首页 */
+document.addEventListener('click', (event) => {
+  const button = event.target instanceof Element && event.target.closest('[data-back]');
+  if (!button) return;
+  if (history.state && history.state.amBack) history.back();
+  else navigate('/');
 });
 
 entryKey();

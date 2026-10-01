@@ -54,6 +54,7 @@
       'footer.github': '在 GitHub 上查看',
       'footer.thanks': '致谢以下开源项目：',
       'nav.home': '主页',
+      'nav.back': '返回',
 
       'home.inputLabel': '搜索，或输入歌曲 / MV 链接',
       'home.placeholder': '在此搜索或粘贴Apple Music链接',
@@ -294,6 +295,7 @@
       'footer.github': 'View on GitHub',
       'footer.thanks': 'Thanks to these open-source projects:',
       'nav.home': 'Home',
+      'nav.back': 'Back',
 
       'home.inputLabel': 'Search, or enter a song / MV link',
       'home.placeholder': 'Search or paste an Apple Music link here',

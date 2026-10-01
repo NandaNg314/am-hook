@@ -84,16 +84,8 @@ button { cursor: pointer; }
 .brand-mark svg { width: 18px; height: 18px; }
 .brand-name { font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
 .topbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-/* 顶栏搜索（歌曲页 / 专辑页）：提交到首页 /?q= */
-.top-search {
-  flex: 0 1 280px; min-width: 0; height: 36px; margin-right: auto; padding: 0 10px; display: flex; align-items: center; gap: 8px;
-  border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); color: var(--faint);
-}
-.top-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--accent); }
-.top-search svg { width: 15px; height: 15px; flex: 0 0 auto; }
-.top-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: none; color: var(--text); font-size: 14px; }
-.top-search input:focus { outline: none; }
-.top-search input::placeholder { color: var(--faint); }
+/* 顶栏「返回」（首页以外的页面；搜索只在首页） */
+.top-back { margin-right: auto; padding-left: 10px; }
 
 .status-pill {
   height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px;
@@ -949,7 +941,6 @@ body.has-player { padding-bottom: calc(var(--player-height, 110px) + 32px + env(
   .home-footer { gap: 10px; }
   .footer-github { margin-left: 0; }
   .footer-credits > span { flex-basis: 100%; }
-  .top-search { order: 3; flex-basis: 100%; margin-right: 0; height: 40px; }
   .song { grid-template-columns: 1fr; gap: 24px; margin-top: 24px; }
   .cover { width: min(240px, 70%); margin: 0 auto; }
   .song-title { font-size: 26px; }
