@@ -25,7 +25,7 @@ Then open `http://127.0.0.1:8888/` and paste a link. Pages can also be opened di
 | Input on the home page | Page opened |
 |---|---|
 | `https://music.apple.com/cn/song/<slug>/<id>` | `/https://music.apple.com/cn/song/<slug>/<id>` |
-| `https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` | `/https://music.apple.com/cn/song/<slug>/<id>` |
+| `https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` | `/https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` |
 | `https://music.apple.com/cn/music-video/<slug>/<id>` | `/https://music.apple.com/cn/music-video/<slug>/<id>` |
 | `https://music.apple.com/cn/playlist/<slug>/<pl.id>` | `/https://music.apple.com/cn/playlist/<slug>/<pl.id>` |
 | `https://music.apple.com/cn/artist/<slug>/<id>` | `/https://music.apple.com/cn/artist/<slug>/<id>` |
@@ -134,7 +134,7 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | Song track decryption template JSON from wrapper-lite `/key` |
 | `GET /lyrics/<adamId>?language=<tag>` | TTML lyrics from wrapper-lite `/lyrics`, XML unchanged; 404 when the song has none. Optional `language` is the default language of the song's storefront (e.g. `zh-Hans-CN`) |
 | `GET /parse/mv/<adamId>` | MV master playlist text and final CDN URL |
-| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the song page |
+| `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the album page with that track selected and scrolled into view, like music.apple.com |
 | `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | Playlist page (editorial and public user playlists: motion artwork like the album page, tracks with artwork / artist / album columns, playback queue, featured-artists and more-by-curator shelves; data from the same amp-api `playlists` request as music.apple.com, fetched through `/amp`) |
 | `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | Artist page (header like music.apple.com: motion video, wide image or circular portrait from the catalog data; latest release, top songs with a playback queue, album / music-video / playlist / similar-artist shelves with See All, bio; data from the same amp-api `artists` request as music.apple.com, fetched through `/amp`). Artist names on song, music-video and album pages (each artist of a multi-artist line separately) and artist shelves link here |
 | `GET /amp/v1/catalog/<path>?<query>` | Proxies Apple Music catalog API (`amp-api-edge.music.apple.com/v1/catalog/...`, used by home page search) with the music.apple.com web developer token; query passed through unchanged |

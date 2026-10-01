@@ -27,12 +27,10 @@ export function mount({ root, signal, player, navigate, onLangChange, toast }) {
     if (mv) return `https://music.apple.com/${cc}/music-video/${mv[1] || '_'}/${mv[2]}`;
     const song = url.pathname.match(/\/song\/([^/]+)\/(\d+)/i);
     if (song) return `https://music.apple.com/${cc}/song/${song[1]}/${song[2]}`;
-    const trackId = url.searchParams.get('i');
-    const album = url.pathname.match(/\/album\/([^/]+)\//i);
-    if (trackId && /^\d+$/.test(trackId)) return `https://music.apple.com/${cc}/song/${album ? album[1] : '_'}/${trackId}`;
-    // 不带 ?i= 的专辑链接打开专辑页（slug 可省略）
+    // 专辑链接打开专辑页（slug 可省略）；带 ?i= 时保留，专辑页选中该曲目
     const albumPage = url.pathname.match(/^\/[a-z]{2}\/album\/(?:([^/]+)\/)?(\d+)\/?$/i);
-    if (albumPage) return `https://music.apple.com/${cc}/album/${albumPage[1] || '_'}/${albumPage[2]}`;
+    const trackId = url.searchParams.get('i');
+    if (albumPage) return `https://music.apple.com/${cc}/album/${albumPage[1] || '_'}/${albumPage[2]}${trackId && /^\d+$/.test(trackId) ? `?i=${trackId}` : ''}`;
     // 歌单链接打开歌单页（ID 形如 pl.xxx / pl.u-xxx，slug 可省略）
     const playlistPage = url.pathname.match(/^\/[a-z]{2}\/playlist\/(?:([^/]+)\/)?(pl\.[\w-]+)\/?$/i);
     if (playlistPage) return `https://music.apple.com/${cc}/playlist/${playlistPage[1] || '_'}/${playlistPage[2]}`;
@@ -199,6 +197,9 @@ export function mount({ root, signal, player, navigate, onLangChange, toast }) {
     if (!attrs || !kind) return null;
     const mv = kind === 'music-video';
     let link = toSongLink(attrs.url || '');
+    // 歌曲的 url 是 album/<slug>/<id>?i=<id>，搜索结果里的歌曲仍打开歌曲页
+    const albumSong = kind === 'song' && link && link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/album\/([^/?#]+)\/\d+\?i=(\d+)$/);
+    if (albumSong) link = `https://music.apple.com/${albumSong[1]}/song/${albumSong[2]}/${albumSong[3]}`;
     if (!link || !link.includes(`/${kind}/`)) link = `https://music.apple.com/${storefront()}/${kind}/_/${resource.id}`;
     return {
       // 歌单没有 artistName，副标题用歌单作者（curatorName）

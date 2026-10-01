@@ -1,7 +1,7 @@
 // Run with: node tests/album_ui.cjs <path-to-playwright-package> [base]
 // Live: needs a running am-hook with access to music.apple.com / amp-api (default http://127.0.0.1:8888).
 // In-page playback is checked too when wrapper-lite is online.
-// Covers the album page: catalog data, track rows, shelves, ?i= redirect, playback queue and the mobile layout.
+// Covers the album page: catalog data, track rows, shelves, ?i= track selection, playback queue and the mobile layout.
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { chromium } = require(process.argv[2] || 'playwright');
@@ -63,11 +63,21 @@ const albumPath = '/https://music.apple.com/cn/album/justice-triple-chucks-delux
       console.log('wrapper-lite offline: playback check skipped');
     }
 
-    // Album share links with ?i= open the song page
-    const redirect = await browser.newPage();
-    let redirectFrame = await openPage(redirect, base + '/https://music.apple.com/us/album/lover/1468058165?i=1468058171');
-    await redirect.waitForURL('**/song/lover/1468058171', { timeout: 10000, waitUntil: 'commit' });
-    await redirect.close();
+    // Album share links with ?i= stay on the album page, select that track and scroll it into view
+    const shared = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    let sharedFrame = await openPage(shared, base + '/https://music.apple.com/us/album/lover/1468058165?i=1468058171');
+    await sharedFrame.locator('.track.selected').waitFor({ timeout: 20000 });
+    assert.match(await sharedFrame.evaluate(() => location.href), /\/album\/lover\/1468058165\?i=1468058171$/);
+    assert.equal(await sharedFrame.locator('.track.selected').count(), 1);
+    assert.ok(await sharedFrame.evaluate(() => {
+      const box = document.querySelector('.track.selected').getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= innerHeight;
+    }), 'selected track scrolled into view');
+    if (shots) await shared.screenshot({ path: path.join(shots, 'album-selected.png') });
+    // Clicking outside the track list clears the selection
+    await sharedFrame.locator('#title').click();
+    assert.equal(await sharedFrame.locator('.track.selected').count(), 0);
+    await shared.close();
 
     // Mobile: centred hero, no horizontal scroll
     const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });

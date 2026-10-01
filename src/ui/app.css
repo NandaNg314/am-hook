@@ -671,6 +671,15 @@ body.home-page {
 .track-title { min-width: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 500; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .track-title:hover { text-decoration: underline; }
 .track.playing .track-title { color: var(--accent); }
+/* 选中的曲目（专辑链接 ?i= 或单击曲目行）：与官网一样整行用主题色高亮 */
+.track.selected, .track.selected:hover, .track.selected:focus-within { background: var(--accent); }
+.track.selected::before, .track.selected + .track::before { opacity: 0; }
+.track.selected .track-title, .track.selected .track-num, .track.selected .track-play, .track.selected .eq, .track.selected .track-more { color: #fff; }
+.track.selected .track-more:hover, .track.selected .track-more[aria-expanded="true"] { background: rgba(255, 255, 255, .2); }
+.track.selected .track-artist, .track.selected .track-time { color: rgba(255, 255, 255, .8); }
+.track.selected .track-artist a:hover { color: #fff; }
+.track.selected .track-pop { background: rgba(255, 255, 255, .7); }
+.track.selected .explicit { background: rgba(255, 255, 255, .85); color: var(--accent); }
 .track-artist { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .track-artist a { color: inherit; text-decoration: none; }
 .track-artist a:hover { color: var(--text); text-decoration: underline; }

@@ -115,7 +115,7 @@ function unmount() {
  * mount(ctx) 的 ctx：
  *   root：页面内容所在的元素（每次进入页面都是新的）；url：页面地址；signal：离开页面时中止；
  *   player：播放器（见 AmPlayer.scope）；navigate(href, { replace })：站内跳转；
- *   onLangChange(fn)：切换语言后回调；toast(message)：底部提示。
+ *   onLangChange(fn)：切换语言后回调；toast(message)：底部提示；restoring：是否在恢复前进 / 后退前的滚动位置。
  */
 async function render(url, { scroll = 0, initial = false } = {}) {
   const name = route(url);
@@ -154,6 +154,7 @@ async function render(url, { scroll = 0, initial = false } = {}) {
       navigate,
       onLangChange: (fn) => { if (!signal.aborted) signal.addEventListener('abort', AmI18n.onChange(fn), { once: true }); },
       toast,
+      restoring: scroll > 0,
     });
   } catch (err) {
     console.error('[am-hook] 页面脚本出错', err);

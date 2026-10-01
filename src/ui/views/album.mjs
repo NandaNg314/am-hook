@@ -7,7 +7,7 @@ const { t } = AmI18n;
 
 export const bodyClass = 'album-page';
 
-export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
+export function mount({ root, url, signal, player, navigate, onLangChange, toast, restoring }) {
   document.title = t('album.pageTitle');
   const actions = createActions({ signal, player, navigate, toast });
   const $ = (id) => root.querySelector(`#${id}`);
@@ -16,12 +16,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const country = (linkMatch[1] || 'us').toLowerCase();
   const albumId = linkMatch[3];
 
-  // 带 ?i= 的专辑分享链接指向其中一首歌：直接打开歌曲页
+  // 带 ?i= 的专辑分享链接指向其中一首歌：与官网一样打开专辑页，选中该曲目并滚动到它
   const trackParam = url.searchParams.get('i');
-  if (albumId && /^\d+$/.test(trackParam || '')) {
-    navigate(`/https://music.apple.com/${country}/song/${linkMatch[2] || '_'}/${trackParam}`, { replace: true });
-    return;
-  }
+  /** 选中（高亮）的曲目 ID：来自 ?i=，之后单击曲目行切换，单击曲目行以外的地方取消 */
+  let selectedId = /^\d+$/.test(trackParam || '') ? trackParam : null;
+  // 前进 / 后退恢复了原滚动位置时不再滚动到选中的曲目
+  let revealPending = !!selectedId && !restoring;
 
   /** 当前专辑（amp-api albums 资源）与其中的曲目 */
   let album = null;
@@ -264,6 +264,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const row = el('div', { className: `track${video ? ' video' : ''}` }, num, main,
         el('span', { className: 'track-time', textContent: a.durationInMillis ? formatTime(a.durationInMillis / 1000) : '' }), more);
       if (!video) row.addEventListener('dblclick', (e) => { if (!e.target.closest('a, button')) playTrack(track); });
+      row.addEventListener('click', (e) => { if (!e.target.closest('a, button')) select(track.id); });
       rows.set(track.id, { row, playBtn });
       nodes.push(row);
     }
@@ -271,7 +272,21 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('tracks').hidden = false;
     $('play-all').disabled = $('shuffle').disabled = songs().length === 0;
     syncRows(player.current, !player.transport().paused);
+    select(selectedId);
+    const target = revealPending && rows.get(selectedId);
+    if (target) {
+      revealPending = false;
+      target.row.scrollIntoView({ block: 'center' });
+    }
   }
+
+  function select(id) {
+    selectedId = id;
+    for (const [trackId, { row }] of rows) row.classList.toggle('selected', trackId === id);
+  }
+  document.addEventListener('pointerdown', (e) => {
+    if (selectedId && !(e.target instanceof Element && e.target.closest('.track'))) select(null);
+  }, { signal });
 
   function renderFooter() {
     const a = album.attributes;
