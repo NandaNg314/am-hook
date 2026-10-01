@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::log;
 use crate::m3u8::{parse_master_variants, parse_song_link};
 use crate::state::AppState;
-use crate::wrapper::{fetch_key_json, fetch_lyrics, Lyrics};
+use crate::wrapper::Lyrics;
 
 /// 站内页面（首页与歌曲 / MV / 专辑 / 歌单 / 艺人页）。与 music.apple.com 相同，整站是单页应用：
 /// 所有页面地址都返回 app.html，页面视图（/assets/views/）由前端路由（app.mjs）切换，
@@ -81,13 +81,7 @@ pub async fn mv_webplayback_handler(
     if id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return bad_request("Invalid adamId");
     }
-    mv_forward(
-        state
-            .http_client
-            .get(format!("{}/webplayback", state.config.wrapper_url))
-            .query(&[("adamId", id)]),
-    )
-    .await
+    mv_forward(&state, state.wrapper.get("/webplayback").query(&[("adamId", id)])).await
 }
 
 /// Fetch the MV master on the server so its User-Agent is not controlled by the browser.
@@ -162,33 +156,17 @@ pub async fn mv_license_handler(
     {
         return bad_request("Invalid PlayReady license request");
     }
-    mv_forward(
-        state
-            .http_client
-            .post(format!("{}/license", state.config.wrapper_url))
-            .json(&body),
-    )
-    .await
+    mv_forward(&state, state.wrapper.post("/license").json(&body)).await
 }
 
-async fn mv_forward(request: reqwest::RequestBuilder) -> Response<Body> {
-    match request
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            match response.bytes().await {
-                Ok(body) => Response::builder()
-                    .status(status)
-                    .header(CONTENT_TYPE, "application/json")
-                    .header(axum::http::header::CACHE_CONTROL, "no-store")
-                    .body(Body::from(body))
-                    .unwrap(),
-                Err(_) => gateway_error("Failed to read wrapper-lite response"),
-            }
-        }
+async fn mv_forward(state: &AppState, request: reqwest::RequestBuilder) -> Response<Body> {
+    match state.wrapper.send(request.timeout(std::time::Duration::from_secs(30))).await {
+        Ok(reply) => Response::builder()
+            .status(reply.status)
+            .header(CONTENT_TYPE, "application/json")
+            .header(axum::http::header::CACHE_CONTROL, "no-store")
+            .body(Body::from(reply.body))
+            .unwrap(),
         Err(error) => log::note(gateway_error("wrapper-lite request failed"), format!("wrapper-lite request failed: {error}")),
     }
 }
@@ -287,7 +265,7 @@ pub async fn lyrics_handler(
     if language.is_some_and(|l| l.len() > 35 || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
         return bad_request("Invalid language");
     }
-    match fetch_lyrics(&state.http_client, &state.config.wrapper_url, &adam_id, language).await {
+    match state.wrapper.fetch_lyrics(&adam_id, language).await {
         Ok(Lyrics::Found(ttml)) => Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/ttml+xml; charset=utf-8")
@@ -321,7 +299,7 @@ pub async fn key_handler(
     if !query.uri.starts_with("skd://") || query.uri == am_mp4::FIXED_KEY_URI {
         return bad_request("Invalid key uri");
     }
-    match fetch_key_json(&state.http_client, &state.config.wrapper_url, &query.adam_id, &query.uri).await {
+    match state.wrapper.fetch_key_json(&query.adam_id, &query.uri).await {
         Ok(data) => Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/json; charset=utf-8")
@@ -333,7 +311,6 @@ pub async fn key_handler(
 }
 
 pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body> {
-    let wrapper_url = format!("{}/status", state.config.wrapper_url);
     let mut body = json!({
         "code": 1,
         "msg": "wrapper-lite unavailable",
@@ -344,9 +321,9 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
     let mut status = StatusCode::BAD_GATEWAY;
     let mut note = String::from("wrapper-lite unavailable");
 
-    match state.http_client.get(&wrapper_url).send().await {
-        Ok(resp) => {
-            if let Ok(value) = resp.json::<serde_json::Value>().await {
+    match state.wrapper.send(state.wrapper.get("/status")).await {
+        Ok(reply) => {
+            if let Ok(value) = reply.json::<serde_json::Value>() {
                 if value.get("code").and_then(serde_json::Value::as_i64) == Some(0) {
                     note = format!("regions {}", log::regions_summary(&value));
                     status = StatusCode::OK;
@@ -377,20 +354,13 @@ pub async fn master_handler(
         return bad_request("Invalid song URL or adamId");
     }
 
-    let wrapper_url = format!("{}/m3u8", state.config.wrapper_url);
-    let response = state
-        .http_client
-        .get(&wrapper_url)
-        .query(&[("adamId", adam_id.as_str())])
-        .send()
-        .await;
-
-    let response = match response {
-        Ok(response) => response,
+    let reply = state.wrapper.send(state.wrapper.get("/m3u8").query(&[("adamId", adam_id.as_str())])).await;
+    let reply = match reply {
+        Ok(reply) => reply,
         Err(error) => return upstream_error("failed to fetch master m3u8 from wrapper-lite", error),
     };
 
-    let payload = match response.json::<serde_json::Value>().await {
+    let payload = match reply.json::<serde_json::Value>() {
         Ok(value) => value,
         Err(error) => return upstream_error("invalid response from wrapper-lite", error),
     };

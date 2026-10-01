@@ -20,6 +20,20 @@ pub struct Cli {
     #[arg(short, long, default_value = "http://127.0.0.1:12340")]
     pub wrapper_url: String,
 
+    /// Max requests per second sent to wrapper-lite (any 1-second window); 0 = unlimited
+    #[arg(long, default_value_t = 24)]
+    pub wrapper_rate: u32,
+
+    /// Max concurrent requests to wrapper-lite; 0 = unlimited
+    #[arg(long, default_value_t = 24)]
+    pub wrapper_concurrency: usize,
+
+    /// Authorization header for wrapper-lite requests. A bare token is sent as
+    /// "Bearer <token>"; a value with a scheme ("Bearer ...", "Basic ...") is sent as is.
+    /// Not sent by default
+    #[arg(long, env = "AM_HOOK_WRAPPER_AUTH", hide_env_values = true)]
+    pub wrapper_auth: Option<String>,
+
     /// Enable server-side decryption: serve decrypted media m3u8 / media file URLs
     /// (for VLC, IDM, etc.). Off by default to save server bandwidth; the web UI
     /// then decrypts in the browser and the server only provides master m3u8 and
@@ -66,8 +80,12 @@ impl Cli {
         Ok(addr)
     }
 
-    pub fn config(&self) -> Config {
-        Config {
+    pub fn config(&self) -> Result<Config, String> {
+        let wrapper_auth = match &self.wrapper_auth {
+            Some(raw) => crate::wrapper::normalize_authorization(raw)?,
+            None => None,
+        };
+        Ok(Config {
             wrapper_url: self.wrapper_url.trim_end_matches('/').to_string(),
             hook: self.hook,
             cache_ttl: Duration::from_secs(self.cache_ttl),
@@ -75,6 +93,9 @@ impl Cli {
             template_timeout: Duration::from_secs(self.template_timeout),
             amp_keepalive: Duration::from_secs(self.amp_keepalive),
             amp_cache_mb: self.amp_cache_mb,
-        }
+            wrapper_rate: self.wrapper_rate,
+            wrapper_concurrency: self.wrapper_concurrency,
+            wrapper_auth,
+        })
     }
 }

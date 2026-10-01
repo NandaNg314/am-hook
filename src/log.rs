@@ -5,7 +5,7 @@
 //! 需要时用 `RUST_LOG=am_hook=debug` 查看。
 
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -18,7 +18,7 @@ use tracing_subscriber::fmt::time::ChronoLocal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::source::{self, SourceKind};
-use crate::state::Config;
+use crate::state::{AppState, Config};
 
 pub fn init() {
     tracing_subscriber::registry()
@@ -202,6 +202,17 @@ pub fn print_banner(listen: SocketAddr, config: &Config, lru_cache_mb: usize) {
         lines.push(format!("                {url}"));
     }
     lines.push(format!("  wrapper-lite  {}", config.wrapper_url));
+    let limit = |n: usize, unit: &str| if n == 0 { format!("unlimited {unit}") } else { format!("{n} {unit}") };
+    // 只显示认证方案，不输出凭据
+    let auth = match config.wrapper_auth.as_deref() {
+        Some(value) => format!("{} ***", value.split_whitespace().next().unwrap_or_default()),
+        None => "none".to_owned(),
+    };
+    lines.push(format!(
+        "                limit {}, {} · auth {auth}",
+        limit(config.wrapper_rate as usize, "req/s"),
+        limit(config.wrapper_concurrency, "concurrent")
+    ));
     if config.hook {
         lines.push("  Decryption    browser + server-side proxy (--hook)".into());
         lines.push(format!(
@@ -266,15 +277,15 @@ fn lan_ip() -> Option<IpAddr> {
 }
 
 /// 启动后检查 wrapper-lite 是否可用，并输出账号地区
-pub async fn check_wrapper(client: reqwest::Client, wrapper_url: String) {
-    let result = client
-        .get(format!("{wrapper_url}/status"))
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| e.to_string());
+pub async fn check_wrapper(state: Arc<AppState>) {
+    let wrapper = &state.wrapper;
+    let wrapper_url = &wrapper.url;
+    let result = wrapper.send(wrapper.get("/status").timeout(Duration::from_secs(5))).await.map_err(|e| e.to_string());
     let value = match result {
-        Ok(resp) => resp.json::<serde_json::Value>().await.map_err(|e| format!("invalid response: {e}")),
+        Ok(reply) => match reply.status.as_u16() {
+            401 | 403 => Err(format!("HTTP {} (check --wrapper-auth)", reply.status)),
+            _ => reply.json::<serde_json::Value>().map_err(|e| format!("invalid response: {e}")),
+        },
         Err(e) => Err(e),
     };
     match value {

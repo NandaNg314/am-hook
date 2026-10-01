@@ -4,7 +4,6 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::state::{AppState, Track};
-use crate::wrapper::fetch_key_template;
 
 /// adamId 与 uri 补齐后立即向 wrapper-lite 请求模板（去重，失败按退避重试）
 pub fn ensure_template(state: &Arc<AppState>, track: &Arc<Track>) {
@@ -14,7 +13,7 @@ pub fn ensure_template(state: &Arc<AppState>, track: &Arc<Track>) {
     let state = state.clone();
     let track = track.clone();
     tokio::spawn(async move {
-        match fetch_key_template(&state.http_client, &state.config.wrapper_url, &track.adam_id, &track.uri).await {
+        match state.wrapper.fetch_key_template(&track.adam_id, &track.uri).await {
             Ok(tmpl) => {
                 track.set_template(tmpl);
                 track.end_fetch(true);

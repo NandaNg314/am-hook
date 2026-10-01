@@ -141,11 +141,19 @@ pub struct Config {
     pub amp_keepalive: Duration,
     /// amp-api 响应缓存容量（MB），0 表示不缓存
     pub amp_cache_mb: usize,
+    /// 每秒发往 wrapper-lite 的最大请求数，0 表示不限
+    pub wrapper_rate: u32,
+    /// 同时进行的 wrapper-lite 请求上限，0 表示不限
+    pub wrapper_concurrency: usize,
+    /// wrapper-lite 请求的 `Authorization` 头（已规范化），None 表示不发送
+    pub wrapper_auth: Option<String>,
 }
 
 pub struct AppState {
     pub config: Config,
     pub http_client: reqwest::Client,
+    /// wrapper-lite 客户端（限速、限并发、鉴权）
+    pub wrapper: crate::wrapper::Wrapper,
     /// fileuri -> 轨道。OnceCell 让并发请求同一轨道时只拉取/解析一次 m3u8。
     tracks: Mutex<HashMap<String, TrackSlot>>,
     pub segments: SegmentCache,
@@ -165,6 +173,9 @@ impl AppState {
                 template_timeout: Duration::from_secs(20),
                 amp_keepalive: Duration::from_secs(30),
                 amp_cache_mb: 32,
+                wrapper_rate: 24,
+                wrapper_concurrency: 24,
+                wrapper_auth: None,
             },
             cache_mb,
         )
@@ -183,9 +194,11 @@ impl AppState {
             .build()
             .expect("Failed to build reqwest HTTP client");
         let amp = Arc::new(crate::amp::Amp::new(config.amp_cache_mb * 1024 * 1024));
+        let wrapper = crate::wrapper::Wrapper::new(&config);
         Self {
             config,
             http_client,
+            wrapper,
             tracks: Mutex::default(),
             segments: SegmentCache::new(cache_mb.max(16) * 1024 * 1024),
             amp,

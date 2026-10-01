@@ -150,6 +150,9 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 | `-l, --listen <ADDR>` | `0.0.0.0:8888` | 监听地址 |
 | `-p, --port <PORT>` | 可选 | 设置时覆盖 `--listen` 中的端口 |
 | `-w, --wrapper-url <URL>` | `http://127.0.0.1:12340` | wrapper-lite 密钥服务地址 |
+| `--wrapper-rate <N>` | `24` | 每秒发往 wrapper-lite 的最大请求数（任意 1 秒内，超出的请求按顺序排队）。0 不限 |
+| `--wrapper-concurrency <N>` | `24` | 同时进行的 wrapper-lite 请求上限。0 不限。wrapper-lite 运行在 QEMU 中、负载高时请求超时的话可调低（如 `8`） |
+| `--wrapper-auth <VALUE>` | 不发送 | wrapper-lite 请求的 `Authorization` 头。只填 token 时自动加 `Bearer ` 前缀；已带认证方案（`Bearer …`、`Basic …`）则原样发送。也可用环境变量 `AM_HOOK_WRAPPER_AUTH` 设置（不会出现在进程列表中） |
 | `--hook` | 关闭 | 开启服务端歌曲解密代理 |
 | `--cache-ttl <SECONDS>` | `1800` | `--hook`：轨道上下文 TTL 淘汰时间 |
 | `--lru-cache-mb <MB>` | `128` | `--hook`：已解密分片的内存 LRU 缓存容量（按字节计） |

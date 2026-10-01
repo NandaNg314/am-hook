@@ -150,6 +150,9 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `-l, --listen <ADDR>` | `0.0.0.0:8888` | Listen address |
 | `-p, --port <PORT>` | optional | Overrides the port in `--listen` when set |
 | `-w, --wrapper-url <URL>` | `http://127.0.0.1:12340` | wrapper-lite key server base URL |
+| `--wrapper-rate <N>` | `24` | Max requests per second to wrapper-lite (any 1-second window; extra requests wait in order). 0 = unlimited |
+| `--wrapper-concurrency <N>` | `24` | Max concurrent requests to wrapper-lite. 0 = unlimited. Lower it (e.g. `8`) if wrapper-lite runs in QEMU and requests time out under load |
+| `--wrapper-auth <VALUE>` | not sent | `Authorization` header for wrapper-lite requests. A bare token is sent as `Bearer <token>`; a value with a scheme (`Bearer …`, `Basic …`) is sent as is. Also read from `AM_HOOK_WRAPPER_AUTH` (keeps it out of the process list) |
 | `--hook` | off | Enable the server-side song decrypting proxy |
 | `--cache-ttl <SECONDS>` | `1800` | `--hook`: track context TTL before eviction |
 | `--lru-cache-mb <MB>` | `128` | `--hook`: decrypted-fragment LRU cache capacity in MB |
