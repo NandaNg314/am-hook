@@ -137,6 +137,10 @@ pub struct Config {
     /// 单个请求内并发预取的 segment 数
     pub prefetch: usize,
     pub template_timeout: Duration,
+    /// amp-api 连接空闲时的保活周期，0 表示不发送保活请求
+    pub amp_keepalive: Duration,
+    /// amp-api 响应缓存容量（MB），0 表示不缓存
+    pub amp_cache_mb: usize,
 }
 
 pub struct AppState {
@@ -145,8 +149,8 @@ pub struct AppState {
     /// fileuri -> 轨道。OnceCell 让并发请求同一轨道时只拉取/解析一次 m3u8。
     tracks: Mutex<HashMap<String, TrackSlot>>,
     pub segments: SegmentCache,
-    /// amp-api（Apple Music 目录 / 搜索）所需的网页版 developer token
-    pub amp_token: crate::amp::DeveloperToken,
+    /// amp-api（Apple Music 目录 / 搜索）代理：专用连接、developer token 与响应缓存
+    pub amp: Arc<crate::amp::Amp>,
 }
 
 impl AppState {
@@ -159,25 +163,32 @@ impl AppState {
                 cache_ttl: Duration::from_secs(cache_ttl_secs),
                 prefetch: 4,
                 template_timeout: Duration::from_secs(20),
+                amp_keepalive: Duration::from_secs(30),
+                amp_cache_mb: 32,
             },
             cache_mb,
         )
     }
 
     pub fn with_config(config: Config, cache_mb: usize) -> Self {
+        // wrapper-lite 与 CDN 媒体：保持 HTTP/1.1、不请求压缩，Range 字节偏移与原始文件一致（amp-api 另用专用客户端）
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
             .pool_max_idle_per_host(32)
+            .http1_only()
+            .no_gzip()
+            .no_brotli()
             .build()
             .expect("Failed to build reqwest HTTP client");
+        let amp = Arc::new(crate::amp::Amp::new(config.amp_cache_mb * 1024 * 1024));
         Self {
             config,
             http_client,
             tracks: Mutex::default(),
             segments: SegmentCache::new(cache_mb.max(16) * 1024 * 1024),
-            amp_token: Default::default(),
+            amp,
         }
     }
 

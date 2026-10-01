@@ -42,6 +42,16 @@ pub struct Cli {
     /// Seconds to wait for a track's decryption template before failing
     #[arg(long, default_value_t = 20)]
     pub template_timeout: u64,
+
+    /// Seconds between keep-alive requests that keep the amp-api (catalog / search)
+    /// connection warm while idle; 0 disables them
+    #[arg(long, default_value_t = 30)]
+    pub amp_keepalive: u64,
+
+    /// amp-api response cache capacity in megabytes; 0 disables caching
+    /// (identical concurrent requests are still merged)
+    #[arg(long, default_value_t = 32)]
+    pub amp_cache_mb: usize,
 }
 
 impl Cli {
@@ -63,6 +73,8 @@ impl Cli {
             cache_ttl: Duration::from_secs(self.cache_ttl),
             prefetch: self.prefetch.max(1),
             template_timeout: Duration::from_secs(self.template_timeout),
+            amp_keepalive: Duration::from_secs(self.amp_keepalive),
+            amp_cache_mb: self.amp_cache_mb,
         }
     }
 }

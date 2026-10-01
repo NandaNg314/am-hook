@@ -214,6 +214,11 @@ pub fn print_banner(listen: SocketAddr, config: &Config, lru_cache_mb: usize) {
     } else {
         lines.push("  Decryption    browser only (start with --hook for VLC / IDM URLs)".into());
     }
+    let keepalive = match config.amp_keepalive.as_secs() {
+        0 => "keep-alive off".to_owned(),
+        secs => format!("keep-alive {secs}s"),
+    };
+    lines.push(format!("  amp-api       warm connection, {keepalive}, response cache {} MB", config.amp_cache_mb));
     lines.push("  Pages         home & search · song · album · playlist · artist · music video".into());
     lines.push("  Features      lyrics · motion artwork · ALAC / FLAC / Dolby Atmos (EC-3) · MV PlayReady".into());
     lines.push("  Verbose log   RUST_LOG=am_hook=debug (assets, status, suggestions, segments)".into());

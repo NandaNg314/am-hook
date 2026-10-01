@@ -49,6 +49,8 @@ async fn test_hook_disabled_rejects_proxy() {
         cache_ttl: std::time::Duration::from_secs(60),
         prefetch: 1,
         template_timeout: std::time::Duration::from_secs(1),
+        amp_keepalive: std::time::Duration::ZERO,
+        amp_cache_mb: 0,
     };
     let state = Arc::new(AppState::with_config(config, 16));
     for path in ["P1263211745_default.m3u8", "P1263211745_A1468058171_audio_en_gr2768_mp4a-A6.m3u8", FILEURI] {
