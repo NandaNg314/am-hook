@@ -156,7 +156,8 @@
   .mv-ambient { height: 50vh; }
 }
 @media (max-width: 680px) {
-  .page.mv-page { padding-inline: max(16px, env(safe-area-inset-left)); padding-top: 16px; }
+  /* 不覆盖 padding-top：≤483px 时 app.css 要为固定顶栏留出 52px + 安全区 */
+  .page.mv-page { padding-inline: max(16px, env(safe-area-inset-left)); }
   .mv-page .topbar { gap: 8px; padding-bottom: 14px; }
   .mv-page .topbar-right { gap: 6px; }
   .mv-page .topbar-right .btn { padding-inline: 11px; }
