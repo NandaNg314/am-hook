@@ -1,5 +1,4 @@
 
-<div class="album-tint" id="tint" aria-hidden="true"></div>
 <div class="page">
   <header class="topbar topbar-center">
     <button class="btn top-back" type="button" data-back data-i18n-attr="aria-label=nav.back,title=nav.back">
@@ -18,33 +17,31 @@
   </header>
 
   <main>
-    <section class="album-hero">
+    <!-- 头部（官网 container-detail-header）：封面（背后为模糊光晕）、标题 / 艺人 / 流派与年份、简介、播放按钮 -->
+    <section class="detail-header" id="hero">
       <!-- 手机竖屏：全宽 3:4 动态封面（motionDetailTall），标题叠在其淡出的下半部分 -->
       <div class="album-tall" aria-hidden="true"><div class="album-tall-inner" id="tall-art"><img alt=""></div></div>
-      <div class="album-art" id="art"></div>
-      <div class="album-info">
+      <div class="detail-art">
+        <div class="detail-radiosity" id="radiosity" aria-hidden="true"></div>
+        <div class="album-art" id="art"></div>
+      </div>
+      <div class="detail-headings">
         <h1 class="album-title skeleton" id="title">&nbsp;</h1>
         <p class="album-artist skeleton" id="artist">&nbsp;</p>
-        <p class="album-sub" id="sub"></p>
-        <div class="album-badges" id="badges"></div>
-        <div class="album-notes" id="notes" hidden>
-          <p class="album-notes-text" id="notes-text"></p>
-          <button class="album-notes-more" id="notes-more" type="button" hidden></button>
-        </div>
-        <div class="album-actions">
-          <button class="btn btn-primary btn-pill" id="play-all" type="button" disabled>
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
-            <span data-i18n="album.play"></span>
-          </button>
-          <button class="btn btn-primary btn-pill" id="shuffle" type="button" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
-            <span data-i18n="album.shuffle"></span>
-          </button>
-          <a class="btn btn-pill" id="apple-link" target="_blank" rel="noreferrer">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-            Apple Music
-          </a>
-        </div>
+        <div class="detail-meta"><span class="album-sub" id="sub"></span><span class="album-badges" id="badges"></span></div>
+      </div>
+      <div class="album-notes" id="notes" hidden>
+        <p class="album-notes-text" id="notes-text"></p>
+        <button class="album-notes-more" id="notes-more" type="button" hidden></button>
+      </div>
+      <div class="detail-actions">
+        <button class="detail-play-btn" id="play-all" type="button" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
+          <span data-i18n="album.play"></span>
+        </button>
+        <button class="detail-circle-btn" id="shuffle" type="button" disabled data-i18n-attr="aria-label=album.shuffle,title=album.shuffle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
+        </button>
       </div>
     </section>
 

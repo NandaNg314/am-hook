@@ -46,6 +46,8 @@ pub async fn view_asset_handler(
         "artist.mjs" => (JS, include_bytes!("ui/views/artist.mjs")),
         // 各页面共用的条目操作（封面悬停按钮、「更多」菜单）
         "actions.mjs" => (JS, include_bytes!("ui/views/actions.mjs")),
+        // 专辑页与歌单页共用的头部（主题色、动态封面）
+        "detail-header.mjs" => (JS, include_bytes!("ui/views/detail-header.mjs")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)

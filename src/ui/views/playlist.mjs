@@ -1,5 +1,6 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
 import { createActions, playable, targetOf } from './actions.mjs';
+import { createDetailHeader } from './detail-header.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
@@ -161,6 +162,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const desc = a.description || a.editorialNotes || {};
     const notes = plainText(desc.standard || desc.short || '');
     $('notes').hidden = !notes;
+    $('hero').classList.toggle('no-notes', !notes);
     $('notes-text').textContent = notes;
     $('notes').classList.toggle('expanded', notesExpanded);
     requestAnimationFrame(() => {
@@ -169,64 +171,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       $('notes-more').textContent = t(notesExpanded ? 'album.less' : 'album.more');
     });
 
-    const cover = coverArtwork();
-    const art = artUrl(cover, 600);
-    if (art) {
-      const img = $('art').querySelector('img') || $('art').appendChild(el('img', { alt: '' }));
-      if (img.getAttribute('src') !== art) img.src = art;
-      img.alt = t('album.coverAlt', { title: a.name });
-    }
-    // 与官网一样用封面主色给页面顶部着色
-    const bg = cover && cover.bgColor;
-    if (/^[0-9a-f]{6}$/i.test(bg || '')) document.body.style.setProperty('--album-tint', `#${bg}`);
-    $('apple-link').href = a.url || `https://music.apple.com/${country}/playlist/${playlistId}`;
+    renderHeader({ cover: coverArtwork(), attrs: a, alt: t('album.coverAlt', { title: a.name }) });
   }
-
-  /* ---------- 动态封面：与专辑页相同，宽屏用方形视频替换封面，手机竖屏（≤483px）用全宽 3:4 视频 ---------- */
-  const tallQuery = matchMedia('(max-width: 483px)');
-  let motion = null;
-  let motionKey = '';
-  // 离开页面时停止动态封面（尚在加载的不再挂载）
-  signal.addEventListener('abort', () => { motionKey = ''; if (motion) motion.destroy(); motion = null; });
-
-  /** 按背景色亮度选叠加文字颜色（sRGB 相对亮度） */
-  function isDark(hex) {
-    const [r, g, b] = [0, 2, 4].map((i) => {
-      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
-      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.35;
-  }
-
-  function renderMotion() {
-    const a = playlist.attributes;
-    const video = a.editorialVideo || {};
-    const art = a.editorialArtwork || {};
-    const tallStatic = art.staticDetailTall || (video.motionDetailTall && video.motionDetailTall.previewFrame);
-    const tall = tallQuery.matches && !!tallStatic;
-    document.body.classList.toggle('tall-art', tall);
-    if (tall) {
-      const img = $('tall-art').querySelector('img');
-      const src = artUrl(tallStatic, 1080, 1440);
-      if (img.getAttribute('src') !== src) img.src = src;
-      const cover = coverArtwork();
-      const bg = /^[0-9a-f]{6}$/i.test(tallStatic.bgColor || '') ? tallStatic.bgColor : (cover && cover.bgColor) || '000000';
-      const dark = isDark(bg);
-      document.body.style.setProperty('--hero-bg', `#${bg}`);
-      document.body.style.setProperty('--hero-text', dark ? '#fff' : '#1d1d1f');
-      document.body.style.setProperty('--hero-muted', dark ? 'rgba(255, 255, 255, .7)' : 'rgba(0, 0, 0, .6)');
-    }
-    const source = tall ? video.motionDetailTall : video.motionDetailSquare;
-    const key = source && source.video ? `${tall ? 'tall' : 'square'}:${source.video}` : '';
-    if (key === motionKey) return;
-    motionKey = key;
-    if (motion) { motion.destroy(); motion = null; }
-    if (!key) return;
-    import('/assets/motion-art.mjs')
-      .then(({ mountMotionArt }) => { if (motionKey === key) motion = mountMotionArt(tall ? $('tall-art') : $('art'), { src: source.video }); })
-      .catch((err) => console.warn('[am-hook] 动态封面加载失败', err));
-  }
-  tallQuery.addEventListener('change', () => { if (playlist) renderMotion(); }, { signal });
+  const renderHeader = createDetailHeader({ $, signal, artUrl, rerender: () => { if (playlist) renderHero(); } });
 
   /** 可播放的歌曲：播放队列只含这些 */
   const songs = () => tracks.filter((track) => track.type === 'songs' && playable(track));
@@ -335,7 +282,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   function render() {
     renderHero();
-    renderMotion();
     renderTracks();
     renderFooter();
     renderShelves();
