@@ -1,8 +1,20 @@
-// 专辑动态封面（editorialVideo.motionDetailSquare / motionDetailTall），复刻 music.apple.com 的 amp-ambient-video：
-// 静音循环播放、淡入盖在静态封面上；不在视口内、页面隐藏或窗口失焦时暂停；系统开启「减少动态效果」时不播放。
+// 动态封面（专辑 / 歌单 editorialVideo.motionDetailSquare / motionDetailTall，艺人头部 motionArtist*），复刻 music.apple.com 的 amp-ambient-video：
+// 静音循环播放、淡入盖在静态封面上；与官网 MotionVideo 的播放条件相同：进入视口、页面处于活动状态（可见且窗口未失焦）、
+// 没有打开全屏界面（这里是歌词界面）、系统未开启「减少动态效果」，任一不满足即暂停。
 // 片源是无加密的 fMP4 HLS（单文件 + BYTERANGE，mvod.itunes.apple.com 允许跨域与 Range），用 MSE 逐段追加。
 
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+// 页面活动状态（官网 TVe）：初始取页面是否可见，之后 blur → 否、focus → 是、visibilitychange → 是否可见
+let pageActive = document.visibilityState === 'visible';
+const activeListeners = new Set();
+const setActive = (value) => { pageActive = value; for (const fn of activeListeners) fn(); };
+document.addEventListener('visibilitychange', () => setActive(document.visibilityState === 'visible'));
+addEventListener('blur', () => setActive(false));
+addEventListener('focus', () => setActive(true));
+
+/** 全屏界面（歌词）打开时暂停（官网 pauseForFullScreenModal） */
+const fullscreenOpen = () => document.body.classList.contains('lyrics-open');
 
 function attributes(value) {
   const result = {};
@@ -91,7 +103,7 @@ export function mountMotionArt(container, { src }) {
   let visible = false;
   let destroyed = false;
 
-  const shouldPlay = () => !destroyed && visible && !reducedMotion.matches && document.visibilityState === 'visible' && document.hasFocus();
+  const shouldPlay = () => !destroyed && visible && pageActive && !fullscreenOpen() && !reducedMotion.matches;
 
   async function load() {
     const master = await (await fetch(src, { signal: controller.signal })).text();
@@ -152,10 +164,11 @@ export function mountMotionArt(container, { src }) {
   });
   observer.observe(container);
   const onChange = () => sync();
-  document.addEventListener('visibilitychange', onChange);
-  addEventListener('focus', onChange);
-  addEventListener('blur', onChange);
+  activeListeners.add(onChange);
   reducedMotion.addEventListener('change', onChange);
+  // 歌词界面开关（body.lyrics-open）
+  const bodyObserver = new MutationObserver(onChange);
+  bodyObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
   container.append(video);
 
   return {
@@ -164,9 +177,8 @@ export function mountMotionArt(container, { src }) {
       destroyed = true;
       controller.abort();
       observer.disconnect();
-      document.removeEventListener('visibilitychange', onChange);
-      removeEventListener('focus', onChange);
-      removeEventListener('blur', onChange);
+      bodyObserver.disconnect();
+      activeListeners.delete(onChange);
       reducedMotion.removeEventListener('change', onChange);
       video.pause();
       video.removeAttribute('src');

@@ -128,36 +128,66 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const explicitBadge = () => el('span', { className: 'explicit', textContent: 'E', title: t('search.explicit') });
   const view = (key) => (artist.views && artist.views[key]) || null;
 
-  /** 按背景色亮度选叠加文字颜色（sRGB 相对亮度） */
-  function isDark(hex) {
-    const [r, g, b] = [0, 2, 4].map((i) => {
-      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
-      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.35;
+  /**
+   * 页面主题色（官网 --joe-color，见 Yet）：头部所用图片的 bgColor，CIELAB 亮度 L > 0.5 时各通道减去 L × 0.65 × 255 压暗；
+   * 整页铺这个颜色并用深色主题（白字）
+   */
+  function joeColor(hex) {
+    if (!/^[0-9a-f]{6}$/i.test(hex || '')) return '';
+    const rgb = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const [r, g, b] = rgb.map((c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const l = (y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : (24389 / 27) * y) / 100;
+    const down = l <= 0.5 ? 0 : Math.round(l * 0.65 * 255);
+    return `#${rgb.map((c) => Math.max(0, c - down).toString(16).padStart(2, '0')).join('')}`;
   }
 
-  /* ---------- 头部：与官网 artistDetailHeader 相同的取图规则 ---------- */
+  /* ---------- 头部：与官网 artistDetailHeader / ArtistExpressionHeader 相同的取图规则 ---------- */
+  // 官网在 xsmall 断点（< 484px）优先播放方形动态视频 motionArtistSquare1x1
+  const xsmall = matchMedia('(max-width: 483px)');
   /**
-   * video：editorialVideo.motionArtistWide16x9（或 motionArtistSingular16x9）；
+   * video：有 editorialVideo.motionArtistWide16x9（或 motionArtistSingular16x9）时；片源按断点依次取
+   *   motionArtistFullscreen16x9 / motionArtistWide16x9（手机先取 motionArtistSquare1x1）；
    * wide：editorialArtwork.centeredFullscreenBackground（裁切 ea），或 hero 图片推荐裁切含 vf 时用 vf；
-   * 其余为 circular：圆形头像（hero 图片，否则艺人 artwork）。
+   * circular：圆形头像（hero 图片，否则艺人 artwork）；都没有时为 no-artwork。
    */
   function heroStyle(a) {
     const heroArt = a.hero && a.hero[0] && a.hero[0].content && a.hero[0].content[0] && a.hero[0].content[0].artwork;
     const video = a.editorialVideo || {};
-    const motion = [video.motionArtistWide16x9, video.motionArtistSingular16x9].find((v) => v && v.video);
-    if (motion) return { kind: 'video', src: motion.video, art: motion.previewFrame, crop: 'bb' };
+    if ([video.motionArtistWide16x9, video.motionArtistSingular16x9].some((v) => v && v.video)) {
+      const order = xsmall.matches ? ['motionArtistSquare1x1', 'motionArtistFullscreen16x9', 'motionArtistWide16x9']
+        : ['motionArtistFullscreen16x9', 'motionArtistWide16x9'];
+      const motion = [...order, 'motionArtistSingular16x9'].map((key) => video[key]).find((v) => v && v.video);
+      return { kind: 'video', src: motion.video, art: motion.previewFrame, crop: 'bb' };
+    }
     const fullscreen = a.editorialArtwork && a.editorialArtwork.centeredFullscreenBackground;
     if (fullscreen) return { kind: 'wide', art: fullscreen, crop: 'ea' };
     if (heroArt && (heroArt.recommendedCropCodes || []).includes('vf')) return { kind: 'wide', art: heroArt, crop: 'vf' };
-    return { kind: 'circular', art: heroArt || a.artwork, crop: 'bb' };
+    const art = heroArt || a.artwork;
+    return { kind: art && art.url ? 'circular' : 'no-artwork', art, crop: 'bb' };
   }
 
   let motion = null;
   let motionKey = '';
   // 离开页面时停止动态封面（尚在加载的不再挂载）
   signal.addEventListener('abort', () => { motionKey = ''; if (motion) motion.destroy(); motion = null; });
+  xsmall.addEventListener('change', () => { if (artist) renderHero(); }, { signal });
+
+  // 顶栏叠在头部之上：圆形头像按顶栏实际高度（手机上搜索框换行）下移
+  const topbar = root.querySelector('.topbar');
+  const syncTopbar = () => $('hero').style.setProperty('--topbar-h', `${topbar.offsetTop + topbar.offsetHeight}px`);
+  const topbarObserver = new ResizeObserver(syncTopbar);
+  topbarObserver.observe(topbar);
+  signal.addEventListener('abort', () => topbarObserver.disconnect());
+
+  /** container 里按 className 保留一张图片，src 不变时不重新加载 */
+  function setImg(container, className, src, alt = '') {
+    let img = container.querySelector(`img.${className}`);
+    if (!src) { img?.remove(); return; }
+    if (!img) container.prepend(img = el('img', { className, alt: '', decoding: 'async' }));
+    if (img.getAttribute('src') !== src) img.src = src;
+    img.alt = alt;
+  }
 
   function renderHero() {
     const a = artist.attributes;
@@ -165,36 +195,34 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('name').classList.remove('skeleton');
     $('name').textContent = a.name;
     $('apple-link').href = a.url || `https://music.apple.com/${country}/artist/${artistId}`;
+    $('apple-link-text').textContent = t('artist.openInApple', { name: a.name });
+    $('info').setAttribute('aria-label', t('artist.about', { name: a.name }));
+    $('play-all').setAttribute('aria-label', t('album.play'));
+    $('shuffle').setAttribute('aria-label', t('album.shuffle'));
 
     const style = heroStyle(a);
     const hero = $('hero');
-    for (const kind of ['circular', 'wide', 'video']) hero.classList.toggle(kind, style.kind === kind);
-    const bg = /^[0-9a-f]{6}$/i.test((style.art && style.art.bgColor) || '') ? style.art.bgColor
-      : (a.artwork && a.artwork.bgColor) || '000000';
-    document.body.style.setProperty('--hero-bg', `#${bg}`);
-    const dark = style.kind !== 'circular' || isDark(bg);
-    document.body.style.setProperty('--hero-text', dark ? '#fff' : '#1d1d1f');
+    for (const kind of ['circular', 'wide', 'video', 'no-artwork']) hero.classList.toggle(kind, style.kind === kind);
+    hero.classList.toggle('fixed', style.kind === 'wide' || style.kind === 'video');
 
-    const media = $('hero-bg');
-    if (style.kind === 'circular') {
-      // 圆形头像，背后是同一张图放大模糊后的主色光晕
-      const src = artUrl(style.art, 380);
-      const glow = artUrl(style.art, 240);
-      const glowImg = media.querySelector('img.hero-glow');
-      if (!glow) media.replaceChildren();
-      else if (!glowImg) media.replaceChildren(el('img', { className: 'hero-glow', src: glow, alt: '' }));
-      else if (glowImg.getAttribute('src') !== glow) glowImg.src = glow;
-      const img = $('portrait').querySelector('img') || $('portrait').appendChild(el('img', { alt: '' }));
-      if (img.getAttribute('src') !== src) img.src = src;
-      img.alt = t('artist.portraitAlt', { name: a.name });
-    } else {
-      // 通栏：宽屏按 16:9 左右的比例取图，手机同样居中裁切
+    // 主题色：动态视频首帧 / 通栏图 / 头像的 bgColor，没有时取艺人 artwork
+    const joe = joeColor((style.art && style.art.bgColor) || (a.artwork && a.artwork.bgColor));
+    document.body.classList.toggle('artist-themed', !!joe);
+    if (joe) document.body.style.setProperty('--joe', joe);
+    else document.body.style.removeProperty('--joe');
+
+    const media = $('hero-art');
+    if (style.kind === 'wide' || style.kind === 'video') {
+      // 通栏：按原图比例取 2400 宽，cover 铺满、顶部对齐（官网 object-position: center top）
       const ratio = style.art && style.art.width && style.art.height ? style.art.height / style.art.width : 9 / 16;
-      const src = artUrl(style.art, 2400, Math.round(2400 * ratio), style.crop);
-      let img = media.querySelector('img.hero-img');
-      if (!img) media.replaceChildren(img = el('img', { className: 'hero-img', alt: '' }));
-      if (img.getAttribute('src') !== src) img.src = src;
+      setImg(media, 'hero-img', artUrl(style.art, 2400, Math.round(2400 * ratio), style.crop));
       $('portrait').replaceChildren();
+      $('portrait-glow').replaceChildren();
+    } else {
+      media.replaceChildren();
+      // 圆形头像（官网 facehole-uber），背后是同一张图放大、模糊的光晕
+      setImg($('portrait'), 'portrait-img', artUrl(style.art, 380), t('artist.portraitAlt', { name: a.name }));
+      setImg($('portrait-glow'), 'glow-img', artUrl(style.art, 240));
     }
     const key = style.kind === 'video' ? style.src : '';
     if (key !== motionKey) {
@@ -216,15 +244,17 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (latest) {
       const a = latest.attributes;
       $('latest-title').textContent = (latestView.attributes && latestView.attributes.title) || '';
-      const cover = artUrl(a.artwork, 480);
+      const cover = artUrl(a.artwork, 320);
       const title = el('span', { className: 'latest-title', textContent: a.name });
       if (a.contentRating === 'explicit') title.append(explicitBadge());
+      // 官网 artist-featured-release：左封面，右侧日期 / 标题 / 曲目数（手机上为毛玻璃卡片，标题在前）
       $('latest').href = pagePath(latest);
       $('latest').replaceChildren(
         el('span', { className: 'latest-art' }, cover ? el('img', { src: cover, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { className: 'ph' })),
-        el('span', { className: 'latest-date', textContent: formatDate(a.releaseDate) }),
-        title,
-        el('span', { className: 'latest-sub', textContent: a.trackCount ? t('album.songs', { n: a.trackCount }) : '' }));
+        el('span', { className: 'latest-lines' },
+          el('span', { className: 'latest-date', textContent: formatDate(a.releaseDate) }),
+          title,
+          el('span', { className: 'latest-sub', textContent: a.trackCount ? t('album.songs', { n: a.trackCount }) : '' })));
       $('latest-card').querySelector('.cover-actions')?.remove();
       $('latest-card').append(actions.coverActions(targetOf(latest, country)));
     }
@@ -235,7 +265,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('top-songs').replaceChildren(...topSongs.map((track) => {
       const a = track.attributes;
       const href = pagePath(track);
-      const src = artUrl(a.artwork, 96);
+      const src = artUrl(a.artwork, 80);
       const playBtn = el('button', { className: 'track-play', type: 'button', innerHTML: ICON.play });
       playBtn.setAttribute('aria-label', t('album.playTrack', { name: a.name }));
       playBtn.addEventListener('click', () => playTrack(track));
@@ -256,6 +286,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('featured').hidden = !latest && !topSongs.length;
     $('featured').classList.toggle('has-latest', !!latest);
     $('play-all').disabled = $('shuffle').disabled = topSongs.length === 0;
+    $('info').disabled = $('about').hidden;
     syncRows(player.current, !player.transport().paused);
   }
 
@@ -340,6 +371,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('facts').replaceChildren(...facts.flatMap(([label, value]) => [el('dt', { textContent: label }), el('dd', { textContent: value })]));
   }
 
+  // 官网的 ⓘ 按钮打开简介页；这里展开简介并滚动到「关于」
+  $('info').addEventListener('click', () => {
+    if (!bioExpanded && !$('bio').hidden) { bioExpanded = true; renderAbout(); }
+    $('about').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  });
+
   $('bio-more').addEventListener('click', () => {
     bioExpanded = !bioExpanded;
     renderAbout();
@@ -347,9 +384,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   function render() {
     renderHero();
+    renderAbout();
     renderFeatured();
     renderShelves();
-    renderAbout();
   }
 
   async function loadArtist() {
