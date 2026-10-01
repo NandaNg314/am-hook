@@ -25,7 +25,8 @@
   --info-soft: rgba(58, 103, 177, .13);
   --shadow: 0 16px 40px rgba(0, 0, 0, .45);
   --radius: 14px;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  /* 西文字体在前、中文字体在后：中文字体里的 ’ “ 等标点是全角宽度，排在前面时西文（如 I’m）会出现空隙；汉字仍逐字回落到中文字体 */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "Segoe UI", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
 }
 @media (prefers-color-scheme: light) {
