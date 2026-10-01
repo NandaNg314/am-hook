@@ -59,6 +59,11 @@ export function pagePath(resource, country) {
   return `/https://music.apple.com/${country}/${kind}/${slug ? slug[1] : '_'}/${resource.id}`;
 }
 
+/** 能否播放：尚未发行的曲目（如歌单里的预告曲目）只有名称、封面等少数字段，没有 playParams，目录中也查不到 */
+export function playable(resource) {
+  return !!(resource.attributes && resource.attributes.playParams);
+}
+
 /** 曲目所属专辑的本站路径：关联专辑，没有时取曲目 url 里的 album/<slug>/<id> */
 export function albumPathOf(track) {
   const album = track.relationships && track.relationships.albums && track.relationships.albums.data && track.relationships.albums.data[0];
@@ -93,7 +98,7 @@ function songEntry(track, country, context = {}) {
   };
 }
 
-/** 专辑 / 歌单的全部歌曲（分页取完），MV 等跳过 */
+/** 专辑 / 歌单的全部歌曲（分页取完），MV 与无法播放的曲目跳过 */
 async function collectionEntries(target) {
   const m = target.href.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/(album|playlist)\/(?:[^/?#]+\/)?([^/?#]+)/i);
   if (!m) return [];
@@ -117,7 +122,7 @@ async function collectionEntries(target) {
   const context = playlist
     ? { album: a.name, artwork: (a.editorialArtwork && a.editorialArtwork.staticDetailSquare) || a.artwork }
     : { album: a.name, albumHref: pagePath(res, country), artwork: a.artwork };
-  return list.filter((track) => track.type === 'songs' && track.attributes).map((track) => songEntry(track, country, context));
+  return list.filter((track) => track.type === 'songs' && playable(track)).map((track) => songEntry(track, country, context));
 }
 
 /* ---------- 复制 ---------- */

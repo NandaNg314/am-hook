@@ -1,5 +1,5 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
-import { createActions, targetOf } from './actions.mjs';
+import { createActions, playable, targetOf } from './actions.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
@@ -228,7 +228,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
   tallQuery.addEventListener('change', () => { if (playlist) renderMotion(); }, { signal });
 
-  const songs = () => tracks.filter((track) => track.type === 'songs');
+  /** 可播放的歌曲：播放队列只含这些 */
+  const songs = () => tracks.filter((track) => track.type === 'songs' && playable(track));
 
   /** 曲目艺人：在 artistName 中依次找到各关联艺人的名字并链接到艺人页，分隔符（&、逗号、feat. 等）保留为文字 */
   function trackArtists(track) {
@@ -255,6 +256,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const nodes = tracks.map((track, i) => {
       const a = track.attributes;
       const video = track.type === 'music-videos';
+      // 尚未发行的曲目：与官网一样置灰，不能播放；歌曲页与专辑页在目录中查不到，不做链接
+      const unavailable = !playable(track);
       const href = pagePath(track);
 
       const src = artUrl(a.artwork, 80);
@@ -262,28 +265,28 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         src ? el('img', { src, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { className: 'ph' }),
         el('span', { className: 'eq', ariaHidden: 'true' }, el('i'), el('i'), el('i'), el('i')));
       let playBtn = null;
-      if (!video) {
+      if (!video && !unavailable) {
         playBtn = el('button', { className: 'track-play', type: 'button', innerHTML: ICON.play });
         playBtn.setAttribute('aria-label', t('album.playTrack', { name: a.name }));
         playBtn.addEventListener('click', () => playTrack(track));
         cover.append(playBtn);
       }
 
-      const title = el('a', { className: 'track-title', href, textContent: a.name });
+      const title = el(unavailable ? 'span' : 'a', { className: 'track-title', textContent: a.name, ...(unavailable ? {} : { href }) });
       const main = el('div', { className: 'track-main' },
         el('div', { className: 'track-line' }, title, a.contentRating === 'explicit' ? explicitBadge() : '',
           video ? el('span', { className: 'track-kind', innerHTML: ICON.video, title: t('album.video') }) : null),
         el('div', { className: 'track-artist' }, ...trackArtists(track)));
-      const albumHref = albumPath(track);
+      const albumHref = unavailable ? '' : albumPath(track);
       const albumCol = albumHref && a.albumName ? el('a', { className: 'track-album', href: albumHref, textContent: a.albumName })
         : el('span', { className: 'track-album', textContent: a.albumName || '' });
       // 「更多」菜单：播放按歌单顺序排队
-      const more = actions.moreButton(targetOf(track, country, { albumHref, ...(video ? {} : { onPlay: () => playTrack(track) }) }));
+      const more = actions.moreButton(targetOf(track, country, { albumHref, ...(video || unavailable ? {} : { onPlay: () => playTrack(track) }) }));
 
-      const row = el('div', { className: `track pl-track${video ? ' video' : ''}` }, cover,
+      const row = el('div', { className: `track pl-track${video ? ' video' : ''}${unavailable ? ' unavailable' : ''}` }, cover,
         chart ? el('span', { className: 'track-rank', textContent: String(i + 1) }) : null, main, albumCol,
         el('span', { className: 'track-time', textContent: a.durationInMillis ? formatTime(a.durationInMillis / 1000) : '' }), more);
-      if (!video) row.addEventListener('dblclick', (e) => { if (!e.target.closest('a, button')) playTrack(track); });
+      if (!video && !unavailable) row.addEventListener('dblclick', (e) => { if (!e.target.closest('a, button')) playTrack(track); });
       rows.set(track.id, { row, playBtn });
       return row;
     });
@@ -295,7 +298,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   function renderFooter() {
-    const songCount = songs().length;
+    const songCount = tracks.filter((track) => track.type === 'songs').length;
     const videoCount = tracks.length - songCount;
     const minutes = Math.round(tracks.reduce((sum, track) => sum + (track.attributes.durationInMillis || 0), 0) / 60000);
     const length = minutes >= 60 ? t('album.hours', { h: Math.floor(minutes / 60), m: minutes % 60 }) : t('album.minutes', { n: minutes });
