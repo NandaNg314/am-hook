@@ -79,8 +79,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   /** artwork.url 模板：{w}x{h}{c}.{f}；crop 为官网使用的裁切码（通栏图 ea / vf 等） */
-  function artUrl(artwork, w, h = w, crop = 'bb') {
-    return artwork && artwork.url ? artwork.url.replace('{w}', w).replace('{h}', h).replace('{c}', crop).replace('{f}', 'jpg') : '';
+  function artUrl(artwork, w, h = w, crop = 'bb', format = 'jpg') {
+    return artwork && artwork.url ? artwork.url.replace('{w}', w).replace('{h}', h).replace('{c}', crop).replace('{f}', format) : '';
   }
 
   /** 目录资源的 url → 本站页面路径；识别不了时按类型与 ID 拼出 */
@@ -194,6 +194,13 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     document.title = `${a.name} · am-hook`;
     $('name').classList.remove('skeleton');
     $('name').textContent = a.name;
+    // 字标：官网 artwork profile artist-expression-header-logo（400 宽、3:1、bb），透明背景所以取 webp 而不是 jpg
+    const logoArt = a.editorialArtwork && a.editorialArtwork.musicContentColorLogoTrimmed;
+    const logoSrc = artUrl(logoArt, 400, 133, 'bb', 'webp');
+    $('name').classList.toggle('sr-only', !!logoSrc);
+    $('logo').hidden = !logoSrc;
+    setImg($('logo'), 'logo-img', logoSrc, a.name);
+    if (logoSrc) $('logo').querySelector('img').srcset = `${logoSrc} 1x, ${artUrl(logoArt, 800, 266, 'bb', 'webp')} 2x`;
     $('apple-link').href = a.url || `https://music.apple.com/${country}/artist/${artistId}`;
     $('apple-link-text').textContent = t('artist.openInApple', { name: a.name });
     $('info').setAttribute('aria-label', t('artist.about', { name: a.name }));

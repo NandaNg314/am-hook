@@ -1216,6 +1216,14 @@ body.artist-themed .page, body.detail-themed:not(.joe-light) .page {
 }
 .artist-name:lang(zh) { font-weight: 600; }
 .artist-name.skeleton { width: min(360px, 70vw); height: 50px; }
+/* 艺人字标（官网 artist-expression-header__logo）：手机 312 × 最高 104px，≥484 为 282 × 94px，contain 居中 */
+.artist-logo { width: 312px; max-width: 100%; }
+.artist-logo[hidden] { display: none; }
+.artist-logo img { width: 100%; height: auto; max-height: 104px; display: block; object-fit: contain; }
+@media (min-width: 484px) {
+  .artist-logo { width: 282px; }
+  .artist-logo img { max-height: 94px; }
+}
 /* 操作行：简介 ⓘ / 播放 / 随机播放（官网第三个是收藏）；触屏 48 / 72px，鼠标 36 / 56px */
 .artist-actions { padding-top: 16px; display: flex; align-items: center; justify-content: center; gap: 24px; }
 .artist-play-btn {
