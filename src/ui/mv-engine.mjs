@@ -179,18 +179,33 @@ function hold(uuid) {
     navigator.locks.request(PREFIX + uuid, () => { resolve(release); return held; }).catch(() => resolve(() => {}));
   });
 }
+// A just-terminated worker releases its sync access handles a moment later and deletion fails until then,
+// so retry with backoff for about 3 s. A missing file counts as removed; anything left goes to collectGarbage.
+async function remove(root, name) {
+  for (let wait = 50; ; wait *= 2) {
+    try { await root.removeEntry(name); return; } catch (e) {
+      if (e?.name === 'NotFoundError' || wait > 1600) return;
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+}
 // Removes OPFS files left by closed tabs, killed workers or an unfinished pagehide cleanup.
 // Without Web Locks, only entries untouched for a day are removed.
 export async function collectGarbage() {
   if (!navigator.storage?.getDirectory) return;
   try {
     const root = await navigator.storage.getDirectory();
+    const found = [];
+    for await (const [name, handle] of root.entries()) {
+      const match = handle.kind === 'file' && name.match(/^am-hook-mv-(.+?)\.f?mp4$/);
+      if (match) found.push([name, match[1], handle]);
+    }
+    // List before querying locks: a download takes its lock before creating files, so any listed file
+    // still in use is locked by now. Querying first would treat a download started in between as garbage.
     const held = navigator.locks ? new Set((await navigator.locks.query()).held.map(l => l.name)) : null;
     const garbage = [];
-    for await (const [name, handle] of root.entries()) {
-      const match = name.match(/^am-hook-mv-(.+?)\.f?mp4$/);
-      if (!match || held?.has(PREFIX + match[1])) continue;
-      if (!held && Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
+    for (const [name, uuid, handle] of found) {
+      if (held ? held.has(PREFIX + uuid) : Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
       garbage.push(name);
     }
     // Delete after iterating: mutating a directory while iterating it is unspecified.
@@ -211,7 +226,12 @@ export async function downloadMV(id, video, audio, { signal, onProgress, onDefra
     signal.throwIfAborted();
     writer = await handle.createWritable();
     const streams = await preparePair(core, id, video, audio, signal);
-    const init = await core.call('muxInit', 'video', 'audio', Math.max(...streams.map(s => s.duration)));
+    const duration = Math.max(...streams.map(s => s.duration));
+    // The fragmented file and the progressive copy coexist while defragmenting: about twice the output size.
+    const estimate = Number(video['AVERAGE-BANDWIDTH'] || video.BANDWIDTH) / 8 * duration;
+    const { quota, usage } = await navigator.storage.estimate?.() ?? {};
+    if (quota && estimate && quota - (usage || 0) < estimate * 2.1) throw new Error('Not enough OPFS storage quota for this download');
+    const init = await core.call('muxInit', 'video', 'audio', duration);
     await writer.write(init);
     const queue = streams.flatMap(s => s.segments.map(segment => ({ stream: s, segment })))
       .sort((a, b) => a.segment.start - b.segment.start || (a.stream.name === 'video' ? -1 : 1));
@@ -228,11 +248,11 @@ export async function downloadMV(id, video, audio, { signal, onProgress, onDefra
     await core.call('defrag', fragmented, name);
     signal.throwIfAborted();
     const file = await (await root.getFileHandle(name)).getFile(); complete = true;
-    return { file, dispose: () => root.removeEntry(name).catch(() => {}).finally(unlock) };
+    return { file, dispose: () => remove(root, name).finally(unlock) };
   } finally {
     signal.removeEventListener('abort', abort); core.close();
     if (writer) await writer.abort().catch(() => {});
-    await root.removeEntry(fragmented).catch(() => {});
-    if (!complete) { await root.removeEntry(name).catch(() => {}); unlock(); }
+    await remove(root, fragmented);
+    if (!complete) { await remove(root, name); unlock(); }
   }
 }

@@ -263,8 +263,22 @@
     return root.getDirectoryHandle(OPFS_DIR, { create: true });
   }
 
+  /**
+   * 删除临时文件。刚被终止的 Worker 要过一会儿才释放同步访问句柄，期间删除会失败，
+   * 因此按退避重试约 3 秒；文件不存在即视为成功，仍删不掉的留给 collectGarbage。
+   */
   async function removeOpfsFile(name) {
-    try { await (await opfsDir()).removeEntry(name); } catch {}
+    let dir;
+    try { dir = await opfsDir(); } catch { return; }
+    for (let wait = 50; ; wait *= 2) {
+      try {
+        await dir.removeEntry(name);
+        return;
+      } catch (err) {
+        if ((err && err.name === 'NotFoundError') || wait > 1600) return;
+        await new Promise((r) => setTimeout(r, wait));
+      }
+    }
   }
 
   /**
@@ -285,7 +299,8 @@
     static async open(size) {
       if (navigator.storage.estimate) {
         const { quota, usage } = await navigator.storage.estimate();
-        if (quota && quota - (usage || 0) < size * 1.05) throw new Error('OPFS 剩余配额不足');
+        // 解碎片时碎片文件与输出文件同时存在，峰值约为两倍文件大小
+        if (quota && quota - (usage || 0) < size * 2.1) throw new Error('OPFS 剩余配额不足');
       }
       const id = crypto.randomUUID();
       const name = `${id}.m4a`;
@@ -344,7 +359,6 @@
         this.closeWorker();
       }
       await removeOpfsFile(this.name);
-      // 被终止的 Worker 可能尚未释放句柄，删不掉的在释放锁后留给 collectGarbage
       if (this.output) await removeOpfsFile(this.output);
       this.unlock();
     }
@@ -483,12 +497,17 @@
     if (!opfsSupported()) return;
     try {
       const dir = await opfsDir();
-      const held = navigator.locks ? new Set((await navigator.locks.query()).held.map((l) => l.name)) : null;
-      const garbage = [];
+      const found = [];
       for await (const [name, handle] of dir.entries()) {
         const match = handle.kind === 'file' && name.match(/^(.+?)(?:-defrag)?\.m4a$/);
-        if (!match || (held && held.has(LOCK_PREFIX + match[1]))) continue;
-        if (!held && Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
+        if (match) found.push([name, match[1], handle]);
+      }
+      // 先列文件再查锁：下载总是先拿锁再建文件，列到的文件若仍在使用，此时锁必已持有；
+      // 反过来先查锁，查询之后才新建的下载会被误判为垃圾
+      const held = navigator.locks ? new Set((await navigator.locks.query()).held.map((l) => l.name)) : null;
+      const garbage = [];
+      for (const [name, id, handle] of found) {
+        if (held ? held.has(LOCK_PREFIX + id) : Date.now() - (await handle.getFile()).lastModified < STALE_MS) continue;
         garbage.push(name);
       }
       // 遍历结束后再删除：遍历目录时修改目录的行为未定义
