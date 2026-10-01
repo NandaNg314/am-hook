@@ -15,6 +15,29 @@ addEventListener('beforeunload', (e) => {
   for (const downloads of downloadsBySong.values()) if (downloads.size) { e.preventDefault(); return; }
 });
 
+/**
+ * 已交给浏览器保存的下载结果 { url, dispose }，同 MV 页的 result：浏览器要从 OPFS 临时文件
+ * 复制到下载目录，不能保存后立即删除；开始新下载、离开歌曲页或关闭标签页时再删除。
+ */
+const saved = new Set();
+
+function saveResult(result, fileName) {
+  const url = URL.createObjectURL(result.file);
+  const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
+  a.style.display = 'none';
+  document.body.append(a);
+  a.click();
+  a.remove();
+  saved.add({ url, dispose: result.dispose });
+}
+
+function disposeSaved() {
+  const items = [...saved];
+  saved.clear();
+  return Promise.all(items.map(({ url, dispose }) => { URL.revokeObjectURL(url); return dispose(); }));
+}
+addEventListener('pagehide', disposeSaved);
+
 export function mount({ root, url, signal, player, onLangChange, toast }) {
   document.title = t('song.pageTitle');
   const songUrl = decodeURIComponent(url.pathname.slice(1));
@@ -176,14 +199,16 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
     downloads.set(id, job);
     showDownload(id);
     try {
+      await disposeSaved();
       const track = await AmDecrypt.openTrack(v.m3u8Url, job.ctl.signal);
       job.total = track.size;
       showDownload(id);
-      const result = await AmDecrypt.download(track, fileName, {
+      const result = await AmDecrypt.download(track, {
         signal: job.ctl.signal,
         onProgress: (done) => { job.done = done; showDownload(id); },
         onDefrag: () => { job.defrag = true; showDownload(id); },
       });
+      saveResult(result, fileName);
       toast(t('dl.done', { size: formatSize(result.size) }));
     } catch (err) {
       const msg = (err && err.message) || String(err);
@@ -621,4 +646,6 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
     loadVariants();
     AmDecrypt.collectGarbage();
   }
+  // 离开页面：删除已保存下载的临时文件（进行中的下载继续，完成后照常保存）
+  signal.addEventListener('abort', disposeSaved, { once: true });
 }

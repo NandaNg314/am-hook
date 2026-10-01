@@ -4,7 +4,7 @@
  * 服务端只提供 master m3u8（/parse/song）与轨道解密模板（/key），其余全部在浏览器完成：
  *   - media m3u8 与分片直接从 Apple CDN 获取（aod.itunes.apple.com 允许跨域 + Range）；
  *   - 解密在 Worker 池中由 hook.wasm（crates/am-wasm）完成，不阻塞页面；
- *   - 下载时解密结果按原始偏移写入 OPFS 文件，完成后以磁盘文件交给浏览器保存，
+ *   - 下载时解密结果按原始偏移写入 OPFS 文件，完成后以磁盘文件交给页面保存，
  *     大文件也不会占用大量内存；不支持 OPFS 时退回内存 Blob。
  * 解密不改变字节长度，解密结果与服务端 --hook 模式的 media file 完全一致；
  * 下载最后再像参考实现 rip.go 那样用 DefragmentMP4 解碎片为普通 MP4（ftyp, moov, mdat）。
@@ -18,8 +18,6 @@
   const MEDIA_WORKER_URL = '/assets/media-worker.js';
   const OPFS_DIR = 'am-hook-downloads';
   const DOWNLOAD_CONCURRENCY = 4;
-  /** 保存完成后 OPFS 临时文件保留多久（浏览器需要时间把它复制到下载目录） */
-  const KEEP_SAVED_MS = 10 * 60 * 1000;
   /** 每个下载持有的 Web Lock 名前缀（与 MV 的 am-hook-mv- 同一机制） */
   const LOCK_PREFIX = 'am-hook-song-';
   /** 浏览器不支持 Web Locks 时，只回收超过该时长未改动的临时文件 */
@@ -364,7 +362,7 @@
     }
 
     cleanup() {
-      removeOpfsFile(this.name).finally(this.unlock);
+      return removeOpfsFile(this.name).finally(this.unlock);
     }
   }
 
@@ -412,16 +410,6 @@
     return new MemorySink();
   }
 
-  function saveFile(file, fileName, cleanup) {
-    const url = URL.createObjectURL(file);
-    const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
-    a.style.display = 'none';
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => { URL.revokeObjectURL(url); cleanup(); }, KEEP_SAVED_MS);
-  }
-
   /**
    * 在媒体 Worker 中运行参考实现的 DefragmentMP4（歌曲用法：M4A ftyp、每个 trun 一个 chunk、
    * 不做 MV 那样的按时间交错）。args 为 [输入文件名, 输出文件名, OPFS 目录] 或 [Blob]；取消时直接终止 Worker。
@@ -443,11 +431,12 @@
   }
 
   /**
-   * 下载并解密整条轨道，解碎片后触发浏览器保存。
+   * 下载并解密整条轨道并解碎片，约定与 MV 的 downloadMV 相同。
    * onProgress(doneBytes, totalBytes)；onDefrag() 在开始解碎片时调用；
-   * 返回 { storage: 'opfs' | 'memory', size }（size 为最终文件大小）。
+   * 返回 { file, storage: 'opfs' | 'memory', size, dispose }：由页面保存 file，
+   * 不再需要时调用 dispose() 删除 OPFS 临时文件并释放 Web Lock。
    */
-  async function download(track, fileName, { signal, onProgress, onDefrag } = {}) {
+  async function download(track, { signal, onProgress, onDefrag } = {}) {
     const ctl = new AbortController();
     const onAbort = () => ctl.abort(signal.reason);
     if (signal) {
@@ -478,8 +467,7 @@
       await sink.finish();
       if (onDefrag) onDefrag();
       const file = await sink.defrag(ctl.signal);
-      saveFile(file, fileName, () => sink.cleanup());
-      return { storage: sink.kind, size: file.size };
+      return { file, storage: sink.kind, size: file.size, dispose: () => sink.cleanup() };
     } catch (err) {
       ctl.abort(err);
       await sink.abort();
