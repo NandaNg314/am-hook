@@ -220,8 +220,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
     const media = $('hero-art');
     if (style.kind === 'wide' || style.kind === 'video') {
-      // 通栏：按原图比例取 2400 宽，cover 铺满、顶部对齐（官网 object-position: center top）
-      const ratio = style.art && style.art.width && style.art.height ? style.art.height / style.art.width : 9 / 16;
+      // 通栏：wide 与官网 uberArtwork 的 artwork profile 相同，按 16:9 取图（[[1200], HD_ASPECT_RATIO, cropStyle]），
+      // vf 等裁切码由图片服务器按这个比例做智能裁切——hero 原图多为 3000×3000 方图，按原图比例取会拿到整张方图，
+      // cover + 顶部对齐后只剩上半截；video 的首帧本身是 16:9，按原图比例取。cover 铺满、顶部对齐（官网 object-position: center top）
+      const ratio = style.kind === 'wide' ? 9 / 16
+        : style.art && style.art.width && style.art.height ? style.art.height / style.art.width : 9 / 16;
       setImg(media, 'hero-img', artUrl(style.art, 2400, Math.round(2400 * ratio), style.crop));
       $('portrait').replaceChildren();
       $('portrait-glow').replaceChildren();
