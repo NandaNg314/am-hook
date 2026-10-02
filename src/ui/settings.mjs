@@ -10,6 +10,7 @@ const { AmI18n } = window;
 const { t } = AmI18n;
 
 const mobile = matchMedia('(max-width: 483px)');
+const coarse = matchMedia('(pointer: coarse)');
 const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
 const STAR = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>';
 const CHEVRON ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
@@ -183,7 +184,9 @@ export function mountSettings({ picker, scrim }) {
       open.expanded = !open.expanded;
       open.filter = '';
       render();
-      (body.querySelector('.picker-filter') || body.querySelector('.picker-more'))?.focus();
+      // 触屏上不自动聚焦筛选框，免得一展开就弹出输入法挡住列表
+      const filter = !coarse.matches && body.querySelector('.picker-filter');
+      (filter || body.querySelector('.picker-more'))?.focus({ preventScroll: true });
     });
     parts.push(more);
 
@@ -310,7 +313,11 @@ export function mountSettings({ picker, scrim }) {
     event.stopPropagation();
     close(true);
   });
-  addEventListener('resize', () => close(false));
+  // 只在宽度变化（旋转屏幕 / 拖动窗口）时关闭：手机弹出 / 收起输入法只改变高度，不能因此关掉面板
+  let lastWidth = innerWidth;
+  addEventListener('resize', () => {
+    if (innerWidth !== lastWidth) { lastWidth = innerWidth; close(false); } else place();
+  });
   // 页面滚动时跟着按钮移动（导航里的按钮不动）
   addEventListener('scroll', place, { passive: true });
   // 切换页面时按钮可能已被移除
