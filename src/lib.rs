@@ -33,6 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/assets/lyrics/:file", get(ui::lyrics_asset_handler))
         .route("/assets/app.css", get(ui::css_handler))
         .route("/assets/app.mjs", get(ui::app_js_handler))
+        .route("/assets/settings.mjs", get(ui::settings_js_handler))
         .route("/assets/views/:file", get(ui::view_asset_handler))
         .route("/assets/motion-art.mjs", get(ui::motion_art_handler))
         .route("/assets/player.js", get(ui::player_js_handler))

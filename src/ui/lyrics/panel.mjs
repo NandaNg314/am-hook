@@ -1,8 +1,8 @@
 /*
  * 在线播放的歌词界面：用 AMLL（Apple Music-like Lyrics，见 browser/amll）显示歌词，接到 AmPlayer 上。
  *
- *   歌词     GET /lyrics/<adamId>?language=<地区默认语言>（服务端向 wrapper-lite /lyrics 获取的 TTML 原文），
- *            language 取歌曲所在地区的 defaultLanguageTag（AmI18n.defaultLang），取不到时不传；首次打开歌词界面时才请求并缓存；没有歌词时隐藏按钮。
+ *   歌词     GET /lyrics/<adamId>?language=<曲库语言>（服务端向 wrapper-lite /lyrics 获取的 TTML 原文），
+ *            language 取歌曲所在地区的曲库语言（AmI18n.catalogLang：选定的语言，否则为地区默认语言），取不到时不传；首次打开歌词界面时才请求并缓存；没有歌词时隐藏按钮。
  *            ttml.mjs 解析 Apple TTML，toAmllLines() 转成 AMLL 的 LyricLine
  *   时间     每帧把 player.transport().currentTime 交给 DomLyricPlayer，点击歌词行跳转并继续播放
  *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景
@@ -348,7 +348,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (!request) {
       const id = adamId;
       toggle.setAttribute('aria-busy', 'true');
-      request = Promise.resolve(globalThis.AmI18n?.defaultLang(getMeta()?.country || country))
+      request = Promise.resolve(globalThis.AmI18n?.catalogLang(getMeta()?.country || country))
         .catch(() => undefined)
         .then((language) => fetch(`/lyrics/${id}${language ? `?language=${encodeURIComponent(language)}` : ''}`))
         .then(async (response) => {

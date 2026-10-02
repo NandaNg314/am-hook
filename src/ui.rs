@@ -24,6 +24,11 @@ pub async fn app_js_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/app.mjs"))
 }
 
+/// 主地区与曲库语言的选择面板
+pub async fn settings_js_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/settings.mjs"))
+}
+
 /// 页面视图（src/ui/views/）：`<name>.html` 为页面内容，`<name>.mjs` 为页面脚本（导出 mount，见 app.mjs）
 pub async fn view_asset_handler(
     headers: HeaderMap,

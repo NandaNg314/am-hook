@@ -14,7 +14,7 @@
 -->
 <body>
   <!--
-    导航（官网 .navigation）：≥484px 为左侧边栏（logo、返回、主页，底部为界面语言与 wrapper-lite 状态）；
+    导航（官网 .navigation）：≥484px 为左侧边栏（logo、返回、主页，底部为主地区、曲库语言、界面语言与 wrapper-lite 状态）；
     <484px 为顶部固定的 52px 顶栏（返回 / logo / 菜单按钮），菜单按钮展开为整屏菜单，内容与侧边栏相同
   -->
   <nav class="navigation" id="nav" data-i18n-attr="aria-label=nav.label">
@@ -46,15 +46,46 @@
           </a>
         </li>
       </ul>
+      <!-- 设置：主地区与曲库语言打开选择面板（settings.mjs），界面语言直接在中文 / English 间切换 -->
       <div class="nav-footer">
-        <button class="nav-link" type="button" data-lang-toggle>
-          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></span>
-          <span class="nav-label lang-label"></span>
+        <button class="nav-link nav-setting" type="button" data-picker="storefront" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5 5.6 4.8A1.2 1.2 0 0 1 6.7 4h10.6a1.2 1.2 0 0 1 1.1.8L20 9.5"/><path d="M4 9.5a2.67 2.67 0 0 0 5.33 0 2.67 2.67 0 0 0 5.34 0 2.67 2.67 0 0 0 5.33 0"/><path d="M5.5 12.5V19a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6.5"/><path d="M10 20v-4.5h4V20"/></svg></span>
+          <span class="nav-setting-text">
+            <span class="nav-setting-caption" data-i18n="settings.storefront"></span>
+            <span class="nav-setting-value" data-setting-value="storefront"></span>
+          </span>
+        </button>
+        <button class="nav-link nav-setting" type="button" data-picker="ampLang" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M4 11h10M4 16h6"/><path d="M19.5 14.5V5l-3 1"/><circle cx="17" cy="17" r="2.5"/></svg></span>
+          <span class="nav-setting-text">
+            <span class="nav-setting-caption" data-i18n="settings.ampLang"></span>
+            <span class="nav-setting-value" data-setting-value="ampLang"></span>
+          </span>
+        </button>
+        <button class="nav-link nav-setting" type="button" data-lang-toggle>
+          <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 5.5h9M8 3.5v2M10.5 5.5c-.7 3.6-3 6.4-6.5 8"/><path d="M5.8 9c1 1.7 2.7 3.1 4.7 3.8"/><path d="m12.5 20.5 4-9.5 4 9.5M14 17h5"/></svg></span>
+          <span class="nav-setting-text">
+            <span class="nav-setting-caption" data-i18n="lang.caption"></span>
+            <span class="nav-setting-value lang-label"></span>
+          </span>
         </button>
         <span class="status-pill" id="nav-status" aria-live="polite"><span class="status-dot"></span><span>wrapper-lite</span></span>
       </div>
     </div>
   </nav>
+
+  <!-- 主地区 / 曲库语言的选择面板（settings.mjs）：放在导航外面，导航的 backdrop-filter 会限制 fixed 定位 -->
+  <button class="picker-scrim" id="picker-scrim" type="button" tabindex="-1" aria-hidden="true" hidden></button>
+  <section class="picker" id="picker" role="dialog" aria-labelledby="picker-title" hidden>
+    <header class="picker-head">
+      <h2 class="picker-title" id="picker-title"></h2>
+      <button class="picker-close" type="button" data-i18n-attr="aria-label=settings.close,title=settings.close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+      <p class="picker-hint"></p>
+    </header>
+    <div class="picker-body"></div>
+  </section>
 
   <div class="app-view" id="view"></div>
 

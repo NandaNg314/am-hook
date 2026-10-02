@@ -6,6 +6,8 @@
 //   mount(ctx)：挂载页面，ctx 见 render()。页面注册到 window / document 上的监听都带 ctx.signal，
 //   离开页面时 signal 中止，监听随之移除。
 
+import { mountSettings } from '/assets/settings.mjs';
+
 const { AmPlayer } = window.AmHook;
 const { AmI18n } = window;
 const { t } = AmI18n;
@@ -100,7 +102,10 @@ function syncNav(name) {
   }
 }
 
-/* ---------- wrapper-lite 状态：导航里的状态胶囊；首页按账号所在地区选择搜索地区 ---------- */
+/* ---------- 设置：主地区与曲库语言的选择面板 ---------- */
+const settings = mountSettings({ picker: $('picker'), scrim: $('picker-scrim') });
+
+/* ---------- wrapper-lite 状态：导航里的状态胶囊；账号所在地区为推荐的主地区（没有选择过时即为主地区） ---------- */
 /** null 表示检查中，否则为 { ok, regions } */
 let wrapperStatus = null;
 let statusPending = null;
@@ -122,11 +127,14 @@ function loadStatus() {
       const data = await res.json();
       if (!res.ok || data.code !== 0) throw new Error();
       wrapperStatus = { ok: true, regions: (data.regions || []).map(String) };
+      AmI18n.setRegions(wrapperStatus.regions);
     } catch {
+      // 暂时连不上时保留上次的地区
       wrapperStatus = { ok: false, regions: [] };
     }
     statusPending = null;
     renderStatus();
+    settings.refresh();
     return wrapperStatus;
   })();
   return statusPending;
@@ -186,7 +194,7 @@ function unmount() {
  * mount(ctx) 的 ctx：
  *   root：页面内容所在的元素（每次进入页面都是新的）；url：页面地址；signal：离开页面时中止；
  *   player：播放器（见 AmPlayer.scope）；navigate(href, { replace })：站内跳转；
- *   onLangChange(fn)：切换语言后回调；toast(message)：底部提示；restoring：是否在恢复前进 / 后退前的滚动位置；
+ *   onLangChange(fn)：切换界面语言或曲库语言后回调（页面据此重绘文字、重新请求目录数据）；toast(message)：底部提示；restoring：是否在恢复前进 / 后退前的滚动位置；
  *   loadStatus()：重新检查 wrapper-lite 状态，返回 { ok, regions }。
  */
 async function render(url, { scroll = 0, initial = false } = {}) {
@@ -217,6 +225,8 @@ async function render(url, { scroll = 0, initial = false } = {}) {
   const root = Object.assign(document.createElement('div'), { className: 'app-page', innerHTML: html });
   viewRoot.replaceChildren(root);
   AmI18n.apply(root);
+  settings.close(false);
+  settings.renderValues();
   player.layout();
   window.scrollTo(0, 0);
   try {
@@ -226,7 +236,11 @@ async function render(url, { scroll = 0, initial = false } = {}) {
       signal,
       player: player.scope(signal),
       navigate,
-      onLangChange: (fn) => { if (!signal.aborted) signal.addEventListener('abort', AmI18n.onChange(fn), { once: true }); },
+      onLangChange: (fn) => {
+        if (signal.aborted) return;
+        signal.addEventListener('abort', AmI18n.onChange(fn), { once: true });
+        signal.addEventListener('abort', AmI18n.onSettingsChange(({ kind }) => { if (kind === 'ampLang') fn(); }), { once: true });
+      },
       toast,
       restoring: scroll > 0,
       loadStatus,

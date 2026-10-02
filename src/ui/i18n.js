@@ -5,10 +5,17 @@
  *   apply(root)           刷新静态文字：data-i18n（textContent）、data-i18n-html（innerHTML，仅限本文件内的可信文案）、
  *                         data-i18n-attr="title=key,aria-label=key2"（属性）
  *   setLang / toggle      切换语言并记住选择；onChange(fn) 在切换后回调，页面据此重绘动态内容
- *   catalogLang(cc)       异步：当前语言在该地区 amp-api 可用的 l 值（地区不支持时为 undefined）
- *   defaultLang(cc)       异步：该地区的默认语言（如 cn → zh-Hans-CN），用于请求歌词
  *   [data-lang-toggle]    页面上的切换按钮，自动绑定
  * 初始语言：上次的选择，否则按浏览器语言（zh* 为中文，其余为英文）。
+ *
+ * 主地区与曲库语言（amp-api 的 storefront 与 l，与界面语言相互独立），选择保存在 localStorage，不会过期：
+ *   storefronts()         异步：全部地区 { cc: { name, tags, default } }，取自 /amp/v1/storefronts（取不到时为 null）
+ *   setRegions(list)      wrapper-lite 账号所在地区（app.mjs 根据 /status 设置），regions 为当前值
+ *   storefront            主地区：用户的选择，否则为 wrapper-lite 的第一个地区，否则为 us；setStorefront(cc) 修改
+ *   favorites             收藏的地区（默认 us / cn / jp），在选择面板里直接列出；toggleFavorite(cc) 收藏 / 取消
+ *   ampLang(cc)           该地区选定的曲库语言（未选择时为 null，即地区默认语言）；setAmpLang(cc, tag) 修改
+ *   catalogLang(cc)       异步：请求该地区 amp-api 用的 l：选定的语言，否则为地区默认语言（取不到地区信息时为 undefined）
+ *   onSettingsChange(fn)  主地区、收藏或曲库语言变化后回调 fn({ kind: 'storefront' | 'favorites' | 'ampLang', cc })
  */
 (function (global) {
   'use strict';
@@ -43,8 +50,29 @@
       "mv.channels": "声道",
       "mv.recommended": "视频推荐",
 
-      'lang.button': 'English',
+      'lang.caption': '界面语言',
+      'lang.button': '中文',
       'lang.title': 'Switch to English',
+
+      'settings.storefront': '主地区',
+      'settings.storefrontHint': '用于搜索等功能。选择 wrapper-lite 账号所在地区可获得最佳体验。',
+      'settings.best': 'wrapper-lite 地区 · 最佳体验',
+      'settings.outside': '非 wrapper-lite 地区：可以搜索与浏览，部分内容可能无法播放。',
+      'settings.selected': '当前选择',
+      'settings.favorites': '收藏的地区',
+      'settings.favorite': '收藏“{name}”',
+      'settings.unfavorite': '取消收藏“{name}”',
+      'settings.more': '更多地区',
+      'settings.less': '收起',
+      'settings.filter': '筛选地区',
+      'settings.noMatch': '没有匹配的地区',
+      'settings.ampLang': '曲库语言',
+      'settings.ampLangHint': '{storefront}的歌曲、专辑、艺人等信息所用的语言（Apple Music 提供的可选语言）。',
+      'settings.default': '默认',
+      'settings.loading': '正在获取地区列表…',
+      'settings.failed': '无法获取地区列表。',
+      'settings.retry': '重试',
+      'settings.close': '关闭',
 
       'status.checking': '检查 wrapper-lite…',
       'status.online': 'wrapper-lite 在线',
@@ -286,8 +314,29 @@
       "mv.channels": "channels",
       "mv.recommended": "Recommended for video",
 
-      'lang.button': '中文',
+      'lang.caption': 'Interface',
+      'lang.button': 'English',
       'lang.title': '切换到中文',
+
+      'settings.storefront': 'Primary storefront',
+      'settings.storefrontHint': 'Used for search and more. Storefronts of the wrapper-lite account give the best experience.',
+      'settings.best': 'wrapper-lite storefronts · best experience',
+      'settings.outside': 'Not a wrapper-lite storefront: search and browsing work, some content may not play.',
+      'settings.selected': 'Selected',
+      'settings.favorites': 'Favorites',
+      'settings.favorite': 'Add “{name}” to favorites',
+      'settings.unfavorite': 'Remove “{name}” from favorites',
+      'settings.more': 'More storefronts',
+      'settings.less': 'Show less',
+      'settings.filter': 'Filter storefronts',
+      'settings.noMatch': 'No matching storefronts',
+      'settings.ampLang': 'Catalog language',
+      'settings.ampLangHint': 'Language of song, album and artist info in {storefront} (as offered by Apple Music).',
+      'settings.default': 'Default',
+      'settings.loading': 'Loading storefronts…',
+      'settings.failed': 'Could not load storefronts.',
+      'settings.retry': 'Retry',
+      'settings.close': 'Close',
 
       'status.checking': 'Checking wrapper-lite…',
       'status.online': 'wrapper-lite online',
@@ -546,14 +595,14 @@
     listeners.forEach((fn) => fn(lang));
   }
 
+  /* ---------- 主地区与曲库语言 ---------- */
+
   /**
-   * amp-api 的 l 参数。地区不支持的语言不会报错，而是静默回退到地区默认语言（如 cn 只支持 zh-Hans-CN / en-GB，
-   * 传 en-US 仍返回中文），所以按各地区的 supportedLanguageTags 选择；
-   * 地区不支持当前界面语言时返回 undefined（不传 l），取不到地区信息时退回常见写法。
-   * 地区表取自 /amp/v1/storefronts（一次返回全部地区，几乎不变），缓存在 localStorage，过期后才重新拉取；
-   * 每个地区记为 { tags: supportedLanguageTags, default: defaultLanguageTag }。
+   * 地区表取自 /amp/v1/storefronts（一次返回全部地区，几乎不变），保存在 localStorage：
+   * 有保存的地区表就直接使用，保存超过 STOREFRONTS_TTL 时在后台重新拉取替换（失败时继续用旧的）。
+   * 每个地区记为 { name, tags: supportedLanguageTags, default: defaultLanguageTag }。
    */
-  const STOREFRONTS_KEY = 'am-hook:storefront-langs:v2';
+  const STOREFRONTS_KEY = 'am-hook:storefronts:v3';
   const STOREFRONTS_TTL = 30 * 24 * 3600 * 1000;
   let storefrontsPromise = null;
 
@@ -566,8 +615,12 @@
       const data = await res.json();
       for (const item of (data && data.data) || []) {
         const a = item && item.attributes;
-        if (item.id && a && Array.isArray(a.supportedLanguageTags)) {
-          map[String(item.id).toLowerCase()] = { tags: a.supportedLanguageTags, default: a.defaultLanguageTag || a.supportedLanguageTags[0] };
+        if (item.id && a && Array.isArray(a.supportedLanguageTags) && a.supportedLanguageTags.length) {
+          map[String(item.id).toLowerCase()] = {
+            name: a.name || String(item.id).toUpperCase(),
+            tags: a.supportedLanguageTags,
+            default: a.defaultLanguageTag || a.supportedLanguageTags[0],
+          };
         }
       }
       path = data && data.next;
@@ -576,54 +629,129 @@
     return map;
   }
 
-  function storefrontLangs() {
+  function refreshStorefronts() {
+    return fetchStorefronts().then((map) => {
+      try { localStorage.setItem(STOREFRONTS_KEY, JSON.stringify({ at: Date.now(), map })); } catch {}
+      return map;
+    });
+  }
+
+  function storefronts() {
     if (!storefrontsPromise) {
-      try {
-        const cached = JSON.parse(localStorage.getItem(STOREFRONTS_KEY) || 'null');
-        if (cached && cached.map && Date.now() - cached.at < STOREFRONTS_TTL) {
-          storefrontsPromise = Promise.resolve(cached.map);
-          return storefrontsPromise;
+      const cached = readJson(STOREFRONTS_KEY);
+      if (cached && cached.map && Object.keys(cached.map).length) {
+        storefrontsPromise = Promise.resolve(cached.map);
+        if (!(Date.now() - cached.at < STOREFRONTS_TTL)) {
+          refreshStorefronts().then((map) => { storefrontsPromise = Promise.resolve(map); }, () => {});
         }
-      } catch {}
-      storefrontsPromise = fetchStorefronts()
-        .then((map) => {
-          try { localStorage.setItem(STOREFRONTS_KEY, JSON.stringify({ at: Date.now(), map })); } catch {}
-          return map;
-        })
+      } else {
         // 失败不缓存，下次调用重试
-        .catch(() => { storefrontsPromise = null; return null; });
+        storefrontsPromise = refreshStorefronts().catch(() => { storefrontsPromise = null; return null; });
+      }
     }
     return storefrontsPromise;
   }
 
-  async function storefront(cc) {
+  async function storefrontInfo(cc) {
     if (!/^[a-z]{2}$/i.test(cc || '')) return null;
-    const map = await storefrontLangs();
+    const map = await storefronts();
     return (map && map[cc.toLowerCase()]) || null;
   }
-  /** 地区的默认语言（如 cn → zh-Hans-CN）；取不到地区信息时为 undefined */
-  async function defaultLang(cc) {
-    const sf = await storefront(cc);
-    return (sf && sf.default) || undefined;
+
+  const STOREFRONT_KEY = 'am-hook:storefront';
+  const AMP_LANG_KEY = 'am-hook:amp-lang';
+  const FAVORITES_KEY = 'am-hook:storefront-favorites';
+  /** 没有改过收藏时默认收藏的常用地区 */
+  const DEFAULT_FAVORITES = ['us', 'cn', 'jp'];
+  const settingsListeners = new Set();
+  let regions = [];
+
+  function readJson(key) {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
   }
+  function savedStorefront() {
+    let saved = null;
+    try { saved = localStorage.getItem(STOREFRONT_KEY); } catch {}
+    return /^[a-z]{2}$/.test(saved || '') ? saved : null;
+  }
+  /** 地区 → 选定的曲库语言（只记录与地区默认语言不同的选择） */
+  function ampLangs() {
+    const map = readJson(AMP_LANG_KEY);
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+  }
+  const currentStorefront = () => savedStorefront() || regions[0] || 'us';
+  const emitSettings = (kind, cc) => settingsListeners.forEach((fn) => fn({ kind, cc }));
+
+  /** wrapper-lite 账号所在地区；没有选择过主地区时主地区随之变化 */
+  function setRegions(list) {
+    const before = currentStorefront();
+    regions = [...new Set((list || []).map((cc) => String(cc).toLowerCase()).filter((cc) => /^[a-z]{2}$/.test(cc)))];
+    if (currentStorefront() !== before) emitSettings('storefront', currentStorefront());
+  }
+
+  function setStorefront(cc) {
+    cc = String(cc || '').toLowerCase();
+    if (!/^[a-z]{2}$/.test(cc) || cc === savedStorefront()) return;
+    const before = currentStorefront();
+    try { localStorage.setItem(STOREFRONT_KEY, cc); } catch {}
+    if (currentStorefront() !== before) emitSettings('storefront', cc);
+  }
+
+  /** 收藏的地区（按收藏顺序）；收藏全部取消后为空数组，不再回到默认 */
+  function favorites() {
+    const list = readJson(FAVORITES_KEY);
+    return Array.isArray(list) ? list.filter((cc) => typeof cc === 'string' && /^[a-z]{2}$/.test(cc)) : DEFAULT_FAVORITES.slice();
+  }
+
+  function toggleFavorite(cc) {
+    cc = String(cc || '').toLowerCase();
+    if (!/^[a-z]{2}$/.test(cc)) return;
+    const list = favorites();
+    const next = list.includes(cc) ? list.filter((code) => code !== cc) : [...list, cc];
+    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)); } catch {}
+    emitSettings('favorites', cc);
+  }
+
+  function ampLang(cc) {
+    const tag = ampLangs()[String(cc || '').toLowerCase()];
+    return typeof tag === 'string' ? tag : null;
+  }
+
+  /** tag 为空或为地区默认语言时清除选择（跟随地区默认语言） */
+  async function setAmpLang(cc, tag) {
+    cc = String(cc || '').toLowerCase();
+    if (!/^[a-z]{2}$/.test(cc)) return;
+    const sf = await storefrontInfo(cc);
+    if (!sf) return;
+    const next = tag && sf.tags.includes(tag) && tag !== sf.default ? tag : null;
+    if (next === ampLang(cc)) return;
+    const map = ampLangs();
+    if (next) map[cc] = next; else delete map[cc];
+    try { localStorage.setItem(AMP_LANG_KEY, JSON.stringify(map)); } catch {}
+    emitSettings('ampLang', cc);
+  }
+
+  /**
+   * amp-api 的 l 参数：选定的曲库语言，否则为地区默认语言（如 cn → zh-Hans-CN）。
+   * 地区不支持的语言不会报错，而是静默回退到地区默认语言，所以只在地区的 supportedLanguageTags 里选；
+   * 取不到地区信息时为 undefined（不传 l，amp-api 同样使用地区默认语言）。
+   */
   async function catalogLang(cc) {
-    const zh = lang === 'zh';
-    const sf = await storefront(cc);
-    const tags = sf && sf.tags;
-    if (!tags) return zh ? 'zh-Hans-CN' : 'en-US';
-    for (const re of zh ? [/^zh-Hans/i, /^zh/i] : [/^en-US$/i, /^en/i]) {
-      const hit = tags.find((tag) => re.test(tag));
-      if (hit) return hit;
-    }
-    return undefined;
+    const sf = await storefrontInfo(cc);
+    if (!sf) return undefined;
+    const chosen = ampLang(cc);
+    return chosen && sf.tags.includes(chosen) ? chosen : sf.default;
   }
 
   document.addEventListener('click', (e) => {
     if (e.target.closest && e.target.closest('[data-lang-toggle]')) setLang(lang === 'zh' ? 'en' : 'zh');
   });
-  // 其他标签页切换语言后同步
+  // 其他标签页修改设置后同步
   global.addEventListener('storage', (e) => {
     if (e.key === STORAGE_KEY && e.newValue) setLang(e.newValue);
+    if (e.key === STOREFRONT_KEY) emitSettings('storefront', currentStorefront());
+    if (e.key === AMP_LANG_KEY) emitSettings('ampLang', null);
+    if (e.key === FAVORITES_KEY) emitSettings('favorites', null);
   });
 
   global.AmI18n = {
@@ -633,8 +761,17 @@
     toggle: () => setLang(lang === 'zh' ? 'en' : 'zh'),
     /** 返回取消订阅的函数（页面视图卸载时调用） */
     onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-    catalogLang,
-    defaultLang,
     get lang() { return lang; },
+    storefronts,
+    setRegions,
+    get regions() { return regions.slice(); },
+    get storefront() { return currentStorefront(); },
+    setStorefront,
+    get favorites() { return favorites(); },
+    toggleFavorite,
+    ampLang,
+    setAmpLang,
+    catalogLang,
+    onSettingsChange: (fn) => { settingsListeners.add(fn); return () => settingsListeners.delete(fn); },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -525,8 +525,8 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
     }
   }
 
-  // 经服务端 /amp 代理请求 amp-api 的 songs 资源（与 music.apple.com 相同），名称按界面语言返回
-  // （l 按地区支持的语言选择，见 AmI18n.catalogLang）。先查歌曲链接所在地区，查不到时依次回退 us / cn。
+  // 经服务端 /amp 代理请求 amp-api 的 songs 资源（与 music.apple.com 相同），名称按曲库语言返回
+  // （l 为该地区选定的曲库语言或默认语言，见 AmI18n.catalogLang）。先查歌曲链接所在地区，查不到时依次回退 us / cn。
   async function lookupMeta() {
     for (const cc of new Set([country, 'us', 'cn'])) {
       try {

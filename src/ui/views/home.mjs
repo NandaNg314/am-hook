@@ -42,8 +42,6 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
   const suggestEl = $('suggest');
   const resultsEl = $('results');
   const resultsBody = $('results-body');
-  const storefrontSel = $('storefront');
-  const STOREFRONT_KEY = 'am-hook:storefront';
   let errorKey = null;
 
   const isUrlLike = (value) => /^https?:\/\//i.test(value);
@@ -97,24 +95,16 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
 
   /* ---------- 搜索（与 music.apple.com/search 相同的 amp-api 调用，经服务端 /amp 代理） ---------- */
 
-  /** 搜索地区：默认使用 wrapper-lite 账号所在地区（解析与解密都以它为准），有多个时可切换 */
-  function renderStorefronts(regions) {
-    const list = [...new Set(regions.map((cc) => cc.toLowerCase()).filter((cc) => /^[a-z]{2}$/.test(cc)))];
-    if (!list.length) list.push('us');
-    let saved = null;
-    try { saved = localStorage.getItem(STOREFRONT_KEY); } catch {}
-    storefrontSel.replaceChildren(...list.map((cc) => new Option(cc.toUpperCase(), cc)));
-    storefrontSel.value = list.includes(saved) ? saved : list[0];
-    $('storefront-wrap').hidden = list.length < 2;
-  }
-  const storefront = () => storefrontSel.value || 'us';
-  // l 按地区支持的语言选择，见 AmI18n.catalogLang
+  /** 搜索地区为主地区（AmI18n.storefront，导航里设置；结果标题旁的按钮打开同一个选择面板），切换后重新搜索 */
+  const storefront = () => AmI18n.storefront;
+  // l 为主地区选定的曲库语言或默认语言，见 AmI18n.catalogLang
   const catalogLang = () => AmI18n.catalogLang(storefront());
 
-  storefrontSel.addEventListener('change', () => {
-    try { localStorage.setItem(STOREFRONT_KEY, storefrontSel.value); } catch {}
+  signal.addEventListener('abort', AmI18n.onSettingsChange(({ kind }) => {
+    if (kind !== 'storefront') return;
+    closeSuggest();
     if (search.term) runSearch(search.term);
-  });
+  }), { once: true });
 
   /** amp-api 需要 developer token 且只允许 music.apple.com 跨域，统一走服务端 /amp 代理 */
   async function amp(path, params, signal) {
@@ -628,9 +618,8 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     renderRecent();
   });
 
-  renderStorefronts([]);
-  // wrapper-lite 状态由 app.mjs 维护（导航里的状态胶囊），进入首页时重新检查
-  const statusReady = loadStatus().then((status) => renderStorefronts(status.regions));
+  // wrapper-lite 状态由 app.mjs 维护（导航里的状态胶囊），进入首页时重新检查；没有选择过主地区时以账号所在地区为准，搜索等它返回
+  const statusReady = loadStatus();
   renderDetect();
   renderRecent();
   syncFromUrl();

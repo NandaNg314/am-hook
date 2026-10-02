@@ -158,7 +158,7 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
     // 快速切换语言时只采用最后一次请求的结果
     const seq = ++metadataSeq;
     try {
-      // 经服务端 /amp 代理请求 amp-api 的 music-videos 资源，名称按界面语言返回（l 按地区支持的语言选择）
+      // 经服务端 /amp 代理请求 amp-api 的 music-videos 资源，名称按曲库语言返回（l 见 AmI18n.catalogLang）
       const url = new URL(`/amp/v1/catalog/${country}/music-videos/${id}`, location.origin);
       url.searchParams.set('include', 'artists');
       const l = await AmI18n.catalogLang(country);
