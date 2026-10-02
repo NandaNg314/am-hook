@@ -69,7 +69,16 @@
             <span class="nav-setting-value lang-label"></span>
           </span>
         </button>
-        <span class="status-pill" id="nav-status" aria-live="polite"><span class="status-dot"></span><span>wrapper-lite</span></span>
+        <!-- wrapper-lite 状态（app.mjs）：上行为状态与地区数，下行为地区代码；一行放不下时折叠为「+N」，点击展开全部 -->
+        <div class="wrapper-status" id="nav-status">
+          <button class="wrapper-status-head" type="button" aria-expanded="false" aria-controls="nav-status-regions" disabled>
+            <span class="status-dot"></span>
+            <span class="wrapper-status-name">wrapper-lite</span>
+            <span class="wrapper-status-state" aria-live="polite"></span>
+            <svg class="wrapper-status-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <ul class="wrapper-status-regions" id="nav-status-regions" hidden></ul>
+        </div>
       </div>
     </div>
   </nav>

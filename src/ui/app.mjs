@@ -105,19 +105,110 @@ function syncNav(name) {
 /* ---------- 设置：主地区与曲库语言的选择面板 ---------- */
 const settings = mountSettings({ picker: $('picker'), scrim: $('picker-scrim') });
 
-/* ---------- wrapper-lite 状态：导航里的状态胶囊；账号所在地区为推荐的主地区（没有选择过时即为主地区） ---------- */
+/* ---------- wrapper-lite 状态：导航底部的状态块；账号所在地区为推荐的主地区（没有选择过时即为主地区） ----------
+   上行为状态点、名称、地区数（或状态文字）与展开箭头；下行为地区代码，当前主地区排在最前并高亮。
+   地区多时下行只保留一行放得下的部分，其余折叠为「+N」；展开后换行列出全部，超过几行时在块内滚动，不会把导航撑高。 */
 /** null 表示检查中，否则为 { ok, regions } */
 let wrapperStatus = null;
 let statusPending = null;
+let statusExpanded = false;
+
+const statusBox = $('nav-status');
+const statusHead = statusBox.querySelector('.wrapper-status-head');
+const statusState = statusBox.querySelector('.wrapper-status-state');
+const statusList = statusBox.querySelector('.wrapper-status-regions');
+
+const statusRegionNames = new Map();
+/** 按界面语言显示的地区名（Intl.DisplayNames），取不到时为地区代码 */
+function statusRegionName(cc) {
+  const locale = AmI18n.lang === 'zh' ? 'zh-CN' : 'en';
+  try {
+    if (!statusRegionNames.has(locale)) statusRegionNames.set(locale, new Intl.DisplayNames([locale], { type: 'region', fallback: 'none' }));
+    return statusRegionNames.get(locale).of(cc.toUpperCase()) || cc.toUpperCase();
+  } catch {
+    return cc.toUpperCase();
+  }
+}
 
 function renderStatus() {
-  const pill = $('nav-status');
-  pill.classList.toggle('ok', !!wrapperStatus && wrapperStatus.ok);
-  pill.classList.toggle('bad', !!wrapperStatus && !wrapperStatus.ok);
-  pill.lastElementChild.textContent = !wrapperStatus ? t('status.checking')
-    : !wrapperStatus.ok ? t('status.down')
-    : wrapperStatus.regions.length ? `wrapper-lite · ${wrapperStatus.regions.join(' / ').toUpperCase()}` : t('status.online');
+  const ok = !!wrapperStatus && wrapperStatus.ok;
+  const regions = ok ? [...new Set(wrapperStatus.regions.map((cc) => cc.toLowerCase()))] : [];
+  statusBox.classList.toggle('ok', ok);
+  statusBox.classList.toggle('bad', !!wrapperStatus && !ok);
+
+  // 有地区时上行显示地区数（在线由绿点表示），否则显示状态文字
+  const count = t(regions.length === 1 ? 'status.region' : 'status.regions', { count: regions.length });
+  statusState.textContent = !wrapperStatus ? t('status.checking') : !ok ? t('status.down') : regions.length ? count : t('status.online');
+  statusHead.title = regions.length ? `wrapper-lite · ${t('status.online')} · ${count}` : `wrapper-lite · ${statusState.textContent}`;
+
+  const current = AmI18n.storefront;
+  const ordered = regions.includes(current) ? [current, ...regions.filter((cc) => cc !== current)] : regions;
+  statusList.replaceChildren(...ordered.map((cc) => {
+    const chip = document.createElement('li');
+    chip.className = 'region-chip';
+    chip.textContent = cc.toUpperCase();
+    chip.title = cc === current ? `${statusRegionName(cc)} · ${t('status.current')}` : statusRegionName(cc);
+    chip.classList.toggle('is-current', cc === current);
+    return chip;
+  }));
+  if (ordered.length) {
+    const more = document.createElement('li');
+    const button = document.createElement('button');
+    more.className = 'region-more';
+    button.type = 'button';
+    button.addEventListener('click', () => setStatusExpanded(true));
+    more.append(button);
+    statusList.append(more);
+  } else {
+    statusExpanded = false;
+  }
+  statusList.hidden = !ordered.length;
+  fitStatusRegions();
 }
+
+/** 折叠时只保留一行放得下的地区，其余收进「+N」（至少保留一个）；展开时全部列出 */
+function fitStatusRegions() {
+  const chips = [...statusList.querySelectorAll('.region-chip')];
+  const more = statusList.querySelector('.region-more');
+  statusBox.classList.toggle('is-expanded', statusExpanded);
+  statusHead.setAttribute('aria-expanded', String(statusExpanded));
+  for (const chip of chips) chip.hidden = false;
+  let overflow = false;
+  if (more) {
+    more.hidden = true;
+    // 宽度为 0（手机菜单未展开）时不折叠，等 ResizeObserver 再算
+    if (!statusExpanded && statusList.clientWidth > 0 && statusList.scrollWidth > statusList.clientWidth) {
+      overflow = true;
+      more.hidden = false;
+      for (let i = chips.length - 1; i > 0; i--) {
+        chips[i].hidden = true;
+        const hidden = chips.length - i;
+        more.firstChild.textContent = `+${hidden}`;
+        more.firstChild.title = t('status.more', { count: hidden });
+        more.firstChild.setAttribute('aria-label', more.firstChild.title);
+        if (statusList.scrollWidth <= statusList.clientWidth) break;
+      }
+    }
+  }
+  // 只有放不下或已展开时上行才可点击（展开 / 收起）
+  const expandable = overflow || statusExpanded;
+  statusHead.disabled = !expandable;
+  statusBox.classList.toggle('is-expandable', expandable);
+  statusHead.setAttribute('aria-label', expandable ? `${statusHead.title} · ${t(statusExpanded ? 'status.collapse' : 'status.expand')}` : statusHead.title);
+}
+
+function setStatusExpanded(expanded) {
+  if (statusExpanded === expanded) return;
+  statusExpanded = expanded;
+  statusList.scrollTop = 0;
+  fitStatusRegions();
+  if (expanded) statusHead.focus();
+}
+
+statusHead.addEventListener('click', () => setStatusExpanded(!statusExpanded));
+// 侧边栏宽度随窗口变化（33.88vw），手机菜单展开前宽度为 0：尺寸变化后重新折叠
+new ResizeObserver(() => fitStatusRegions()).observe(statusList);
+AmI18n.onSettingsChange(({ kind }) => { if (kind === 'storefront') renderStatus(); });
 
 /** 重新检查状态（进行中的检查直接复用），返回 { ok, regions } */
 function loadStatus() {

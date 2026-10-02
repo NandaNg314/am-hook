@@ -82,15 +82,7 @@ button { cursor: pointer; }
 .brand { min-height: 36px; display: inline-flex; align-items: center; color: var(--text); text-decoration: none; }
 .brand-logo { width: auto; height: 15px; display: block; fill: currentColor; }
 
-.status-pill {
-  height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px;
-  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
-  color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap;
-}
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.status-pill.ok .status-dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-.status-pill.bad { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, transparent); }
-.status-pill.bad .status-dot { background: var(--error); }
+.status-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 
 .btn {
   height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -990,8 +982,6 @@ body.has-player { padding-bottom: calc(var(--player-height, 110px) + 32px + env(
 }
 @media (max-width: 760px) {
   .page { padding: 16px max(16px, env(safe-area-inset-left)) 32px max(16px, env(safe-area-inset-right)); }
-  .status-pill { max-width: 100%; height: auto; min-height: 28px; white-space: normal; }
-  .status-dot { flex-shrink: 0; }
   .home { padding: 44px 0 40px; }
   /* 手机上按钮与输入框同行，按钮收成紧凑胶囊，把宽度留给链接 */
   .search { padding: 5px; gap: 4px; }
@@ -1569,7 +1559,6 @@ body.lyrics-open { overflow: hidden; }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 底部（官网 native-cta 的位置）：主地区、曲库语言、界面语言与 wrapper-lite 状态 */
 .nav-footer { display: grid; gap: 2px; justify-items: start; padding-top: 12px; border-top: .5px solid var(--line); }
-.nav-footer .status-pill { margin-top: 6px; }
 /* 设置项：上行为名称（小字），下行为当前值；不是 wrapper-lite 地区的主地区用警示色 */
 .nav-setting { height: auto; min-height: 40px; padding-block: 4px; }
 .nav-setting .nav-icon { color: var(--muted); }
@@ -1579,8 +1568,47 @@ body.lyrics-open { overflow: hidden; }
 .nav-setting.is-outside .nav-setting-value { color: var(--warn); }
 .nav-setting[aria-expanded="true"] { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .nav-footer .nav-link { justify-self: stretch; }
-.nav-footer .status-pill { max-width: 100%; margin-left: 6px; }
-.nav-footer .status-pill > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* wrapper-lite 状态（app.mjs）：圆角卡片，上行为状态点、名称、地区数与展开箭头，下行为地区代码。
+   折叠时地区只占一行（放不下的收进「+N」），展开后换行列出，最多约 4 行，再多在卡片内滚动，导航高度不变 */
+.wrapper-status {
+  justify-self: stretch; min-width: 0; margin: 6px 0 0; padding: 4px;
+  border: .5px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.wrapper-status-head {
+  width: 100%; min-height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 7px;
+  border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; line-height: 1.3; text-align: left;
+}
+.wrapper-status-head:disabled { cursor: default; }
+.wrapper-status-head:not(:disabled):hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.wrapper-status-name { flex-shrink: 0; color: var(--text); font-weight: 600; }
+.wrapper-status-state { flex: 1; min-width: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wrapper-status-chevron { flex: 0 0 14px; height: 14px; margin-right: -2px; display: none; transition: transform .2s ease; }
+.wrapper-status.is-expandable .wrapper-status-chevron { display: block; }
+.wrapper-status.is-expanded .wrapper-status-chevron { transform: rotate(180deg); }
+.wrapper-status.ok .status-dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.wrapper-status.bad { border-color: color-mix(in srgb, var(--error) 40%, transparent); background: var(--error-soft); }
+.wrapper-status.bad .status-dot { background: var(--error); }
+.wrapper-status.bad .wrapper-status-state { color: var(--error); }
+.wrapper-status:not(.ok):not(.bad) .status-dot { animation: status-pulse 1.2s ease-in-out infinite; }
+@keyframes status-pulse { 50% { opacity: .35; } }
+
+.wrapper-status-regions {
+  margin: 2px 0 0; padding: 2px 6px 4px; display: flex; gap: 4px; overflow: hidden; list-style: none;
+}
+.wrapper-status-regions[hidden] { display: none; }
+.wrapper-status.is-expanded .wrapper-status-regions {
+  flex-wrap: wrap; max-height: calc(4 * 22px + 3 * 4px + 6px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+}
+.region-chip, .region-more > button {
+  flex-shrink: 0; height: 22px; min-width: 30px; padding: 0 6px; display: grid; place-items: center;
+  border-radius: 6px; font: 600 11px/1 var(--mono); letter-spacing: .02em; white-space: nowrap;
+}
+.region-chip { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--muted); cursor: default; }
+.region-chip.is-current { background: var(--accent-soft); color: var(--accent); }
+.region-chip[hidden], .region-more[hidden] { display: none; }
+.region-more { flex-shrink: 0; }
+.region-more > button { border: .5px dashed var(--line-strong); background: none; color: var(--muted); }
+.region-more > button:hover { border-style: solid; color: var(--text); }
 
 /* 菜单按钮（官网 menuicon）：两道横线，展开时转成 ✕ */
 .menuicon { position: relative; width: 44px; height: 44px; padding: 0; border: 0; background: none; color: var(--text); }
