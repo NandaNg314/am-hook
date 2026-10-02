@@ -6,14 +6,12 @@ const { t } = AmI18n;
 
 export const bodyClass = 'home-page';
 
-export function mount({ root, signal, player, navigate, onLangChange, toast }) {
+export function mount({ root, signal, player, navigate, onLangChange, toast, loadStatus }) {
   const $ = (id) => root.querySelector(`#${id}`);
   const actions = createActions({ signal, player, navigate, toast });
   const input = $('input');
   const errorEl = $('error');
   const detectEl = $('detect');
-  /** wrapper-lite 状态：null 表示检查中，否则为 { ok, regions } */
-  let wrapperStatus = null;
 
   /** 把各种输入规整为页面路径：/https://music.apple.com/{cc}/(song|music-video|album|playlist|artist)/{slug}/{id} */
   function toSongLink(raw) {
@@ -96,29 +94,6 @@ export function mount({ root, signal, player, navigate, onLangChange, toast }) {
     event.preventDefault();
     input.focus();
   }, { signal });
-
-  function renderStatus() {
-    const pill = $('status');
-    pill.classList.toggle('ok', !!wrapperStatus && wrapperStatus.ok);
-    pill.classList.toggle('bad', !!wrapperStatus && !wrapperStatus.ok);
-    pill.lastElementChild.textContent = !wrapperStatus ? t('status.checking')
-      : !wrapperStatus.ok ? t('status.down')
-      : wrapperStatus.regions.length ? `wrapper-lite · ${wrapperStatus.regions.join(' / ').toUpperCase()}` : t('status.online');
-  }
-
-  async function loadStatus() {
-    renderStatus();
-    try {
-      const res = await fetch('/status');
-      const data = await res.json();
-      if (!res.ok || data.code !== 0) throw new Error();
-      wrapperStatus = { ok: true, regions: (data.regions || []).map(String) };
-    } catch {
-      wrapperStatus = { ok: false, regions: [] };
-    }
-    renderStatus();
-    renderStorefronts(wrapperStatus.regions);
-  }
 
   /* ---------- 搜索（与 music.apple.com/search 相同的 amp-api 调用，经服务端 /amp 代理） ---------- */
 
@@ -591,7 +566,6 @@ export function mount({ root, signal, player, navigate, onLangChange, toast }) {
   addEventListener('popstate', syncFromUrl, { signal });
 
   onLangChange(() => {
-    renderStatus();
     renderDetect();
     closeSuggest();
     if (!errorEl.hidden && errorKey) errorEl.textContent = t(errorKey);
@@ -655,7 +629,8 @@ export function mount({ root, signal, player, navigate, onLangChange, toast }) {
   });
 
   renderStorefronts([]);
-  const statusReady = loadStatus();
+  // wrapper-lite 状态由 app.mjs 维护（导航里的状态胶囊），进入首页时重新检查
+  const statusReady = loadStatus().then((status) => renderStorefronts(status.regions));
   renderDetect();
   renderRecent();
   syncFromUrl();

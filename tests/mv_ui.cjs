@@ -12,6 +12,15 @@ const masterBody = `#EXTM3U
 4k.m3u8
 #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="stereo",FRAME-RATE=24
 hd.m3u8`;
+
+/** 切换界面语言：手机宽度（< 484px）下语言按钮在导航菜单里，先展开菜单，切换后收起 */
+async function toggleLang(page) {
+  const menu = page.locator('#nav-toggle');
+  const mobile = await menu.isVisible();
+  if (mobile) await menu.click();
+  await page.locator('[data-lang-toggle]').click();
+  if (mobile) await page.keyboard.press('Escape');
+}
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
@@ -80,7 +89,7 @@ hd.m3u8`;
       assert(await page.locator('#audios input').nth(1).isChecked());
       assert(await page.locator('#audios').isHidden());
       assert(await page.locator('#videos input').nth(1).isChecked());
-      await page.locator('[data-lang-toggle]').click();
+      await toggleLang(page);
       assert(await page.locator('#videos input').nth(1).isChecked());
       await fits();
       if (width === 1440 || width === 390) await page.screenshot({ path: `target/mv-ui-${width}-${lang}.png`, fullPage: true });
@@ -89,7 +98,7 @@ hd.m3u8`;
       await page.locator('#error').waitFor();
       assert(await page.locator('#play').isDisabled());
       assert.equal(await page.locator('.mv-empty').count(), 2);
-      await page.locator('[data-lang-toggle]').click();
+      await toggleLang(page);
       await fits();
       assert.deepEqual(errors, []);
       await context.close(); scenarios++;

@@ -173,13 +173,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   signal.addEventListener('abort', () => { motionKey = ''; if (motion) motion.destroy(); motion = null; });
   xsmall.addEventListener('change', () => { if (artist) renderHero(); }, { signal });
 
-  // 顶栏叠在头部之上：圆形头像按顶栏实际高度（手机上搜索框换行）下移
-  const topbar = root.querySelector('.topbar');
-  const syncTopbar = () => $('hero').style.setProperty('--topbar-h', `${topbar.offsetTop + topbar.offsetHeight}px`);
-  const topbarObserver = new ResizeObserver(syncTopbar);
-  topbarObserver.observe(topbar);
-  signal.addEventListener('abort', () => topbarObserver.disconnect());
-
   /** container 里按 className 保留一张图片，src 不变时不重新加载 */
   function setImg(container, className, src, alt = '') {
     let img = container.querySelector(`img.${className}`);

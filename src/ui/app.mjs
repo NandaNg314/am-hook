@@ -64,6 +64,77 @@ import('/assets/lyrics/panel.mjs')
   })
   .catch((err) => console.warn('[am-hook] 歌词界面加载失败', err));
 
+/* ---------- 导航（官网 .navigation）：≥484px 为侧边栏，<484px 为顶栏，菜单按钮展开整屏菜单 ---------- */
+const nav = $('nav');
+const navToggle = $('nav-toggle');
+const navContent = $('nav-content');
+const mobileNav = matchMedia('(max-width: 483px)');
+
+/** 展开 / 收起手机菜单；收起时菜单内容不可聚焦，展开时页面不随之滚动 */
+function setNavExpanded(open) {
+  const expanded = open && mobileNav.matches;
+  nav.classList.toggle('is-expanded', expanded);
+  navToggle.setAttribute('aria-expanded', String(expanded));
+  document.body.classList.toggle('nav-open', expanded);
+  navContent.inert = mobileNav.matches && !expanded;
+}
+navToggle.addEventListener('click', () => setNavExpanded(!nav.classList.contains('is-expanded')));
+mobileNav.addEventListener('change', () => setNavExpanded(false));
+addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !nav.classList.contains('is-expanded')) return;
+  setNavExpanded(false);
+  navToggle.focus();
+});
+// 在菜单里跳转或返回后收起（切换语言时保持展开）
+nav.addEventListener('click', (event) => {
+  if (event.target instanceof Element && event.target.closest('a[href], [data-back]')) setNavExpanded(false);
+});
+setNavExpanded(false);
+
+/** 首页不显示「返回」，「主页」标为当前页 */
+function syncNav(name) {
+  nav.classList.toggle('is-home', name === 'home');
+  for (const link of nav.querySelectorAll('[data-nav]')) {
+    if (link.dataset.nav === name) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+}
+
+/* ---------- wrapper-lite 状态：导航里的状态胶囊；首页按账号所在地区选择搜索地区 ---------- */
+/** null 表示检查中，否则为 { ok, regions } */
+let wrapperStatus = null;
+let statusPending = null;
+
+function renderStatus() {
+  const pill = $('nav-status');
+  pill.classList.toggle('ok', !!wrapperStatus && wrapperStatus.ok);
+  pill.classList.toggle('bad', !!wrapperStatus && !wrapperStatus.ok);
+  pill.lastElementChild.textContent = !wrapperStatus ? t('status.checking')
+    : !wrapperStatus.ok ? t('status.down')
+    : wrapperStatus.regions.length ? `wrapper-lite · ${wrapperStatus.regions.join(' / ').toUpperCase()}` : t('status.online');
+}
+
+/** 重新检查状态（进行中的检查直接复用），返回 { ok, regions } */
+function loadStatus() {
+  statusPending ||= (async () => {
+    try {
+      const res = await fetch('/status');
+      const data = await res.json();
+      if (!res.ok || data.code !== 0) throw new Error();
+      wrapperStatus = { ok: true, regions: (data.regions || []).map(String) };
+    } catch {
+      wrapperStatus = { ok: false, regions: [] };
+    }
+    statusPending = null;
+    renderStatus();
+    return wrapperStatus;
+  })();
+  return statusPending;
+}
+AmI18n.onChange(renderStatus);
+renderStatus();
+loadStatus();
+
 /* ---------- 页面视图 ---------- */
 /** 当前页面：{ name, path, controller, bodyClass } */
 let current = null;
@@ -97,8 +168,8 @@ function stylesheet(href) {
   return styles.get(href);
 }
 
-/** 由播放条、歌词界面维护的 body 类名，切换页面时保留 */
-const APP_CLASSES = new Set(['has-player', 'lyrics-open']);
+/** 由播放条、歌词界面、导航菜单维护的 body 类名，切换页面时保留 */
+const APP_CLASSES = new Set(['has-player', 'lyrics-open', 'nav-open']);
 
 function unmount() {
   if (!current) return;
@@ -115,7 +186,8 @@ function unmount() {
  * mount(ctx) 的 ctx：
  *   root：页面内容所在的元素（每次进入页面都是新的）；url：页面地址；signal：离开页面时中止；
  *   player：播放器（见 AmPlayer.scope）；navigate(href, { replace })：站内跳转；
- *   onLangChange(fn)：切换语言后回调；toast(message)：底部提示；restoring：是否在恢复前进 / 后退前的滚动位置。
+ *   onLangChange(fn)：切换语言后回调；toast(message)：底部提示；restoring：是否在恢复前进 / 后退前的滚动位置；
+ *   loadStatus()：重新检查 wrapper-lite 状态，返回 { ok, regions }。
  */
 async function render(url, { scroll = 0, initial = false } = {}) {
   const name = route(url);
@@ -137,6 +209,8 @@ async function render(url, { scroll = 0, initial = false } = {}) {
   const controller = new AbortController();
   const { signal } = controller;
   current = { name, path: url.pathname, controller };
+  syncNav(name);
+  setNavExpanded(false);
   document.title = 'am-hook';
   if (view.bodyClass) document.body.classList.add(...view.bodyClass.split(/\s+/));
   // 每次进入页面都换一个新元素：离开后仍在进行的异步操作（如歌曲下载）只会改动已移除的旧元素
@@ -155,6 +229,7 @@ async function render(url, { scroll = 0, initial = false } = {}) {
       onLangChange: (fn) => { if (!signal.aborted) signal.addEventListener('abort', AmI18n.onChange(fn), { once: true }); },
       toast,
       restoring: scroll > 0,
+      loadStatus,
     });
   } catch (err) {
     console.error('[am-hook] 页面脚本出错', err);

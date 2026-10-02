@@ -43,7 +43,7 @@
       "mv.channels": "声道",
       "mv.recommended": "视频推荐",
 
-      'lang.button': 'EN',
+      'lang.button': 'English',
       'lang.title': 'Switch to English',
 
       'status.checking': '检查 wrapper-lite…',
@@ -55,6 +55,8 @@
       'footer.thanks': '致谢以下开源项目：',
       'nav.home': '主页',
       'nav.back': '返回',
+      'nav.menu': '菜单',
+      'nav.label': '导航',
 
       'home.inputLabel': '搜索，或输入歌曲 / MV 链接',
       'home.placeholder': '在此搜索或粘贴Apple Music链接',
@@ -296,6 +298,8 @@
       'footer.thanks': 'Thanks to these open-source projects:',
       'nav.home': 'Home',
       'nav.back': 'Back',
+      'nav.menu': 'Menu',
+      'nav.label': 'Navigation',
 
       'home.inputLabel': 'Search, or enter a song / MV link',
       'home.placeholder': 'Search or paste an Apple Music link here',

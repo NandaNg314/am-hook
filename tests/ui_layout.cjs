@@ -12,6 +12,39 @@ const variants = [
   { group_id: 'audio-stereo-256', codecs: 'mp4a.40.2', channels: '2' },
 ].map(v => ({ ...v, uri: 'track.m3u8', file_uri: 'track.mp4' }));
 
+/** 切换界面语言：手机宽度（< 484px）下语言按钮在导航菜单里，先展开菜单，切换后收起 */
+async function toggleLang(page) {
+  const menu = page.locator('#nav-toggle');
+  const mobile = await menu.isVisible();
+  if (mobile) {
+    await menu.click();
+    assert.equal(await menu.getAttribute('aria-expanded'), 'true', 'menu button expands the navigation');
+  }
+  await page.locator('[data-lang-toggle]').click();
+  if (mobile) {
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.getAttribute('aria-expanded'), 'false', 'Escape collapses the navigation');
+    assert(await page.locator('#nav-content').evaluate(el => el.inert), 'collapsed menu content is inert');
+  }
+}
+
+/** 导航：≥484px 为左侧边栏（返回在侧边栏里，页面在其右侧）；更窄时为 52px 顶栏（返回 / logo / 菜单按钮） */
+async function checkNav(page, width) {
+  const nav = await page.locator('#nav').boundingBox();
+  if (width >= 484) {
+    const expected = width >= 767.32 ? 260 : width * 0.338842975207;
+    assert(Math.abs(nav.width - expected) < 1 && nav.x === 0, `sidebar is ${expected}px wide on the left`);
+    assert(await page.locator('.nav-item-back .nav-link').isVisible(), 'Back is in the sidebar');
+    assert(await page.locator('#nav-toggle').isHidden(), 'no menu button beside the sidebar');
+    const pageBox = await page.locator('.page').boundingBox();
+    assert(pageBox.x >= nav.width - 1, 'page content starts right of the sidebar');
+  } else {
+    assert(Math.round(nav.height) === 52 && Math.round(nav.width) === width, 'phone navigation is a 52px top bar');
+    assert(await page.locator('.nav-header .top-back').isVisible(), 'Back is in the phone top bar');
+    assert(await page.locator('#nav-toggle').isVisible(), 'menu button replaces the language button');
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   let scenarios = 0;
@@ -63,7 +96,8 @@ const variants = [
         assert(bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.y >= 0 && bounds.y + bounds.height <= 844, 'menu must fit viewport');
         await page.keyboard.press('Escape');
         assert(await page.locator('.more-btn').first().evaluate(el => el === document.activeElement));
-        await page.locator('[data-lang-toggle]').click();
+        await checkNav(page, width);
+        await toggleLang(page);
         await fits('language switch');
         // Exercise the real fixed player layout with a multiline codec notice.
         await page.evaluate(() => {
