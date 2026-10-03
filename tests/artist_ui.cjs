@@ -33,7 +33,8 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       assert.equal(await frame.locator('#name').textContent(), 'Taylor Swift');
       assert.ok(await frame.locator('#hero').evaluate((node) => node.classList.contains('circular')), 'portrait-only artists get the circular header');
       assert.ok(await frame.locator('#portrait img').count(), 'circular portrait');
-      assert.match(await frame.evaluate(() => document.body.style.getPropertyValue('--hero-bg')), /^#[0-9a-f]{6}$/i, 'header tinted with artwork colour');
+      assert.match(await frame.evaluate(() => document.body.style.getPropertyValue('--joe')), /^#[0-9a-f]{6}$/i, 'header tinted with artwork colour');
+      assert.ok(await frame.evaluate(() => document.body.classList.contains('artist-themed')), 'artist theme applied');
       assert.match(await frame.locator('#latest').getAttribute('href'), localPage('album'));
       // The header backdrop must not paint over the section headings below it
       assert.ok(await frame.locator('#top-songs-title').evaluate((h) => {
@@ -72,7 +73,7 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       let frame = await openPage(page, base + widePath);
       await frame.waitForFunction(loaded, null, { timeout: 20000 });
       assert.ok(await frame.locator('#hero').evaluate((node) => node.classList.contains('wide')));
-      assert.match(await frame.locator('#hero-bg img.hero-img').getAttribute('src'), /ea\.jpg$/);
+      assert.match(await frame.locator('#hero-art img.hero-img').getAttribute('src'), /ea\.jpg$/);
       assert.equal(await frame.locator('#portrait img').count(), 0);
       if (shots) await page.screenshot({ path: path.join(shots, 'artist-wide.png') });
       await page.close();
@@ -84,8 +85,8 @@ const localPage = (kind) => new RegExp(`^/https://music\\.apple\\.com/[a-z]{2}/$
       let frame = await openPage(page, base + videoPath);
       await frame.waitForFunction(loaded, null, { timeout: 20000 });
       assert.ok(await frame.locator('#hero').evaluate((node) => node.classList.contains('video')));
-      await frame.locator('#hero-bg .motion-video.ready').waitFor({ timeout: 30000 });
-      assert.ok(await frame.locator('#hero-bg .motion-video').evaluate((v) => !v.paused && v.muted && v.loop));
+      await frame.locator('#hero-art .motion-video.ready').waitFor({ timeout: 30000 });
+      assert.ok(await frame.locator('#hero-art .motion-video').evaluate((v) => !v.paused && v.muted && v.loop));
       if (shots) await page.screenshot({ path: path.join(shots, 'artist-video.png') });
       await page.close();
     }
