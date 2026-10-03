@@ -13,6 +13,15 @@ const masterBody = `#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="stereo",FRAME-RATE=24
 hd.m3u8`;
 
+/** 单页应用：页面地址返回 app.html，页面视图在 /assets/views/ */
+function asset(route, url) {
+  const file = url.pathname === '/assets/mv/style.css' ? 'mv.css'
+    : url.pathname.startsWith('/assets/mv/') ? 'mv-' + path.basename(url.pathname)
+    : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
+    : url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
+    : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
+  return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html' });
+}
 /** 切换界面语言：手机宽度（< 484px）下语言按钮在导航菜单里，先展开菜单，切换后收起 */
 async function toggleLang(page) {
   const menu = page.locator('#nav-toggle');
@@ -39,13 +48,7 @@ async function toggleLang(page) {
         }
         if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
         if (url.pathname.startsWith('/parse/mv/')) return route.fulfill(fail ? { status: 500, json: { msg: 'Fixture failure' } } : { json: { code: 0, data: { masterBody, masterUrl: 'https://example.com/master.m3u8' } } });
-        // 单页应用：页面地址返回 app.html，页面视图在 /assets/views/
-        const file = url.pathname === '/assets/mv/style.css' ? 'mv.css'
-          : url.pathname.startsWith('/assets/mv/') ? 'mv-' + path.basename(url.pathname)
-          : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
-          : url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
-          : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
-        return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html' });
+        return asset(route, url);
       });
       const page = await context.newPage(), errors = [];
       page.on('pageerror', e => errors.push(e.message));
@@ -103,6 +106,43 @@ async function toggleLang(page) {
       assert.deepEqual(errors, []);
       await context.close(); scenarios++;
     }
-    console.log(`MV UI: ${scenarios} viewport/language/theme scenarios passed, including keyboard selection, audio recommendation and loading errors.`);
+    // 艺人上传的视频（post 页）共用 MV 页：assetTokens 中的 MP4 按分辨率排列，没有音频轨道，下载原样保存
+    for (const width of [390, 1440]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
+      await context.addInitScript(() => localStorage.setItem('am-hook:lang', 'en'));
+      const mp4 = Buffer.alloc(256 * 1024, 7);
+      await context.route('**/*', route => {
+        const url = new URL(route.request().url());
+        if (url.hostname === 'cdn.test') return route.fulfill({ body: mp4, contentType: 'video/x-m4v', headers: { 'Access-Control-Allow-Origin': '*' } });
+        if (/^\/amp\/v1\/catalog\/us\/uploaded-videos\/42$/.test(url.pathname)) {
+          return route.fulfill({ json: { data: [{ id: '42', type: 'uploaded-videos', attributes: { name: 'Interview / 访谈', uploadingBrandName: 'Apple Music Presents',
+            uploadDate: '2026-09-21', durationInMilliseconds: 600000, playParams: { id: '42', kind: 'uploadedVideo' }, assetTokens: {
+              sdVideo: 'https://cdn.test/a/mzvf_1.640x480.h264lc.U.f.m4v?accessKey=1', '1080pHdVideo': 'https://cdn.test/a/mzvf_2.1920w.h264lc.U.f.m4v?accessKey=2' } } }] } });
+        }
+        if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
+        return asset(route, url);
+      });
+      const page = await context.newPage(), errors = [];
+      page.on('pageerror', e => errors.push(e.message));
+      await page.goto('http://am.test/https://music.apple.com/us/post/42');
+      await page.locator('#videos input').first().waitFor({ state: 'attached' });
+      assert.equal(await page.locator('#title').textContent(), 'Interview / 访谈');
+      assert.equal(await page.locator('#artist').textContent(), 'Apple Music Presents');
+      assert.equal(await page.locator('.eyebrow').textContent(), 'VIDEO');
+      assert.equal(await page.locator('#apple-link').getAttribute('href'), 'https://music.apple.com/us/post/42');
+      assert(await page.locator('#audio-tracks').isHidden());
+      assert.equal(await page.locator('#video-count').textContent(), '2');
+      // 大小来自 HEAD 的 Content-Length，码率按时长计算
+      await page.waitForFunction(() => /Mbps/.test(document.getElementById('video-trigger').textContent));
+      assert.match(await page.locator('#video-trigger').textContent(), /1080p.*1920×1080/);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.locator('#download').click();
+      await page.locator('#save').waitFor();
+      assert.match(await page.locator('#save').getAttribute('download'), /^Interview _ 访谈 \(42\)\.mp4$/);
+      assert.equal(await page.evaluate(async () => (await (await fetch(document.getElementById('save').href)).arrayBuffer()).byteLength), mp4.length);
+      assert.deepEqual(errors, []);
+      await context.close(); scenarios++;
+    }
+    console.log(`MV UI: ${scenarios} viewport/language/theme scenarios passed, including keyboard selection, audio recommendation, loading errors and post pages.`);
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

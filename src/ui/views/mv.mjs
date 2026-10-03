@@ -1,6 +1,8 @@
-// MV 页（/https://music.apple.com/{cc}/music-video/{slug}/{id}），由 app.mjs 挂载
+// MV 页（/https://music.apple.com/{cc}/music-video/{slug}/{id}），由 app.mjs 挂载。
+// 艺人上传的视频（官网 post 页 /https://music.apple.com/{cc}/post/{id}，amp-api 的 uploaded-videos）共用本页：
+// 与官网相同，assetTokens 中的各个未加密 MP4 由 <video> 直接播放，下载时原样保存，没有音频轨道可选
 import { parseMaster, recommendedAudio } from '/assets/mv/hls.mjs';
-import { fetchMaster, Playback, downloadMV, mime, collectGarbage } from '/assets/mv/engine.mjs';
+import { fetchMaster, Playback, DirectPlayback, downloadMV, downloadDirect, mime, collectGarbage } from '/assets/mv/engine.mjs';
 const { t } = AmI18n;
 
 export const bodyClass = 'mv-body';
@@ -10,7 +12,10 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
   document.title = 'am-hook · MV';
   const $ = id => root.querySelector(`#${id}`);
   // 与 song 页一致：/https://music.apple.com/{cc}/music-video/{slug}/{id}
-  const [, country = 'us', id] = url.pathname.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/music-video\/[^/]+\/(\d+)\/?$/) || [];
+  // post 页：/https://music.apple.com/{cc}/post/{id}（slug 可省略）
+  const postMatch = url.pathname.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/post\/(?:[^/]+\/)?(\d+)\/?$/);
+  const post = !!postMatch;
+  const [, country = 'us', id] = postMatch || url.pathname.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/music-video\/[^/]+\/(\d+)\/?$/) || [];
   let master, selectedVideo, selectedAudio, playback, downloadController, result, resultUrl;
   let statusKey = 'mv.loading', statusVars, title = `MV ${id || ''}`, artist = '', busy = false;
   // 状态点颜色：进行中闪烁，完成为绿色，失败为红色
@@ -58,7 +63,13 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
     const tag = document.createElement('span'); tag.className = 'mv-tag';
     const text = document.createElement('span'), heading = document.createElement('strong'), detail = document.createElement('small');
     text.className = 'mv-option-body';
-    if (video) {
+    if (track.direct) {
+      // post 的 MP4：分辨率取自资源键名（1080pHdVideo）与文件名（.1920w. / .640x480.），码率与大小在 HEAD 请求后补上
+      tag.textContent = track.height ? `${track.height}p` : 'SD';
+      const size = track.width && track.height ? `${track.width}×${track.height}` : track.key;
+      heading.textContent = track.bytes && track.seconds ? `${size} · ${(track.bytes * 8 / track.seconds / 1e6).toFixed(2)} Mbps` : size;
+      detail.textContent = [track.codec, 'AAC', track.bytes ? `${Math.round(track.bytes / 1048576)} MB` : '', track.key].filter(Boolean).join(' · ');
+    } else if (video) {
       tag.textContent = videoTag(track);
       heading.textContent = `${track.RESOLUTION.replace('x', '×')} · ${(Number(track.BANDWIDTH) / 1e6).toFixed(2)} Mbps`;
       const supported = globalThis.MediaSource?.isTypeSupported(mime(track, true));
@@ -83,7 +94,8 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
     label.addEventListener('click', e => { if (e.detail > 0) setOpen(kind, false); });
     input.addEventListener('change', () => {
       stopPlayback();
-      if (video) { selectedVideo = track; selectedAudio = recommendedAudio(track, master.audios); }
+      if (post) selectedVideo = track;
+      else if (video) { selectedVideo = track; selectedAudio = recommendedAudio(track, master.audios); }
       else selectedAudio = track;
       renderTracks();
       if ($(`${kind}s`).hidden) $(`${kind}-trigger`).focus();
@@ -116,10 +128,15 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
   function renderTracks() {
     if (!master) return;
     $('videos').replaceChildren(...master.videos.map(v => option(v, true)));
-    $('audios').replaceChildren(...master.audios.map(a => option(a, false)));
     $('video-value').replaceChildren(...describe(selectedVideo, true));
-    $('audio-value').replaceChildren(...describe(selectedAudio, false));
     $('video-count').textContent = master.videos.length;
+    if (post) {
+      const v = selectedVideo;
+      $('selection').textContent = [v.width && v.height ? `${v.width}×${v.height}` : v.key, v.codec, 'AAC'].filter(Boolean).join(' · ');
+      return;
+    }
+    $('audios').replaceChildren(...master.audios.map(a => option(a, false)));
+    $('audio-value').replaceChildren(...describe(selectedAudio, false));
     $('audio-count').textContent = master.audios.length;
     $('selection').textContent = [selectedVideo.RESOLUTION, videoRange(selectedVideo) || 'SDR', audioName(selectedAudio) || selectedAudio.codec].filter(Boolean).join(' · ');
   }
@@ -154,13 +171,14 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
     return nodes;
   }
   let metadataSeq = 0;
+  /** 显示标题、艺人、封面等；post 页返回资源属性（其中 assetTokens 即可播放的 MP4），取不到时为 undefined */
   async function metadata() {
     // 快速切换语言时只采用最后一次请求的结果
     const seq = ++metadataSeq;
     try {
-      // 经服务端 /amp 代理请求 amp-api 的 music-videos 资源，名称按曲库语言返回（l 见 AmI18n.catalogLang）
-      const url = new URL(`/amp/v1/catalog/${country}/music-videos/${id}`, location.origin);
-      url.searchParams.set('include', 'artists');
+      // 经服务端 /amp 代理请求 amp-api 的 music-videos / uploaded-videos 资源，名称按曲库语言返回（l 见 AmI18n.catalogLang）
+      const url = new URL(`/amp/v1/catalog/${country}/${post ? 'uploaded-videos' : 'music-videos'}/${id}`, location.origin);
+      if (!post) url.searchParams.set('include', 'artists');
       const l = await AmI18n.catalogLang(country);
       if (l) url.searchParams.set('l', l);
       let res = await fetch(url, { signal });
@@ -170,12 +188,14 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
       const resource = (await res.json()).data?.[0];
       const item = resource?.attributes;
       if (!item || seq !== metadataSeq) return;
-      title = item.name || title; artist = item.artistName || '';
+      // post 没有艺人，副标题为上传方（官网 subtitleLinks，如 Apple Music Presents）
+      title = item.name || title; artist = (post ? item.uploadingBrandName : item.artistName) || '';
       if (signal.aborted) return;
-      $('title').textContent = title; document.title = `${title} · am-hook MV`;
-      $('artist').replaceChildren(...artistNodes(artist, (resource.relationships?.artists?.data || []).filter(r => r.attributes?.name)));
-      const seconds = Math.floor(Number(item.durationInMillis) / 1000);
-      $('meta').replaceChildren(...[item.releaseDate?.slice(0, 4), item.genreNames?.[0],
+      $('title').textContent = title; document.title = `${title} · am-hook ${post ? 'Video' : 'MV'}`;
+      if (post) $('artist').textContent = artist;
+      else $('artist').replaceChildren(...artistNodes(artist, (resource.relationships?.artists?.data || []).filter(r => r.attributes?.name)));
+      const seconds = Math.floor(Number(item.durationInMillis ?? item.durationInMilliseconds) / 1000);
+      $('meta').replaceChildren(...[post ? item.uploadDate : item.releaseDate?.slice(0, 4), item.genreNames?.[0],
         seconds > 0 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '', `ID ${id}`].filter(Boolean).map(value => badge(value)));
       // artwork.url 是 {w}x{h}{c}.{f} 模板
       const artUrl = size => item.artwork?.url?.replace('{w}', size).replace('{h}', size).replace('{c}', 'bb').replace('{f}', 'jpg') || '';
@@ -185,9 +205,37 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
         $('artwork').onload = () => { $('ambient').style.setProperty('--art', `url("${art}")`); $('ambient').classList.add('on'); };
         $('artwork').onerror = () => { $('artwork').hidden = true; };
       }
+      return item;
     } catch (e) { if (e.name !== 'AbortError') console.info('MV metadata unavailable'); }
   }
+  /** post 的 assetTokens（{ 1080pHdVideo: url, sdVideo: url, … }）→ 视频选项，分辨率高的在前 */
+  function directTracks(item) {
+    const seconds = Number(item.durationInMilliseconds) / 1000 || 0;
+    return Object.entries(item.assetTokens || {}).filter(([, href]) => /^https:\/\//.test(href)).map(([key, href]) => {
+      const file = new URL(href).pathname.split('/').pop();
+      // 文件名形如 mzvf_….1920w.h264lc.U.f.m4v 或 ….640x480.h264lc.U.f.m4v
+      const [, width, height] = file.match(/\.(\d+)(?:w|x(\d+))\./) || [];
+      return { direct: true, key, url: href, seconds, width: Number(width) || 0, height: Number(key.match(/(\d+)p/)?.[1] || height) || 0,
+        codec: /\.h264/.test(file) ? 'H.264' : /\.(hevc|hvc1)/.test(file) ? 'HEVC' : '' };
+    }).sort((a, b) => b.height - a.height || b.width - a.width);
+  }
+  /** 各 MP4 的大小（HEAD 的 Content-Length），用于显示码率与文件大小 */
+  function probeSizes(tracks) {
+    for (const track of tracks) {
+      fetch(track.url, { method: 'HEAD', signal }).then(res => {
+        const bytes = res.ok && Number(res.headers.get('Content-Length'));
+        if (bytes > 0) { track.bytes = bytes; if (master?.videos.includes(track)) renderTracks(); }
+      }).catch(() => {});
+    }
+  }
   $('play').onclick = async () => {
+    if (post) {
+      stopPlayback(); $('error').hidden = true;
+      const session = new DirectPlayback($('video'), key => { if (!downloadController) status(`mv.${key}`); },
+        e => { if (playback === session) playback = null; error(e); controls(); });
+      playback = session; controls(); session.start(selectedVideo.url);
+      return;
+    }
     stopPlayback(); $('error').hidden = true; busy = true; controls(); status('mv.license');
     const session = new Playback($('video'), key => { if (!downloadController) status(`mv.${key}`); }, error);
     playback = session;
@@ -201,9 +249,13 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
     if (resultUrl) URL.revokeObjectURL(resultUrl); await result?.dispose(); result = null; $('save').hidden = true;
     $('progress').value = 0; $('progress').hidden = false;
     try {
-      result = await downloadMV(id, selectedVideo, selectedAudio, { signal: downloadController.signal, onProgress: (value, bytes) => {
+      const onProgress = (value, bytes) => {
         $('progress').value = value; status('mv.downloading', { percent: Math.round(value * 100), size: (bytes / 1048576).toFixed(1) });
-      }, onDefrag: () => { $('progress').removeAttribute('value'); status('mv.defrag'); } });
+      };
+      // post 的 MP4 未加密且已是标准 MP4（moov 在前），原样保存
+      result = post ? await downloadDirect(selectedVideo.url, { signal: downloadController.signal, onProgress })
+        : await downloadMV(id, selectedVideo, selectedAudio, { signal: downloadController.signal, onProgress,
+          onDefrag: () => { $('progress').removeAttribute('value'); status('mv.defrag'); } });
       resultUrl = URL.createObjectURL(result.file); $('save').href = resultUrl;
       $('save').download = `${title} (${id}).mp4`.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
       $('save').hidden = false; $('save').click(); status('mv.complete');
@@ -222,13 +274,32 @@ export function mount({ root, url, signal, player: music, onLangChange }) {
   // 切换语言：标题等由 amp-api 按语言返回，重新获取
   onLangChange(() => { renderTracks(); status(statusKey, statusVars); if (id) void metadata(); });
   status(statusKey);
+  if (post) {
+    // post 页：只有一组带音频的 MP4，隐藏音频轨道与「自由组合」，文字换成 post 的说明
+    title = `Video ${id || ''}`;
+    $('audio-tracks').hidden = true;
+    root.querySelector('.mv-panel-head .badge').hidden = true;
+    for (const [selector, key] of [['.mv-info .eyebrow', 'mv.postKind'], ['#quality-title', 'mv.postQuality'], ['.mv-dock .hint', 'mv.postHint']]) {
+      root.querySelector(selector).dataset.i18n = key;
+    }
+    AmI18n.apply(root);
+  }
   async function load() {
     void collectGarbage();
-    if (!id) throw new Error('Invalid music video ID');
-    $('title').textContent = title; void metadata();
+    if (!id) throw new Error(post ? 'Invalid post ID' : 'Invalid music video ID');
+    $('title').textContent = title;
     $('meta').replaceChildren(badge(`ID ${id}`));
-    $('apple-link').href = `https://music.apple.com/${country}/music-video/_/${id}`;
+    $('apple-link').href = post ? `https://music.apple.com/${country}/post/${id}` : `https://music.apple.com/${country}/music-video/_/${id}`;
     $('apple-link').hidden = false;
+    if (post) {
+      const item = await metadata();
+      const videos = item ? directTracks(item) : [];
+      if (!videos.length) throw new Error(t('mv.postUnavailable'));
+      master = { videos, audios: [] }; selectedVideo = videos[0];
+      renderTracks(); controls(); status('mv.ready'); probeSizes(videos);
+      return;
+    }
+    void metadata();
     const { masterUrl, masterBody } = await fetchMaster(id, signal);
     master = parseMaster(masterBody, masterUrl); selectedVideo = master.videos[0]; selectedAudio = recommendedAudio(selectedVideo, master.audios);
     renderTracks(); controls(); status('mv.ready');

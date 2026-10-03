@@ -256,3 +256,54 @@ export async function downloadMV(id, video, audio, { signal, onProgress, onDefra
     if (!complete) { await remove(root, name); unlock(); }
   }
 }
+
+// Artist-uploaded videos (music.apple.com/{cc}/post/{id}) are unencrypted progressive MP4s with moov first,
+// served with CORS and Range support, so the browser plays them directly like music.apple.com does.
+export class DirectPlayback {
+  constructor(video, onStatus, onError) { this.video = video; this.onStatus = onStatus; this.onError = onError; }
+  async start(url) {
+    const video = this.video;
+    this.mediaError = () => { const message = video.error?.message || 'Video decoding failed'; this.stop(); this.onError(new Error(message)); };
+    this.waiting = () => this.onStatus('buffering');
+    this.playing = () => this.onStatus('playing');
+    video.addEventListener('error', this.mediaError); video.addEventListener('waiting', this.waiting); video.addEventListener('playing', this.playing);
+    this.onStatus('buffering'); video.src = url;
+    video.play().catch(e => { if (e.name !== 'AbortError') this.onStatus('pressPlay'); });
+  }
+  stop() {
+    const video = this.video;
+    video.removeEventListener('error', this.mediaError); video.removeEventListener('waiting', this.waiting); video.removeEventListener('playing', this.playing);
+    video.pause(); video.removeAttribute('src'); video.load();
+  }
+}
+// Streams a progressive MP4 to OPFS (same naming and locks as MV downloads, so collectGarbage covers it);
+// without OPFS (plain-HTTP LAN access) it falls back to an in-memory Blob.
+export async function downloadDirect(url, { signal, onProgress }) {
+  const res = await fetch(url, { signal });
+  if (!res.ok || !res.body) throw new Error(`Video HTTP ${res.status}`);
+  const total = Number(res.headers.get('Content-Length')) || 0;
+  let bytes = 0;
+  const progress = new TransformStream({ transform(chunk, controller) {
+    bytes += chunk.length; onProgress(total ? bytes / total : 0, bytes); controller.enqueue(chunk);
+  } });
+  const body = res.body.pipeThrough(progress, { signal });
+  if (!navigator.storage?.getDirectory) {
+    const file = await new Response(body).blob();
+    return { file: new File([file], 'video.mp4', { type: 'video/mp4' }), dispose: async () => {} };
+  }
+  await collectGarbage();
+  const root = await navigator.storage.getDirectory();
+  const uuid = crypto.randomUUID(), name = `${PREFIX}${uuid}.mp4`;
+  const unlock = await hold(uuid);
+  let complete = false;
+  try {
+    const { quota, usage } = await navigator.storage.estimate?.() ?? {};
+    if (quota && total && quota - (usage || 0) < total * 1.05) throw new Error('Not enough OPFS storage quota for this download');
+    const handle = await root.getFileHandle(name, { create: true });
+    await body.pipeTo(await handle.createWritable(), { signal });
+    const file = await handle.getFile(); complete = true;
+    return { file, dispose: () => remove(root, name).finally(unlock) };
+  } finally {
+    if (!complete) { await remove(root, name); unlock(); }
+  }
+}

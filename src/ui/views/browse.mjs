@@ -125,7 +125,7 @@ function chartGenres(cc, l) {
 const LOCAL_KINDS = new Set(['songs', 'music-videos', 'albums', 'playlists', 'artists']);
 const VIDEO_TYPES = new Set(['music-videos', 'uploaded-videos', 'music-movies']);
 /** 与 app.mjs 的路由相同：本站能打开的 Apple Music 页面 */
-const LOCAL_PAGE = /^https:\/\/music\.apple\.com\/[a-z]{2}\/(?:(?:song|music-video)\/[^/?#]+\/\d+|(?:album|artist)\/(?:[^/?#]+\/)?\d+|playlist\/(?:[^/?#]+\/)?pl\.[\w-]+|(?:room|multi-room|grouping)\/\d+|curator\/(?:[^/?#]+\/)?\d+|new\/?)$/;
+const LOCAL_PAGE = /^https:\/\/music\.apple\.com\/[a-z]{2}\/(?:(?:song|music-video)\/[^/?#]+\/\d+|post\/(?:[^/?#]+\/)?\d+|(?:album|artist)\/(?:[^/?#]+\/)?\d+|playlist\/(?:[^/?#]+\/)?pl\.[\w-]+|(?:room|multi-room|grouping)\/\d+|curator\/(?:[^/?#]+\/)?\d+|new\/?)$/;
 
 /** 排行榜：地址中的榜单名（官网 kH）→ charts 接口 results 的键，按官网排行榜首页的顺序 */
 const CHART_KEYS = {
@@ -290,6 +290,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       case 'rooms': return { href: `/https://music.apple.com/${country}/room/${res.id}`, local: true };
       case 'multirooms': return { href: `/https://music.apple.com/${country}/multi-room/${res.id}`, local: true };
       case 'groupings': return { href: `/https://music.apple.com/${country}/grouping/${res.id}`, local: true };
+      // 艺人上传的视频（官网 post 页）：资源没有 url，地址在 postUrl
+      case 'uploaded-videos': {
+        const hit = a.postUrl && resolveLink(a.postUrl);
+        return hit && hit.local ? hit : { href: `/https://music.apple.com/${country}/post/${res.id}`, local: true };
+      }
       default: return a.url ? resolveLink(a.url) : null;
     }
   }

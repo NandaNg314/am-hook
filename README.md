@@ -27,6 +27,7 @@ Then open `http://127.0.0.1:8888/` and paste a link. Pages can also be opened di
 | `https://music.apple.com/cn/song/<slug>/<id>` | `/https://music.apple.com/cn/song/<slug>/<id>` |
 | `https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` | `/https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` |
 | `https://music.apple.com/cn/music-video/<slug>/<id>` | `/https://music.apple.com/cn/music-video/<slug>/<id>` |
+| `https://music.apple.com/cn/post/<id>` | `/https://music.apple.com/cn/post/<id>` |
 | `https://music.apple.com/cn/playlist/<slug>/<pl.id>` | `/https://music.apple.com/cn/playlist/<slug>/<pl.id>` |
 | `https://music.apple.com/cn/artist/<slug>/<id>` | `/https://music.apple.com/cn/artist/<slug>/<id>` |
 
@@ -75,6 +76,7 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
 - Downloads decrypt segment by segment and write time-interleaved fragments to an OPFS temporary file, never holding the whole MV in memory. The Worker then rewrites that file as a standard (progressive) MP4 with `moov` before the media data. Every track is cut into chunks of at most one second and written in time order, so audio, video and captions for the same moment sit together and players can read the file front to back. No transcoding or tag writing is done. Both files exist briefly during this step, so OPFS needs about twice the MV size.
 - CEA-608 caption tracks are kept in the download. Apple starts them with a malformed empty sample that recent FFmpeg rejects (mpv-based players stop shortly after starting); it is rewritten as a valid empty caption sample of the same size.
 - Completion triggers a save and exposes a "Save MP4" link. Cancellation and failure remove temporary files. Leaving the MV page stops playback, cancels a running download and attempts to remove the finished file. Files left by a closed or crashed tab are removed the next time an MV page is opened (without Web Locks, once they are 24 hours old).
+- Artist-uploaded videos (music.apple.com `post` pages, amp-api `uploaded-videos`, linked from New and editorial pages) open in the same page. Like music.apple.com, they need neither wrapper-lite nor decryption: each entry of `assetTokens` is an unencrypted progressive MP4 (H.264 + AAC, `moov` first) that the `<video>` element plays directly. The page lists them by resolution with size and bitrate (from a `HEAD` request); there is no separate audio track. Downloads stream the file into OPFS unchanged (an in-memory Blob without OPFS).
 
 ## How It Works
 
@@ -132,6 +134,7 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `GET /` | Home page. It and every page URL below return the single-page app `app.html`; page content is loaded by the front end |
 | `GET /https://music.apple.com/<cc>/song/<slug>/<id>` | Song page |
 | `GET /https://music.apple.com/<cc>/music-video/<slug>/<id>` | MV page |
+| `GET /https://music.apple.com/<cc>/post/<id>` | Artist-uploaded video (MV page) |
 | `GET /status` | wrapper-lite status and available regions |
 | `GET /parse/song/<adamId>` | Song master m3u8 via wrapper-lite, returned as variants |
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | Song track decryption template JSON from wrapper-lite `/key` |

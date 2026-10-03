@@ -27,6 +27,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 | `https://music.apple.com/cn/song/<slug>/<id>` | `/https://music.apple.com/cn/song/<slug>/<id>` |
 | `https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` | `/https://music.apple.com/cn/album/<slug>/<albumId>?i=<id>` |
 | `https://music.apple.com/cn/music-video/<slug>/<id>` | `/https://music.apple.com/cn/music-video/<slug>/<id>` |
+| `https://music.apple.com/cn/post/<id>` | `/https://music.apple.com/cn/post/<id>` |
 | `https://music.apple.com/cn/playlist/<slug>/<pl.id>` | `/https://music.apple.com/cn/playlist/<slug>/<pl.id>` |
 | `https://music.apple.com/cn/artist/<slug>/<id>` | `/https://music.apple.com/cn/artist/<slug>/<id>` |
 
@@ -75,6 +76,7 @@ am-hook --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340 --hook
 - 下载逐段解密、按时间交错写入 OPFS 临时文件，不在内存中拼接整部 MV。随后 Worker 把它改写为标准（progressive）MP4，`moov` 位于媒体数据之前；每条轨道切成不超过 1 秒的 chunk 并按时间顺序写入，同一时刻的音频、视频和字幕相邻存放，播放器可以从头到尾顺序读取。不进行转码或写 tag。改写期间两份文件同时存在，OPFS 需要约两倍于 MV 的空间。
 - 下载保留 CEA-608 字幕轨。Apple 的字幕轨以一个格式错误的空 sample 开头，新版 FFmpeg 会拒绝它（基于 mpv 的播放器会在播放不久后退出）；下载时会把它原位改写为等长的合法空字幕 sample。
 - 完成后自动触发保存，也可点击「保存 MP4」；取消或失败会清理临时文件。离开 MV 页面会停止播放、取消进行中的下载，并尝试清理已完成文件。标签页关闭或崩溃留下的文件会在下次打开 MV 页面时删除（浏览器不支持 Web Locks 时，文件超过 24 小时才会删除）。
+- 艺人上传的视频（官网 `post` 页，amp-api 的 `uploaded-videos`，新发现与编辑页中的链接会打开它）使用同一页面。与官网相同，不需要 wrapper-lite 也不需要解密：`assetTokens` 中的每一项都是未加密的标准 MP4（H.264 + AAC，`moov` 在前），由 `<video>` 直接播放。页面按分辨率列出，并显示大小与码率（来自 `HEAD` 请求）；没有单独的音频轨道。下载时把文件原样流式写入 OPFS（不支持 OPFS 时使用内存 Blob）。
 
 ## 工作原理
 
@@ -132,6 +134,7 @@ http://<host>:8888/https://aod.itunes.apple.com/itunes-assets/...
 | `GET /` | 首页。下面的各页面地址与首页一样都返回单页应用 `app.html`，页面内容由前端加载 |
 | `GET /https://music.apple.com/<cc>/song/<slug>/<id>` | 歌曲页 |
 | `GET /https://music.apple.com/<cc>/music-video/<slug>/<id>` | MV 页 |
+| `GET /https://music.apple.com/<cc>/post/<id>` | 艺人上传的视频（MV 页） |
 | `GET /status` | wrapper-lite 状态与可用地区 |
 | `GET /parse/song/<adamId>` | 通过 wrapper-lite 获取歌曲 master m3u8，返回各音质变体 |
 | `GET /key?adamId=<adamId>&uri=<skd-uri>` | 转发 wrapper-lite `/key` 返回的歌曲轨道解密模板 JSON |

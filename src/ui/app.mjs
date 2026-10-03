@@ -20,6 +20,8 @@ const viewRoot = $('view');
 const PAGES = [
   ['song', /^https:\/\/music\.apple\.com\/[a-z]{2}\/song\/[^/?#]+\/[0-9]+(?:[/?#]|$)/],
   ['mv', /^https:\/\/music\.apple\.com\/[a-z]{2}\/music-video\/[^/?#]+\/[0-9]+(?:[/?#]|$)/],
+  // 艺人上传的视频（官网 post 页）与 MV 共用页面视图
+  ['post', /^https:\/\/music\.apple\.com\/[a-z]{2}\/post\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
   ['album', /^https:\/\/music\.apple\.com\/[a-z]{2}\/album\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
   ['playlist', /^https:\/\/music\.apple\.com\/[a-z]{2}\/playlist\/(?:[^/?#]+\/)?pl\.[0-9A-Za-z_-]+(?:[/?#]|$)/],
   ['artist', /^https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
@@ -32,7 +34,7 @@ const PAGES = [
 ];
 
 /** 页面名 → 视图文件（/assets/views/<file>.html / .mjs）：新发现与各编辑页共用 browse 视图，其余同名 */
-const VIEW_FILES = { new: 'browse', charts: 'browse', editorial: 'browse' };
+const VIEW_FILES = { new: 'browse', charts: 'browse', editorial: 'browse', post: 'mv' };
 /** 跟随主地区的排行榜路径（与 src/m3u8.rs 的 is_charts_path 相同） */
 const CHARTS_PATH = /^\/new\/top-charts(?:\/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/;
 

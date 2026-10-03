@@ -64,6 +64,8 @@
 .mv-tracks { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 16px 16px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .mv-tracks fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .mv-tracks fieldset + fieldset { margin-top: 4px; }
+/* post 页没有音频轨道可选：隐藏音频下拉与「自由组合」 */
+.mv-tracks fieldset[hidden], .mv-panel-head .badge[hidden] { display: none; }
 .mv-tracks legend {
   width: 100%; padding: 12px 8px 8px; display: flex; align-items: center; gap: 8px;
   color: var(--faint); font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase;
@@ -152,6 +154,7 @@
   .mv-panel { position: static; max-height: none; }
   .mv-tracks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; overflow: visible; }
   .mv-tracks fieldset + fieldset { margin-top: 0; }
+  .mv-tracks:has(> fieldset[hidden]) { grid-template-columns: minmax(0, 1fr); }
   .mv-ambient { height: 50vh; }
 }
 @media (max-width: 680px) {

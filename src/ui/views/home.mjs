@@ -23,6 +23,9 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     const cc = /^[a-z]{2}$/i.test(parts[0] || '') ? parts[0].toLowerCase() : 'us';
     const mv = url.pathname.match(/^\/[a-z]{2}\/music-video\/(?:([^/]+)\/)?(\d+)\/?$/i);
     if (mv) return `https://music.apple.com/${cc}/music-video/${mv[1] || '_'}/${mv[2]}`;
+    // 艺人上传的视频（post，slug 可省略）
+    const post = url.pathname.match(/^\/[a-z]{2}\/post\/(?:[^/]+\/)?(\d+)\/?$/i);
+    if (post) return `https://music.apple.com/${cc}/post/${post[1]}`;
     const song = url.pathname.match(/\/song\/([^/]+)\/(\d+)/i);
     if (song) return `https://music.apple.com/${cc}/song/${song[1]}/${song[2]}`;
     // 专辑链接打开专辑页（slug 可省略）；带 ?i= 时保留，专辑页选中该曲目
@@ -83,9 +86,9 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     submitLabel.textContent = t(submitLabel.dataset.i18n);
     detectEl.hidden = !link;
     if (!link) return;
-    const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist|artist|room|multi-room|grouping|curator|new\/top-charts|new)\b/);
+    const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|post|album|playlist|artist|room|multi-room|grouping|curator|new\/top-charts|new)\b/);
     const label = {
-      song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist',
+      song: 'home.detectSong', 'music-video': 'home.detectMv', post: 'home.detectPost', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist',
       room: 'home.detectRoom', 'multi-room': 'home.detectRoom', grouping: 'home.detectGrouping', curator: 'home.detectCurator', new: 'home.detectNew',
       'new/top-charts': 'charts.title',
     }[kind];

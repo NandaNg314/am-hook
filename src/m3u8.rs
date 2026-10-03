@@ -11,6 +11,9 @@ static SONG_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
 static MV_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/music-video/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
+/// 艺人上传的视频（官网 post 页，amp-api 的 uploaded-videos），通常没有 slug
+static POST_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/post/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
 /// 专辑链接的 slug 可省略（music.apple.com/cn/album/1561058084 也有效）
 static ALBUM_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/album/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
@@ -66,6 +69,13 @@ pub fn parse_mv_link(url: &str) -> Result<String, String> {
         .captures(url.trim())
         .map(|caps| caps[1].to_string())
         .ok_or_else(|| format!("Only Apple Music music-video links are supported: {url}"))
+}
+
+pub fn parse_post_link(url: &str) -> Result<String, String> {
+    POST_LINK_RE
+        .captures(url.trim())
+        .map(|caps| caps[1].to_string())
+        .ok_or_else(|| format!("Only Apple Music post links are supported: {url}"))
 }
 
 pub fn parse_album_link(url: &str) -> Result<String, String> {
@@ -348,6 +358,9 @@ mod tests {
         assert_eq!(parse_mv_link("https://music.apple.com/us/music-video/_/123?l=zh-CN").unwrap(), "123");
         assert!(parse_mv_link("https://music.apple.com/us/song/name/123").is_err());
         assert!(parse_mv_link("https://music.apple.com/us/music-video/123").is_err());
+        assert_eq!(parse_post_link("https://music.apple.com/cn/post/6814689986").unwrap(), "6814689986");
+        assert_eq!(parse_post_link("https://music.apple.com/us/post/_/6814689986?l=en").unwrap(), "6814689986");
+        assert!(parse_post_link("https://music.apple.com/us/post/abc").is_err());
     }
 
     #[test]
