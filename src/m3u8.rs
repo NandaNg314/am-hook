@@ -21,6 +21,14 @@ static PLAYLIST_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// 艺人链接的 slug 同样可省略（music.apple.com/cn/artist/159260351 也有效）
 static ARTIST_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/artist/(?:[^/?#]+/)?([0-9]+)(?:[/?#]|$)").unwrap());
+/// 编辑页（与 music.apple.com 的路由相同）：新发现 `/new`、排行榜 `/new/top-charts[/<kind>]`、room、multi-room、grouping 与 curator（slug 可省略）
+static EDITORIAL_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https://music\.apple\.com/[a-z]{2}/(?:new(?:/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?)?/?(?:[?#]|$)|(?:room|multi-room|grouping)/[0-9]+(?:[/?#]|$)|curator/(?:[^/?#]+/)?[0-9]+(?:[/?#]|$))").unwrap()
+});
+/// 跟随主地区的排行榜（`/new/top-charts[/<kind>]`，不含开头的 `/`）
+static CHARTS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^new/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?/?$").unwrap()
+});
 static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
 
@@ -79,6 +87,16 @@ pub fn parse_artist_link(url: &str) -> Result<String, String> {
         .captures(url.trim())
         .map(|caps| caps[1].to_string())
         .ok_or_else(|| format!("Only Apple Music artist links are supported: {url}"))
+}
+
+/// 是否为编辑页地址（新发现 / room / multi-room / grouping / curator），这些页面同样返回单页应用
+pub fn is_editorial_link(url: &str) -> bool {
+    EDITORIAL_LINK_RE.is_match(url.trim())
+}
+
+/// 是否为跟随主地区的排行榜路径（`new/top-charts`、`new/top-charts/songs` 等），同样返回单页应用
+pub fn is_charts_path(path: &str) -> bool {
+    CHARTS_PATH_RE.is_match(path)
 }
 
 fn parse_attributes(input: &str) -> HashMap<&str, &str> {
@@ -369,6 +387,29 @@ mod tests {
         assert_eq!(parse_artist_link("https://music.apple.com/us/artist/the-weeknd/479756766?l=en").unwrap(), "479756766");
         assert!(parse_artist_link("https://music.apple.com/us/album/name/123").is_err());
         assert!(parse_artist_link("https://music.apple.com/us/artist/name/abc").is_err());
+    }
+
+    #[test]
+    fn test_is_editorial_link() {
+        assert!(is_editorial_link("https://music.apple.com/cn/new"));
+        assert!(is_editorial_link("https://music.apple.com/us/new?l=en"));
+        assert!(is_editorial_link("https://music.apple.com/cn/room/6818358937"));
+        assert!(is_editorial_link("https://music.apple.com/us/multi-room/1532467784"));
+        assert!(is_editorial_link("https://music.apple.com/cn/grouping/170872"));
+        assert!(is_editorial_link("https://music.apple.com/cn/curator/apple-music-%E4%B8%8D%E6%8F%92%E7%94%B5/1019400049"));
+        assert!(is_editorial_link("https://music.apple.com/us/curator/1019400049"));
+        assert!(is_editorial_link("https://music.apple.com/us/new/top-charts"));
+        assert!(is_editorial_link("https://music.apple.com/cn/new/top-charts/songs?genreId=14"));
+        assert!(is_editorial_link("https://music.apple.com/cn/new/top-charts/daily-global-top-charts"));
+        assert!(!is_editorial_link("https://music.apple.com/cn/new/top-charts/stations"));
+        assert!(!is_editorial_link("https://music.apple.com/us/new/other"));
+        assert!(is_charts_path("new/top-charts"));
+        assert!(is_charts_path("new/top-charts/music-videos"));
+        assert!(!is_charts_path("new/top-charts/x"));
+        assert!(!is_charts_path("top-charts"));
+        assert!(!is_editorial_link("https://music.apple.com/us/room/abc"));
+        assert!(!is_editorial_link("https://music.apple.com/us/curator/name"));
+        assert!(!is_editorial_link("https://music.apple.com/us/album/name/123"));
     }
 
     #[test]

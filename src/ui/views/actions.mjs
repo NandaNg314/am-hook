@@ -80,7 +80,7 @@ export function targetOf(resource, country, extra = {}) {
 }
 
 /** 歌曲资源 → 播放队列条目（见 AmPlayer.playQueue）；context 为专辑 / 歌单时补上专辑名与封面 */
-function songEntry(track, country, context = {}) {
+export function songEntry(track, country, context = {}) {
   const a = track.attributes;
   return {
     track: track.id,

@@ -12,7 +12,7 @@ use crate::m3u8::{parse_master_variants, parse_song_link};
 use crate::state::AppState;
 use crate::wrapper::Lyrics;
 
-/// 站内页面（首页与歌曲 / MV / 专辑 / 歌单 / 艺人页）。与 music.apple.com 相同，整站是单页应用：
+/// 站内页面（首页、新发现与歌曲 / MV / 专辑 / 歌单 / 艺人页、编辑页）。与 music.apple.com 相同，整站是单页应用：
 /// 所有页面地址都返回 app.html，页面视图（/assets/views/）由前端路由（app.mjs）切换，
 /// 播放条与歌词界面常驻，站内跳转时播放不中断。目录数据由前端经 `/amp` 代理获取。
 pub async fn app_handler(headers: HeaderMap) -> Response<Body> {
@@ -49,6 +49,10 @@ pub async fn view_asset_handler(
         "playlist.mjs" => (JS, include_bytes!("ui/views/playlist.mjs")),
         "artist.html" => (HTML, include_bytes!("ui/views/artist.html")),
         "artist.mjs" => (JS, include_bytes!("ui/views/artist.mjs")),
+        // 编辑页：新发现、room、multi-room、grouping 与 curator 共用（与官网一样由 editorial-elements 区块组成）
+        "browse.html" => (HTML, include_bytes!("ui/views/browse.html")),
+        "browse.mjs" => (JS, include_bytes!("ui/views/browse.mjs")),
+        "browse.css" => ("text/css; charset=utf-8", include_bytes!("ui/views/browse.css")),
         // 各页面共用的条目操作（封面悬停按钮、「更多」菜单）
         "actions.mjs" => (JS, include_bytes!("ui/views/actions.mjs")),
         // 专辑页与歌单页共用的头部（主题色、动态封面）

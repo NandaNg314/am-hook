@@ -422,6 +422,20 @@ pub async fn catalog_handler(State(state): State<Arc<AppState>>, Path(path): Pat
     forward(&state, api_url(&format!("/v1/catalog/{path}"), query), CATALOG_TTL).await
 }
 
+/// `GET /amp/v1/editorial/<path>?<query>` → `amp-api-edge.music.apple.com/v1/editorial/<path>?<query>`。
+/// music.apple.com 的「新发现」页（groupings?name=music）、分组页（groupings/<id>）、room 与 multi-room 页的编辑内容都在这里，
+/// 与目录接口一样按 URL 缓存；分页地址（rooms/<id>/contents?offset=）同样可直接加上 `/amp` 前缀请求。
+pub async fn editorial_handler(State(state): State<Arc<AppState>>, Path(path): Path<String>, uri: Uri) -> Response<Body> {
+    if !valid_catalog_path(&path) {
+        return error(StatusCode::BAD_REQUEST, "Invalid editorial path");
+    }
+    let query = uri.query().unwrap_or_default();
+    if query.len() > MAX_QUERY_LEN {
+        return error(StatusCode::BAD_REQUEST, "Query too long");
+    }
+    forward(&state, api_url(&format!("/v1/editorial/{path}"), query), CATALOG_TTL).await
+}
+
 /// `GET /amp/v1/storefronts?<query>` → 全部地区信息。前端据各地区的 `supportedLanguageTags` 选择 `l`：
 /// 地区不支持的语言不会报错，而是静默回退到默认语言（如 cn 只支持 zh-Hans-CN / en-GB，传 en-US 返回中文）。
 /// 数据几乎不变，前端取一次后缓存在 localStorage；查询参数原样转发，以便跟随分页 `next`。
@@ -505,6 +519,9 @@ mod tests {
         assert!(valid_catalog_path("us/search"));
         assert!(valid_catalog_path("cn/search/suggestions"));
         assert!(valid_catalog_path("us/songs/1468058171"));
+        assert!(valid_catalog_path("cn/groupings"));
+        assert!(valid_catalog_path("cn/rooms/6818358937/contents"));
+        assert!(valid_catalog_path("us/multirooms/1532467784"));
         assert!(!valid_catalog_path(""));
         assert!(!valid_catalog_path("../me/library"));
         assert!(!valid_catalog_path("us/search?x"));

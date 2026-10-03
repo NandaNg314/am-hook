@@ -35,6 +35,16 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     // 艺人链接打开艺人页（slug 可省略）
     const artistPage = url.pathname.match(/^\/[a-z]{2}\/artist\/(?:([^/]+)\/)?(\d+)\/?$/i);
     if (artistPage) return `https://music.apple.com/${cc}/artist/${artistPage[1] || '_'}/${artistPage[2]}`;
+    // 编辑页：新发现、room、multi-room、grouping 与 curator（见 browse.mjs）
+    if (/^\/[a-z]{2}\/new\/?$/i.test(url.pathname)) return `https://music.apple.com/${cc}/new`;
+    // 排行榜与各榜单的「查看全部」（?genreId= 为类型）
+    const charts = url.pathname.match(/^\/[a-z]{2}\/new\/top-charts(?:\/(songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/i);
+    const genreId = url.searchParams.get('genreId');
+    if (charts) return `https://music.apple.com/${cc}/new/top-charts${charts[1] ? `/${charts[1].toLowerCase()}` : ''}${charts[1] && /^\d+$/.test(genreId || '') ? `?genreId=${genreId}` : ''}`;
+    const editorial = url.pathname.match(/^\/[a-z]{2}\/(room|multi-room|grouping)\/(\d+)\/?$/i);
+    if (editorial) return `https://music.apple.com/${cc}/${editorial[1].toLowerCase()}/${editorial[2]}`;
+    const curator = url.pathname.match(/^\/[a-z]{2}\/curator\/(?:([^/]+)\/)?(\d+)\/?$/i);
+    if (curator) return `https://music.apple.com/${cc}/curator/${curator[1] || '_'}/${curator[2]}`;
     return null;
   }
 
@@ -73,8 +83,12 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     submitLabel.textContent = t(submitLabel.dataset.i18n);
     detectEl.hidden = !link;
     if (!link) return;
-    const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist|artist)\//);
-    const label = { song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist' }[kind];
+    const [, cc, kind] = link.match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/(song|music-video|album|playlist|artist|room|multi-room|grouping|curator|new\/top-charts|new)\b/);
+    const label = {
+      song: 'home.detectSong', 'music-video': 'home.detectMv', album: 'home.detectAlbum', playlist: 'home.detectPlaylist', artist: 'home.detectArtist',
+      room: 'home.detectRoom', 'multi-room': 'home.detectRoom', grouping: 'home.detectGrouping', curator: 'home.detectCurator', new: 'home.detectNew',
+      'new/top-charts': 'charts.title',
+    }[kind];
     detectEl.textContent = `${t(label)} · ${cc.toUpperCase()}`;
   }
 

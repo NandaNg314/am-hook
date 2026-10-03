@@ -16,19 +16,33 @@ AmI18n.apply();
 const $ = (id) => document.getElementById(id);
 const viewRoot = $('view');
 
-/* ---------- 路由：与服务端（src/m3u8.rs 的 parse_*_link）识别的页面地址相同 ---------- */
+/* ---------- 路由：与服务端（src/m3u8.rs 的 parse_*_link 与 is_editorial_link）识别的页面地址相同 ---------- */
 const PAGES = [
   ['song', /^https:\/\/music\.apple\.com\/[a-z]{2}\/song\/[^/?#]+\/[0-9]+(?:[/?#]|$)/],
   ['mv', /^https:\/\/music\.apple\.com\/[a-z]{2}\/music-video\/[^/?#]+\/[0-9]+(?:[/?#]|$)/],
   ['album', /^https:\/\/music\.apple\.com\/[a-z]{2}\/album\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
   ['playlist', /^https:\/\/music\.apple\.com\/[a-z]{2}\/playlist\/(?:[^/?#]+\/)?pl\.[0-9A-Za-z_-]+(?:[/?#]|$)/],
   ['artist', /^https:\/\/music\.apple\.com\/[a-z]{2}\/artist\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
+  // 编辑页（与 src/m3u8.rs 的 is_editorial_link 相同）：新发现（官网 /{cc}/new）、room、multi-room、grouping 与 curator
+  ['new', /^https:\/\/music\.apple\.com\/[a-z]{2}\/new\/?$/],
+  // 排行榜（官网 /{cc}/new/top-charts）与各榜单的「查看全部」
+  ['charts', /^https:\/\/music\.apple\.com\/[a-z]{2}\/new\/top-charts(?:\/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/],
+  ['editorial', /^https:\/\/music\.apple\.com\/[a-z]{2}\/(?:room|multi-room|grouping)\/[0-9]+(?:[/?#]|$)/],
+  ['editorial', /^https:\/\/music\.apple\.com\/[a-z]{2}\/curator\/(?:[^/?#]+\/)?[0-9]+(?:[/?#]|$)/],
 ];
 
-/** 地址对应的页面视图名；不是站内页面时为 null（交给浏览器正常跳转）。与服务端一样匹配未解码的路径 */
+/** 页面名 → 视图文件（/assets/views/<file>.html / .mjs）：新发现与各编辑页共用 browse 视图，其余同名 */
+const VIEW_FILES = { new: 'browse', charts: 'browse', editorial: 'browse' };
+/** 跟随主地区的排行榜路径（与 src/m3u8.rs 的 is_charts_path 相同） */
+const CHARTS_PATH = /^\/new\/top-charts(?:\/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/;
+
+/** 地址对应的页面名；不是站内页面时为 null（交给浏览器正常跳转）。与服务端一样匹配未解码的路径 */
 function route(url) {
   if (url.origin !== location.origin) return null;
   if (url.pathname === '/') return 'home';
+  // 「新发现」（跟随主地区）
+  if (url.pathname === '/new') return 'new';
+  if (CHARTS_PATH.test(url.pathname)) return 'charts';
   const path = url.pathname.slice(1);
   const hit = PAGES.find(([, re]) => re.test(path));
   return hit ? hit[0] : null;
@@ -93,11 +107,13 @@ nav.addEventListener('click', (event) => {
 });
 setNavExpanded(false);
 
-/** 首页不显示「返回」，「主页」标为当前页 */
+/** 顶层页面（主页、新发现）不显示「返回」，导航中对应的一项标为当前页 */
 function syncNav(name) {
-  nav.classList.toggle('is-home', name === 'home');
+  nav.classList.toggle('is-home', name === 'home' || name === 'new');
+  // 排行榜属于「新发现」（与官网相同）
+  const navName = name === 'charts' ? 'new' : name;
   for (const link of nav.querySelectorAll('[data-nav]')) {
-    if (link.dataset.nav === name) link.setAttribute('aria-current', 'page');
+    if (link.dataset.nav === navName) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
 }
@@ -294,7 +310,8 @@ async function render(url, { scroll = 0, initial = false } = {}) {
   if (!name) return;
   let view, html;
   try {
-    [view, html] = await Promise.all([import(`/assets/views/${name}.mjs`), fragment(name)]);
+    const file = VIEW_FILES[name] || name;
+    [view, html] = await Promise.all([import(`/assets/views/${file}.mjs`), fragment(file)]);
     await Promise.all((view.styles || []).map(stylesheet));
   } catch (err) {
     // 站内跳转时页面资源加载失败（如服务已升级、网络中断）：整页加载该地址；首次加载失败时不再重试，避免反复刷新

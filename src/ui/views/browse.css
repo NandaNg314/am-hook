@@ -1,0 +1,223 @@
+/* 编辑页：新发现、room、multi-room、grouping、curator（views/browse.mjs，样式都限定在 .browse-page 下）
+   与官网相同：内容铺满整个内容区，左右留 bodyGutter（< 1000px 为 25px，否则 40px），货架横向滑到边缘；
+   货架列数按官网 shelf-grid 的 grid-type（small 484–999 / medium 1000–1259 / large ≥ 1260，xsmall < 484 为固定列宽） */
+.browse-page { --gutter: 25px; }
+@media (min-width: 1000px) { .browse-page { --gutter: 40px; } }
+.browse-page .page {
+  width: 100%; max-width: 2000px;
+  padding-left: max(var(--gutter), env(safe-area-inset-left)); padding-right: max(var(--gutter), env(safe-area-inset-right));
+}
+.browse-header { padding-top: 4px; }
+.browse-header-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; }
+.browse-tools[hidden] { display: none; }
+/* 排行榜类型选择（官网 accessory-button select）：圆角框，右侧下拉箭头 */
+.ed-select-wrap { position: relative; display: inline-flex; }
+.ed-select-wrap::after {
+  content: ""; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px; margin-top: -5px; pointer-events: none;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg);
+}
+.ed-select {
+  max-width: min(260px, 70vw); height: 32px; padding: 0 32px 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font-size: 13px; cursor: pointer; appearance: none; -webkit-appearance: none;
+}
+.ed-select:hover { border-color: var(--line-strong); }
+/* 排行榜名次：卡片标题上方的粗体数字（官网 product-lockup__ordinal），曲目行封面与标题之间的数字（lockup-ranking） */
+.ed-ordinal { color: var(--text); font-size: 12px; line-height: 1.25; font-weight: 800; }
+/* 官网：封面右侧 8px 后是 24px 宽的名次，标题再缩进 4px；名次与标题行对齐 */
+.browse-page .track.ts-item.ranked { grid-template-columns: 40px 32px minmax(0, 1fr) 32px; column-gap: 0; }
+.browse-page .track.ts-item.ranked .track-main { padding: 0 8px 0 4px; }
+.ed-rank {
+  align-self: start; padding: 5px 0 0 8px; color: var(--text); font-size: 13px; line-height: 1.2308; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* 官网 header-nav__heading：34px 粗体 */
+.browse-title { margin: 0; font-size: 34px; line-height: 1.1765; font-weight: 700; letter-spacing: 0; }
+.browse-title.skeleton { width: min(240px, 60%); }
+.browse-notes { max-width: 760px; margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.4; }
+.browse-notes[hidden], .browse-banner[hidden], .browse-more[hidden] { display: none; }
+/* multi-room 头图：uber.masterArt 按原图比例铺满内容区 */
+.browse-banner {
+  margin: 0 calc(-1 * var(--gutter)) 24px; aspect-ratio: var(--banner-ratio, 16 / 9); max-height: 60vh; overflow: hidden;
+  background: var(--art-bg, var(--surface-3));
+}
+.browse-banner img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.browse-more { padding: 24px 0; color: var(--muted); font-size: 13px; text-align: center; }
+
+/* 区块：官网 section 间距 12px + 标题 13px 下边距；标题 17px 粗体，可点击时带灰色箭头 */
+.ed-section { padding-top: 12px; margin-bottom: 20px; }
+.ed-section:first-child { padding-top: 28px; }
+.ed-head { margin-bottom: 13px; display: flex; align-items: center; }
+.ed-heading { margin: 0; font-size: 17px; line-height: 1.2941; font-weight: 700; }
+.ed-heading-link { display: inline-flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+.ed-chevron { width: 12px; height: 12px; flex: 0 0 auto; color: var(--faint); }
+.ed-heading-link:hover span { text-decoration: underline; }
+
+/* 货架：横向滑动，滑到内容区边缘；鼠标设备悬停时两侧显示翻页箭头 */
+.ed-shelf-wrap { position: relative; }
+.ed-shelf {
+  --cols: 6; --gap: 20px;
+  margin-inline: calc(-1 * var(--gutter)); padding: 0 var(--gutter) 4px; scroll-padding-inline: var(--gutter);
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(var(--rows, 1), auto);
+  grid-auto-columns: calc((100% - (var(--cols) - 1) * var(--gap)) / var(--cols)); column-gap: var(--gap); row-gap: 24px;
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: none;
+}
+.ed-shelf::-webkit-scrollbar { display: none; }
+.ed-shelf > * { min-width: 0; scroll-snap-align: start; }
+.ed-shelf.grid-A { --cols: 2; }
+.ed-shelf.grid-B { --cols: 2; }
+.ed-shelf.grid-C { --cols: 3; }
+.ed-shelf.grid-G { --cols: 4; }
+.ed-shelf.grid-H { --cols: 6; }
+.ed-shelf.grid-T { --cols: 2; row-gap: 0; }
+@media (min-width: 1000px) {
+  .ed-shelf.grid-B { --cols: 3; }
+  .ed-shelf.grid-C { --cols: 4; }
+  .ed-shelf.grid-G { --cols: 5; }
+  .ed-shelf.grid-H { --cols: 8; }
+  .ed-shelf.grid-T { --cols: 3; }
+}
+@media (min-width: 1260px) {
+  .ed-shelf.grid-A { --cols: 3; }
+  .ed-shelf.grid-B { --cols: 4; }
+  .ed-shelf.grid-C { --cols: 5; }
+  .ed-shelf.grid-G { --cols: 6; }
+  .ed-shelf.grid-H { --cols: 10; }
+  .ed-shelf.grid-T { --cols: 4; }
+}
+/* xsmall：固定列宽（官网 GRID_MAX_CONTENT），列距 10px */
+@media (max-width: 483px) {
+  .ed-shelf { --gap: 10px; }
+  .ed-shelf.grid-A, .ed-shelf.grid-B { grid-auto-columns: 298px; }
+  .ed-shelf.grid-C { grid-auto-columns: 200px; }
+  .ed-shelf.grid-G { grid-auto-columns: 144px; }
+  .ed-shelf.grid-H { grid-auto-columns: 94px; }
+  .ed-shelf.grid-T { grid-auto-columns: 270px; }
+}
+.ed-arrow {
+  position: absolute; z-index: 3; top: 0; bottom: 4px; width: var(--gutter); padding: 0; display: none; place-items: center;
+  border: 0; background: none; color: var(--muted); opacity: 0; transition: opacity .25s linear, color .25s linear;
+}
+.ed-arrow svg { width: 9px; height: 31px; }
+.ed-arrow.prev { left: calc(-1 * var(--gutter)); }
+.ed-arrow.next { right: calc(-1 * var(--gutter)); }
+.ed-arrow.next svg { transform: scaleX(-1); }
+.ed-arrow:hover:not(:disabled) { color: var(--text); }
+.ed-arrow:disabled { opacity: 0 !important; pointer-events: none; }
+@media (hover: hover) and (pointer: fine) {
+  .ed-shelf-wrap.scrollable .ed-arrow { display: grid; }
+  .ed-shelf-wrap:hover .ed-arrow { opacity: 1; }
+}
+
+/* 方形 / 视频卡片沿用 .shelf-item（与艺人页相同），封面圆角与官网 product-lockup 一致 */
+.browse-page .shelf-art { border-radius: 7px; }
+.browse-page .shelf-art.artist { border-radius: 50%; }
+.browse-page .shelf-item.artist .shelf-title { text-align: center; }
+.browse-page .card-wrap .cover-actions { border-radius: 7px; }
+.browse-page .card-wrap.artist .cover-actions { border-radius: 50%; }
+.browse-page a.shelf-item:hover .shelf-title { text-decoration: underline; }
+
+/* hero 大卡（官网 editorial-card）：眉题 11px、标题 / 副标题 17px，宽幅封面 1.7436:1，底部渐变上压说明文字 */
+.ed-hero { position: relative; display: flex; flex-direction: column; }
+.ed-hero-link { position: absolute; inset: 0; z-index: 1; color: transparent; font-size: 0; }
+.ed-hero-head { min-height: 60px; margin-bottom: 15px; }
+.ed-hero-badge {
+  margin: 1px 0 2px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.2727; font-weight: 600;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.ed-hero-title {
+  margin: 0; display: -webkit-box; overflow: hidden; color: var(--text); font-size: 17px; line-height: 1.2941; font-weight: 400;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.ed-hero-title.clamp-1 { -webkit-line-clamp: 1; }
+.ed-hero-sub { margin: 0; overflow: hidden; color: var(--muted); font-size: 17px; line-height: 1.2941; text-overflow: ellipsis; white-space: nowrap; }
+.ed-hero-art {
+  position: relative; aspect-ratio: 1.7436; overflow: hidden; border-radius: 10px; background: var(--art-bg, var(--surface-3));
+  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
+}
+.ed-hero-art > img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.ed-hero-art::after {
+  content: ""; position: absolute; inset: 0; background: rgba(51, 51, 51, .3); opacity: 0; transition: opacity .1s ease-in; pointer-events: none;
+}
+.ed-hero:hover .ed-hero-art::after, .ed-hero:focus-within .ed-hero-art::after { opacity: 1; }
+.ed-hero-desc {
+  position: absolute; left: 0; right: 0; bottom: 0; min-height: 100px; padding: 24px 16px 16px; display: flex; align-items: flex-end;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .4)); pointer-events: none;
+}
+.ed-hero-desc span {
+  max-width: 85%; padding-right: 20px; display: -webkit-box; overflow: hidden; color: #fff; font-size: 12px; line-height: 1.25;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.ed-hero .cover-actions { z-index: 2; inset: 0; width: auto; aspect-ratio: auto; border-radius: 0; background: none; }
+.ed-hero:hover .cover-actions, .ed-hero:focus-within .cover-actions { opacity: 1; }
+.ed-hero .cover-play { left: auto; right: 54px; bottom: 15px; }
+.ed-hero .cover-more { right: 15px; bottom: 15px; }
+.ed-hero:hover .cover-btn, .ed-hero:focus-within .cover-btn { pointer-events: auto; }
+.ed-bricks-section .ed-hero-head { min-height: 0; margin-bottom: 8px; }
+.ed-bricks-section .ed-hero-head:empty { display: none; }
+
+/* 横向卡片（官网 horizontal-lockup）：97px 封面，标题 15px 两行、说明 12px 两行 */
+.ed-horizontal { min-width: 0; display: flex; align-items: center; gap: 4px 20px; color: inherit; text-decoration: none; }
+.ed-horizontal-art {
+  position: relative; flex: 0 0 97px; width: 97px; aspect-ratio: 1; overflow: hidden; border-radius: 5px; background: var(--surface-3);
+  outline: 1px solid color-mix(in srgb, var(--text) 7%, transparent); outline-offset: -1px;
+}
+.ed-horizontal-art img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.ed-horizontal-art .ph, .ed-hero-art .ph { width: 100%; height: 100%; display: block; }
+.ed-horizontal:hover .ed-horizontal-art::after { content: ""; position: absolute; inset: 0; background: rgba(51, 51, 51, .3); }
+.ed-horizontal-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ed-horizontal-title, .ed-horizontal-sub { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ed-horizontal-title { color: var(--text); font-size: 15px; line-height: 1.3334; }
+.ed-horizontal-sub { color: var(--muted); font-size: 12px; line-height: 1.25; }
+
+/* 曲目列（官网 track-lockup，四行一列）：沿用艺人页 .ts-item，每行顶部一条分隔线 */
+.browse-page .track.ts-item { padding-right: 0; }
+.browse-page .track.ts-item::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; display: block; background: var(--line); opacity: 1;
+}
+.browse-page .track.ts-item:hover, .browse-page .track.ts-item:focus-within { background: none; }
+.browse-page .track.ts-item.unavailable .track-main, .browse-page .track.ts-item.unavailable .track-art { opacity: .45; }
+
+/* 链接列表（官网 link-box）：58px 高的圆角块，强调色文字；≥ 1000px 时分三栏 */
+.ed-links { margin: 0; padding: 0; list-style: none; }
+.ed-links li { margin: 12px 0; break-inside: avoid; }
+@media (min-width: 1000px) {
+  .ed-links { column-count: 3; column-gap: 20px; }
+  .ed-links li { width: 100%; margin: 0 0 20px; display: inline-block; }
+}
+.ed-link {
+  height: 58px; padding: 0 16px; display: flex; align-items: center; gap: 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--accent); font-size: 15px; text-decoration: none;
+}
+.ed-link span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-link svg { width: 12px; height: 12px; flex: 0 0 auto; color: var(--faint); }
+.ed-link:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.ed-paragraph { max-width: 760px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; white-space: pre-line; }
+
+/* 网格（room、策展人歌单）：与货架相同的列数，按行排列 */
+.ed-grid { --cols: 6; --gap: 20px; display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 24px var(--gap); }
+.ed-grid.grid-B { --cols: 2; }
+.ed-grid.grid-C { --cols: 3; }
+.ed-grid.grid-G { --cols: 4; }
+.ed-grid.grid-H { --cols: 6; }
+.ed-grid.grid-T { --cols: 2; row-gap: 0; }
+@media (min-width: 1000px) {
+  .ed-grid.grid-B { --cols: 3; }
+  .ed-grid.grid-C { --cols: 4; }
+  .ed-grid.grid-G { --cols: 5; }
+  .ed-grid.grid-H { --cols: 8; }
+  .ed-grid.grid-T { --cols: 3; }
+}
+@media (min-width: 1260px) {
+  .ed-grid.grid-B { --cols: 4; }
+  .ed-grid.grid-C { --cols: 5; }
+  .ed-grid.grid-G { --cols: 6; }
+  .ed-grid.grid-H { --cols: 10; }
+  .ed-grid.grid-T { --cols: 4; }
+}
+@media (max-width: 483px) {
+  .browse-title { font-size: 28px; }
+  .ed-grid { --gap: 14px; }
+  .ed-grid.grid-G, .ed-grid.grid-C { --cols: 2; }
+  .ed-grid.grid-B, .ed-grid.grid-T { --cols: 1; }
+  .ed-grid.grid-H { --cols: 3; }
+}
