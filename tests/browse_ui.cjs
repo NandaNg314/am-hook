@@ -102,8 +102,15 @@ const localPage = /^\/https:\/\/music\.apple\.com\/[a-z]{2}\/(song|music-video|a
     await page.locator('.ed-link[href="/new/top-charts"]').click();
     await page.waitForSelector('.ed-shelf.grid-T .ts-item.ranked', { timeout: 30000 });
     assert.equal(new URL(page.url()).pathname, '/new/top-charts');
-    assert.equal(await page.locator('[data-nav="new"]').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('[data-nav="charts"]').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('[data-nav="new"]').getAttribute('aria-current'), null);
+    assert.ok(await page.locator('#nav').evaluate((nav) => nav.classList.contains('is-home')), 'Top Charts is a top-level page');
     assert.equal((await page.locator('#title').textContent()).trim(), '排行榜');
+    // The sidebar entry opens the same page
+    await page.evaluate(() => window.AmApp.navigate('/'));
+    await page.click('.nav-link[data-nav="charts"]');
+    await page.waitForSelector('.ed-shelf.grid-T .ts-item.ranked', { timeout: 30000 });
+    assert.equal(new URL(page.url()).pathname, '/new/top-charts');
     assert.equal(await page.locator('.ed-section').count(), 6, 'songs, city, daily top 100, playlists, albums, videos');
     assert.equal((await page.locator('.ed-shelf.grid-T .ed-rank').first().textContent()).trim(), '1');
     assert.equal((await page.locator('.ed-shelf.grid-G .ed-ordinal').first().textContent()).trim(), '1', 'ranked playlists');

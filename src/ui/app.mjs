@@ -107,13 +107,11 @@ nav.addEventListener('click', (event) => {
 });
 setNavExpanded(false);
 
-/** 顶层页面（主页、新发现）不显示「返回」，导航中对应的一项标为当前页 */
-function syncNav(name) {
-  nav.classList.toggle('is-home', name === 'home' || name === 'new');
-  // 排行榜属于「新发现」（与官网相同）
-  const navName = name === 'charts' ? 'new' : name;
+/** 顶层页面（主页、新发现、排行榜首页）不显示「返回」，导航中对应的一项标为当前页；各榜单的「查看全部」仍标为排行榜 */
+function syncNav(name, path) {
+  nav.classList.toggle('is-home', name === 'home' || name === 'new' || path === '/new/top-charts');
   for (const link of nav.querySelectorAll('[data-nav]')) {
-    if (link.dataset.nav === navName) link.setAttribute('aria-current', 'page');
+    if (link.dataset.nav === name) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
 }
@@ -325,7 +323,7 @@ async function render(url, { scroll = 0, initial = false } = {}) {
   const controller = new AbortController();
   const { signal } = controller;
   current = { name, path: url.pathname, controller };
-  syncNav(name);
+  syncNav(name, url.pathname);
   setNavExpanded(false);
   document.title = 'am-hook';
   if (view.bodyClass) document.body.classList.add(...view.bodyClass.split(/\s+/));
