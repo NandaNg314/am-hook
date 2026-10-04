@@ -13,6 +13,10 @@
   'use strict';
 
   const AHEAD_SECONDS = 45;
+  // ALAC -> FLAC expands each source segment into several fMP4 fragments.
+  // Keep this window small enough that the current and chained next track do
+  // not fill the browser's SourceBuffer quota before eviction can run.
+  const FLAC_AHEAD_SECONDS = 14;
   const BEHIND_SECONDS = 30;
 
   /** 服务端默认 media m3u8 是每段独立 URL 的通用写法；Safari 原生 HLS 用原始 EXT-X-MAP + BYTERANGE 写法 */
@@ -566,6 +570,7 @@
       this.next = null;
       this.nextSerial = 0;
       this.trackSerial = 0;
+      this.stallLastTime = null;
     }
 
     /** m3u8Url：Apple CDN 上的原始 media m3u8 */
@@ -609,8 +614,11 @@
         this.checkBoundary();
         this.interrupt(gen);
       };
+      this.onWaiting = () => this.watchStall(gen);
       this.audio.addEventListener('timeupdate', this.onTick);
       this.audio.addEventListener('seeking', this.onSeeking);
+      this.audio.addEventListener('waiting', this.onWaiting);
+      this.audio.addEventListener('stalled', this.onWaiting);
       this.pump(gen);
     }
 
@@ -618,6 +626,7 @@
     interrupt(gen) {
       if (!this.sb) return;
       this.quotaWaitUntil = 0;
+      this.stallLastTime = null;
       this.seekSerial++;
       const seekSerial = this.seekSerial;
       this.pumpSerial++;
@@ -625,7 +634,10 @@
       this.segmentController = new AbortController();
       this.appendedSegments.clear();
       this.pendingSegments.clear();
-      if (this.next) this.next.pendingSegments.clear();
+      if (this.next) {
+        this.next.appendedSegments.clear();
+        this.next.pendingSegments.clear();
+      }
       if (this.sb.updating) {
         this.sb.addEventListener('updateend', () => {
           if (gen !== this.generation || seekSerial !== this.seekSerial) return;
@@ -636,6 +648,45 @@
         this.busy = false;
         this.pump(gen);
       }
+    }
+
+    /** 播放位置之后连续缓冲的秒数 */
+    bufferedAhead() {
+      const now = this.audio.currentTime;
+      const b = this.sb.buffered;
+      for (let i = 0; i < b.length; i++) {
+        if (b.start(i) <= now + 0.1 && b.end(i) > now) return b.end(i) - now;
+      }
+      return 0;
+    }
+
+    /**
+     * 播放因缓冲耗尽停住后 timeupdate 不再触发，pump 也就不再被调用。此时若 pump 在等配额（quotaWaitUntil
+     * 要等播放前进），或已记为追加的分段被浏览器按配额淘汰（FLAC 码率高，appendedSegments 仍认为已就绪），
+     * 会一直卡住，直到拖动进度触发 interrupt。这里检测到卡住时自动恢复，停住期间每秒复查一次。
+     */
+    watchStall(gen) {
+      clearTimeout(this.stallTimer);
+      const a = this.audio;
+      if (gen !== this.generation || !this.sb || a.paused || a.seeking || a.ended) {
+        this.stallLastTime = null;
+        return;
+      }
+      const now = a.currentTime;
+      // readyState may remain HAVE_FUTURE_DATA after an MSE gap. Actual clock
+      // movement is more reliable than that value for deciding if playback is stuck.
+      if (this.stallLastTime === null) this.stallLastTime = now;
+      if (now > this.stallLastTime + 0.25) {
+        this.stallLastTime = null;
+        return;
+      }
+      this.stallTimer = setTimeout(() => this.watchStall(gen), 1000);
+      if (this.busy) return; // 正在取数据，取完 pump 会自行继续
+      this.quotaWaitUntil = 0;
+      const target = this.target();
+      if (target && !target.tail) { this.pump(gen); return; }
+      // 认为都已就绪却没有缓冲：记录不可信，从播放位置重新缓冲。当前曲目结尾处（等下一首）不算
+      if (a.currentTime < this.base + this.playlist.duration - 0.5) this.interrupt(gen);
     }
 
     /**
@@ -785,8 +836,8 @@
     /** 下一个要追加的分段：先当前曲目，结尾之后是下一首；都在缓冲窗口内已就绪时返回 null */
     target() {
       const now = this.audio.currentTime;
-      // FLAC 也缓冲 45 秒，锁屏断网时不易耗尽；码率高碰到配额时由 evict / 等待播放消化（见 pump）
-      const ahead = AHEAD_SECONDS;
+      const flacQueue = this.transcoder || (this.next && this.next.transcoder);
+      const ahead = flacQueue ? FLAC_AHEAD_SECONDS : AHEAD_SECONDS;
       const { segments } = this.playlist;
       const startIndex = segmentAt(segments, now - this.base);
       for (let i = startIndex; i < segments.length; i++) {
@@ -886,6 +937,7 @@
             } catch (err) {
               if (!err || err.name !== 'QuotaExceededError') throw err;
               await this.evict(gen);
+              if (stale()) throw new DOMException('stale seek', 'AbortError');
               try {
                 await this.append(queue[0], gen);
               } catch (retryError) {
@@ -910,6 +962,7 @@
           } catch (err) {
             if (err && err.name === 'QuotaExceededError') {
               await this.evict(gen);
+              if (stale()) throw new DOMException('stale seek', 'AbortError');
               await this.append(buf, gen);
             } else {
               throw err;
@@ -943,6 +996,7 @@
       if (bump) this.generation++;
       this.nextSerial++;
       clearTimeout(this.retryTimer);
+      clearTimeout(this.stallTimer);
       if (this.controller) this.controller.abort();
       if (this.segmentController) this.segmentController.abort();
       if (this.transcoder) this.transcoder.destroy();
@@ -950,12 +1004,15 @@
       if (this.onTick) {
         this.audio.removeEventListener('timeupdate', this.onTick);
         this.audio.removeEventListener('seeking', this.onSeeking);
+        this.audio.removeEventListener('waiting', this.onWaiting);
+        this.audio.removeEventListener('stalled', this.onWaiting);
       }
       if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
-      this.onTick = this.onSeeking = this.controller = this.segmentController = this.objectUrl = this.sb = this.ms = this.playlist = this.transcoder = this.pendingSegments = this.appendedSegments = null;
+      this.onTick = this.onSeeking = this.onWaiting = this.controller = this.segmentController = this.objectUrl = this.sb = this.ms = this.playlist = this.transcoder = this.pendingSegments = this.appendedSegments = null;
       this.next = this.initBuf = this.initId = this.discardFrom = null;
       this.base = 0;
       this.quotaWaitUntil = 0;
+      this.stallLastTime = null;
       this.busy = false;
       this.failed = false;
     }
