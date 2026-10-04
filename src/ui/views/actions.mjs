@@ -67,6 +67,40 @@ export function pagePath(resource, country) {
   return `/https://music.apple.com/${country}/${kind}/${slug ? slug[1] : '_'}/${resource.id}`;
 }
 
+/** 本站能打开的 Apple Music 页面（与 app.mjs 的路由相同），艺人与策展人链接用 */
+const LOCAL_LINK = /^https:\/\/music\.apple\.com\/[a-z]{2}\/(?:(?:song|music-video)\/[^/?#]+\/\d+|post\/(?:[^/?#]+\/)?\d+|(?:album|artist|curator)\/(?:[^/?#]+\/)?\d+|playlist\/(?:[^/?#]+\/)?pl\.[\w-]+|(?:room|multi-room|grouping)\/\d+)$/i;
+
+/** Apple Music 地址 → 本站页面路径；本站打不开时为 '' */
+export function localPath(url) {
+  const m = String(url || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})(\/[^?#]*)/i);
+  if (!m) return '';
+  const clean = `https://music.apple.com/${m[1].toLowerCase()}${m[2].replace(/\/$/, '')}`;
+  return LOCAL_LINK.test(clean) ? '/' + clean : '';
+}
+
+/**
+ * 艺人行：在 artistName 中依次找到各关联艺人的名字并链接到艺人页，分隔符（&、逗号、feat. 等）保留为文字；
+ * 没有关联艺人时整行链接到 artistUrl（专辑等）
+ */
+export function artistLinks(resource, country) {
+  const a = resource.attributes || {};
+  const name = a.artistName || '';
+  const artists = ((resource.relationships && resource.relationships.artists && resource.relationships.artists.data) || [])
+    .filter((artist) => artist.attributes && artist.attributes.name);
+  const parts = [];
+  let pos = 0;
+  for (const artist of artists) {
+    const i = name.indexOf(artist.attributes.name, pos);
+    if (i < 0) continue;
+    if (i > pos) parts.push(name.slice(pos, i));
+    parts.push(el('a', { href: pagePath(artist, country), textContent: artist.attributes.name }));
+    pos = i + artist.attributes.name.length;
+  }
+  if (!parts.length && name && localPath(a.artistUrl)) return [el('a', { href: localPath(a.artistUrl), textContent: name })];
+  if (pos < name.length) parts.push(name.slice(pos));
+  return parts;
+}
+
 /** 能否播放：尚未发行的曲目（如歌单里的预告曲目）只有名称、封面等少数字段，没有 playParams，目录中也查不到 */
 export function playable(resource) {
   return !!(resource.attributes && resource.attributes.playParams);

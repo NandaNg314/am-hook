@@ -8,7 +8,7 @@
 // 区块按 editorialElementKind 排版（官网 vV）：316 hero 大卡、326 / 327 / 345 / 387 货架（歌曲为四行曲目列，
 // 专辑 / 歌单为方形封面，电台为横向卡片，视频为 16:9）、385 砖块、391 / 405 链接、404 段落；其余跳过。
 // 货架的列数与官网 shelf-grid 的 grid-type 相同（见 app.css .ed-shelf）。
-import { createActions, targetOf, pagePath, songEntry, playable } from './actions.mjs';
+import { createActions, targetOf, pagePath, songEntry, playable, artistLinks } from './actions.mjs';
 
 const { formatTime } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
@@ -306,11 +306,25 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   /** 卡片：本站能播放 / 打开的资源加上封面悬停按钮（见 actions.mjs），其余只是链接 */
-  function card(node, res, extraClass = '') {
-    if (!LOCAL_KINDS.has(res.type)) return el('div', { className: `card-wrap ${extraClass}`.trim() }, node);
+  function card(node, res, extraClass = '', after = null) {
+    if (!LOCAL_KINDS.has(res.type)) return el('div', { className: `card-wrap ${extraClass}`.trim() }, node, after);
     const wrap = actions.wrapCard(node, targetOf(res, country));
     if (extraClass) wrap.classList.add(...extraClass.split(/\s+/));
+    if (after) wrap.append(after);
     return wrap;
+  }
+
+  /**
+   * 卡片副标题：专辑 / 歌曲 / 视频的艺人链接到本站艺人页。链接不能放进卡片的 <a>，
+   * 故返回 { inner, after }：没有链接时副标题在卡片里（inner），有链接时放在卡片之后（after）
+   */
+  function subtitleParts(res) {
+    const sub = subtitleOf(res);
+    if (!sub) return {};
+    const links = ['albums', 'songs', 'music-videos'].includes(res.type) && sub === (res.attributes || {}).artistName
+      ? artistLinks(res, country) : [];
+    if (links.some((part) => typeof part !== 'string')) return { after: el('div', { className: 'shelf-sub' }, ...links) };
+    return { inner: el('span', { className: 'shelf-sub', textContent: sub }) };
   }
 
   /** 副标题（官网 Ooe）：歌单为作者，专辑 / 歌曲为艺人，其余取说明 */
@@ -336,11 +350,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const link = linkFor(res);
     const title = el('span', { className: 'shelf-title', textContent: a.name || '' });
     if (a.contentRating === 'explicit') title.append(explicitBadge());
-    const sub = subtitleOf(res);
+    const sub = subtitleParts(res);
     const node = el(link ? 'a' : 'div', { className: `shelf-item${person ? ' artist' : ''}`, ...linkProps(link) },
       el('span', { className: `shelf-art${person ? ' artist' : ''}` }, img(artUrl(a.artwork, 400, 400, person ? 'cc' : 'sr'))),
-      ordinal(rank), title, sub ? el('span', { className: 'shelf-sub', textContent: sub }) : null);
-    return card(node, res, person ? 'artist' : '');
+      ordinal(rank), title, sub.inner);
+    return card(node, res, person ? 'artist' : '', sub.after);
   }
 
   /** 16:9 视频卡片（verticalVideoLockup）；rank 为排行榜名次（可省略） */
@@ -349,11 +363,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const link = linkFor(res);
     const title = el('span', { className: 'shelf-title', textContent: a.name || '' });
     if (a.contentRating === 'explicit') title.append(explicitBadge());
-    const sub = subtitleOf(res);
+    const sub = subtitleParts(res);
     const art = res.type === 'music-videos' ? artUrl(a.artwork, 680, 383, 'mv') : artUrl(a.artwork, 680, 383, 'sr');
     const node = el(link ? 'a' : 'div', { className: 'shelf-item mv', ...linkProps(link) },
-      el('span', { className: 'shelf-art mv' }, img(art)), ordinal(rank), title, sub ? el('span', { className: 'shelf-sub', textContent: sub }) : null);
-    return card(node, res, 'mv');
+      el('span', { className: 'shelf-art mv' }, img(art)), ordinal(rank), title, sub.inner);
+    return card(node, res, 'mv', sub.after);
   }
 
   /** 横向卡片（horizontalLockup）：97px 方形封面，右侧标题与说明，电台等 */
@@ -387,7 +401,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const albumHref = album && album.attributes ? pagePath(album, country) : '';
     const main = el('div', { className: 'track-main' },
       el('div', { className: 'track-line' }, el('a', { className: 'track-title', href, textContent: a.name }), a.contentRating === 'explicit' ? explicitBadge() : null),
-      el('div', { className: 'track-artist', textContent: a.artistName || '' }));
+      el('div', { className: 'track-artist' }, ...artistLinks(track, country)));
     const more = actions.moreButton(targetOf(track, country, { albumHref, ...(canPlay ? { onPlay: () => playTrack(track, queue) } : {}) }));
     const row = el('div', { className: `track ts-item ed-track${rank ? ' ranked' : ''}${canPlay ? '' : ' unavailable'}` },
       cover, rank ? el('span', { className: 'ed-rank', textContent: rank.toLocaleString() }) : null, main, more);
@@ -602,7 +616,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const main = el('div', { className: 'track-main' },
       el('div', { className: 'track-line' }, el(canPlay ? 'a' : 'span', { className: 'track-title', textContent: a.name, ...(canPlay ? { href } : {}) }),
         a.contentRating === 'explicit' ? explicitBadge() : null),
-      el('div', { className: 'track-artist', textContent: a.artistName || '' }));
+      el('div', { className: 'track-artist' }, ...artistLinks(track, country)));
     const albumCol = albumHref && a.albumName ? el('a', { className: 'track-album', href: albumHref, textContent: a.albumName })
       : el('span', { className: 'track-album', textContent: a.albumName || '' });
     const more = actions.moreButton(targetOf(track, country, { albumHref, ...(canPlay ? { onPlay: () => playTrack(track, queue) } : {}) }));

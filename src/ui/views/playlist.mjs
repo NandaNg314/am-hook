@@ -1,5 +1,5 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
-import { createActions, playable, targetOf } from './actions.mjs';
+import { createActions, playable, targetOf, localPath } from './actions.mjs';
 import { createDetailHeader } from './detail-header.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
@@ -147,13 +147,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     $('title').classList.remove('skeleton');
     $('title').textContent = a.name;
 
-    // 歌单作者：编辑歌单是 Apple Music 或某个策展人，链接到 Apple Music（本站不支持策展人页）
+    // 歌单作者：编辑歌单是 Apple Music 或某个策展人（curator / apple-curator / 艺人），链接到本站的策展人页或艺人页；
+    // 本站打不开的地址才链接到 Apple Music
     const curator = ((playlist.relationships && playlist.relationships.curator && playlist.relationships.curator.data) || [])[0];
     const curatorName = (curator && curator.attributes && curator.attributes.name) || a.curatorName || '';
     const curatorUrl = curator && curator.attributes && curator.attributes.url;
+    const curatorPath = localPath(curatorUrl)
+      || (curator && ['curators', 'apple-curators'].includes(curator.type) && /^\d+$/.test(curator.id) ? `/https://music.apple.com/${country}/curator/_/${curator.id}` : '');
     $('artist').classList.remove('skeleton');
-    $('artist').replaceChildren(curatorUrl
-      ? el('a', { href: curatorUrl, target: '_blank', rel: 'noreferrer', textContent: curatorName })
+    $('artist').replaceChildren(curatorPath ? el('a', { href: curatorPath, textContent: curatorName })
+      : curatorUrl ? el('a', { href: curatorUrl, target: '_blank', rel: 'noreferrer', textContent: curatorName })
       : curatorName);
 
     const updated = a.lastModifiedDate ? formatDate(a.lastModifiedDate) : '';

@@ -115,6 +115,10 @@
 .browse-page .card-wrap .cover-actions { border-radius: 7px; }
 .browse-page .card-wrap.artist .cover-actions { border-radius: 50%; }
 .browse-page a.shelf-item:hover .shelf-title { text-decoration: underline; }
+/* 带艺人链接的副标题在卡片链接之后（见 browse.mjs subtitleParts） */
+.browse-page .card-wrap > .shelf-sub { margin-top: 1px; }
+.browse-page .card-wrap > .shelf-sub a { color: inherit; text-decoration: none; }
+.browse-page .card-wrap > .shelf-sub a:hover { color: var(--text); text-decoration: underline; }
 
 /* hero 大卡（官网 editorial-card）：眉题 11px、标题 / 副标题 17px，宽幅封面 1.7436:1，底部渐变上压说明文字 */
 .ed-hero { position: relative; display: flex; flex-direction: column; }
