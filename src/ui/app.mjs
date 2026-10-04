@@ -8,7 +8,8 @@
 
 import { mountSettings } from '/assets/settings.mjs';
 import * as library from '/assets/library.mjs';
-import { newPlaylist, playlistName } from '/assets/views/library-ui.mjs';
+import { newPlaylist, newFolder, playlistName, folderName, LIB_ICON } from '/assets/views/library-ui.mjs';
+import { openMenu } from '/assets/views/actions.mjs';
 
 const { AmPlayer } = window.AmHook;
 const { AmI18n } = window;
@@ -40,8 +41,9 @@ const VIEW_FILES = { new: 'browse', charts: 'browse', editorial: 'browse', post:
 /** 跟随主地区的排行榜路径（与 src/m3u8.rs 的 is_charts_path 相同） */
 const CHARTS_PATH = /^\/new\/top-charts(?:\/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/;
 /** 资料库（与 src/m3u8.rs 的 is_library_path 相同）：各分类与本地歌单，数据只在浏览器中 */
-const LIBRARY_PATH = /^\/library(?:\/(?:recently-added|albums|songs|music-videos|all-playlists|artists(?:\/[^/?#]+)?))?\/?$/;
-const LIBRARY_PLAYLIST_PATH = /^\/library\/playlist\/p\.[0-9A-Za-z_-]+\/?$/;
+const LIBRARY_PATH = /^\/library(?:\/(?:recently-added|albums|songs|music-videos|all-playlists|artists(?:\/[^/?#]+)?|playlist-folder\/f\.[0-9A-Za-z_-]+))?\/?$/;
+/** 本地歌单与「喜爱的歌曲」 */
+const LIBRARY_PLAYLIST_PATH = /^\/library\/(?:playlist\/p\.[0-9A-Za-z_-]+|favorite-songs)\/?$/;
 
 /** 地址对应的页面名；不是站内页面时为 null（交给浏览器正常跳转）。与服务端一样匹配未解码的路径 */
 function route(url) {
@@ -118,50 +120,164 @@ setNavExpanded(false);
 
 /**
  * 顶层页面（主页、新发现、排行榜首页、资料库与本地歌单）不显示「返回」，导航中对应的一项标为当前页；
- * 各榜单的「查看全部」仍标为排行榜；资料库按分类（library:songs 等），歌单按地址
+ * 各榜单的「查看全部」仍标为排行榜；资料库按分类（library:songs 等），歌单与文件夹按地址（所在文件夹自动展开）
  */
 function syncNav(name, path) {
   nav.classList.toggle('is-home', name === 'home' || name === 'new' || path === '/new/top-charts' || name === 'library' || name === 'library-playlist');
-  const key = name === 'library' ? `library:${path.split('/')[2] || 'recently-added'}` : name;
+  const key = name === 'library' || path.startsWith('/library/favorite-songs') ? `library:${path.split('/')[2] || 'recently-added'}` : name;
   for (const link of nav.querySelectorAll('[data-nav]')) {
     if (link.dataset.nav === key) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
+  if (revealInNav(path)) return; // 展开了上级文件夹：重绘后会再次调用
   for (const link of navPlaylists.querySelectorAll('a')) {
     if (link.getAttribute('href') === path) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
 }
 
-/* ---------- 导航中的歌单（官网侧边栏「播放列表」分组）：本地歌单与添加到资料库的 Apple Music 歌单，按名称排列 ---------- */
+/* ---------- 导航中的歌单（官网侧边栏「播放列表」分组）：文件夹在前、可展开，其中与最上层的歌单按名称排列；
+   歌单与文件夹可以拖到文件夹上（或拖到「歌单」标题上移到最上层） ---------- */
 const navPlaylists = $('nav-playlists');
+const EXPANDED_KEY = 'am-hook:nav-folders';
+/** 展开的文件夹（记住，下次打开时保留） */
+const expandedFolders = new Set((() => {
+  try { return JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]'); } catch { return []; }
+})());
+function saveExpanded() {
+  try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedFolders])); } catch {}
+}
+
+/** 打开文件夹里的歌单或子文件夹时展开其上级文件夹；返回是否有变化（已重绘） */
+function revealInNav(path) {
+  let folderId = '';
+  const m = path.match(/^\/library\/(playlist|playlist-folder)\/([^/]+)/);
+  if (m && m[1] === 'playlist') folderId = (library.playlist(m[2]) || {}).folderId || '';
+  else if (m) folderId = (library.folder(m[2]) || {}).parentId || '';
+  else folderId = (library.libraryItems('playlist').find((item) => item.href === path) || {}).folderId || '';
+  let changed = false;
+  for (const dir of library.folderPath(folderId)) {
+    if (!expandedFolders.has(dir.id)) { expandedFolders.add(dir.id); changed = true; }
+  }
+  if (changed) { saveExpanded(); renderNavPlaylists(); }
+  return changed;
+}
+
+const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter(Boolean));
+  return node;
+};
+
+/** 一项歌单 / 文件夹的链接；drag 为拖动时移动的条目 { type, id } */
+function navLink({ name, href, art, drag }) {
+  const link = el('a', { className: 'nav-link', href, title: name }, art, el('span', { className: 'nav-label', textContent: name }));
+  link.draggable = true;
+  link.addEventListener('dragstart', (event) => {
+    dragEntry = drag;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', name);
+  });
+  link.addEventListener('dragend', endDrag);
+  return link;
+}
+
+/** 文件夹 parentId 中的内容（递归，展开的文件夹列出其内容） */
+function navTree(parentId, collator) {
+  const children = library.folderChildren(parentId);
+  const nodes = children.folders.map((dir) => {
+    const open = expandedFolders.has(dir.id);
+    const toggle = el('button', { className: 'nav-folder-toggle', type: 'button', innerHTML: CHEVRON });
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', t(open ? 'library.collapseFolder' : 'library.expandFolder', { name: folderName(dir) }));
+    toggle.addEventListener('click', () => {
+      if (open) expandedFolders.delete(dir.id); else expandedFolders.add(dir.id);
+      saveExpanded();
+      renderNavPlaylists();
+      navPlaylists.querySelector(`[data-drop-folder="${dir.id}"] .nav-folder-toggle`)?.focus();
+    });
+    const art = el('span', { className: 'nav-playlist-art nav-folder-art', innerHTML: LIB_ICON.folder });
+    const row = el('div', { className: 'nav-folder-row' }, toggle, navLink({ name: folderName(dir), href: `/library/playlist-folder/${dir.id}`, art, drag: { type: 'folder', id: dir.id } }));
+    const item = el('li', { className: 'nav-item nav-folder' }, row, open ? el('ul', { className: 'nav-playlists nav-folder-children' }, ...navTree(dir.id, collator)) : null);
+    item.dataset.dropFolder = dir.id;
+    return item;
+  });
+  const lists = [
+    ...children.playlists.map((list) => ({
+      name: playlistName(list), href: `/library/playlist/${list.id}`, artwork: (list.tracks.find((track) => track.artwork) || {}).artwork, drag: { type: 'playlist', id: list.id },
+    })),
+    ...children.catalog.filter((item) => item.href).map((item) => ({ name: item.name, href: item.href, artwork: item.artwork, drag: { type: 'catalog', id: item.id } })),
+  ].sort((a, b) => collator.compare(a.name, b.name));
+  for (const entry of lists) {
+    const src = library.artUrl(entry.artwork, 64);
+    const art = el('span', { className: 'nav-playlist-art' }, src ? el('img', { src, alt: '', loading: 'lazy', decoding: 'async' }) : null);
+    nodes.push(el('li', { className: 'nav-item' }, navLink({ ...entry, art })));
+  }
+  return nodes;
+}
+
 function renderNavPlaylists() {
   const collator = new Intl.Collator(AmI18n.lang === 'zh' ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' });
-  const entries = [
-    ...library.playlists().map((list) => ({
-      name: playlistName(list), href: `/library/playlist/${list.id}`, artwork: (list.tracks.find((track) => track.artwork) || {}).artwork,
-    })),
-    ...library.libraryItems('playlist').filter((item) => item.href).map((item) => ({ name: item.name, href: item.href, artwork: item.artwork })),
-  ].sort((a, b) => collator.compare(a.name, b.name));
-  navPlaylists.replaceChildren(...entries.map((entry) => {
-    const art = document.createElement('span');
-    art.className = 'nav-playlist-art';
-    const src = library.artUrl(entry.artwork, 64);
-    if (src) art.append(Object.assign(document.createElement('img'), { src, alt: '', loading: 'lazy', decoding: 'async' }));
-    const label = Object.assign(document.createElement('span'), { className: 'nav-label', textContent: entry.name });
-    const link = Object.assign(document.createElement('a'), { className: 'nav-link', href: entry.href, title: entry.name });
-    link.append(art, label);
-    const item = Object.assign(document.createElement('li'), { className: 'nav-item' });
-    item.append(link);
-    return item;
-  }));
+  // 删除的文件夹不再记着展开
+  for (const id of expandedFolders) if (!library.folder(id)) expandedFolders.delete(id);
+  navPlaylists.replaceChildren(...navTree('', collator));
   if (current) syncNav(current.name, current.path);
 }
 library.onChange(renderNavPlaylists);
 AmI18n.onChange(renderNavPlaylists);
-nav.querySelector('[data-new-playlist]').addEventListener('click', () => {
-  setNavExpanded(false);
-  newPlaylist({ open: true, navigate: (href) => navigate(href), toast });
+
+/* 拖放：拖动中的条目记在 dragEntry（dragover 时读不到 dataTransfer 的内容） */
+let dragEntry = null;
+function dropTarget(event) {
+  const target = event.target instanceof Element && event.target.closest('[data-drop-folder]');
+  if (!target || !dragEntry) return null;
+  const folderId = target.dataset.dropFolder;
+  if (dragEntry.type === 'folder' && (dragEntry.id === folderId || !library.canMoveFolder(dragEntry.id, folderId))) return null;
+  return { target, folderId };
+}
+function clearDropHighlight() {
+  for (const node of nav.querySelectorAll('.is-drop-target')) node.classList.remove('is-drop-target');
+}
+function endDrag() {
+  dragEntry = null;
+  clearDropHighlight();
+}
+nav.addEventListener('dragover', (event) => {
+  const drop = dropTarget(event);
+  if (!drop) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  if (!drop.target.classList.contains('is-drop-target')) {
+    clearDropHighlight();
+    drop.target.classList.add('is-drop-target');
+  }
+});
+nav.addEventListener('dragleave', (event) => {
+  if (!nav.contains(event.relatedTarget)) clearDropHighlight();
+});
+nav.addEventListener('drop', (event) => {
+  const drop = dropTarget(event);
+  if (!drop) return;
+  event.preventDefault();
+  const entry = dragEntry;
+  endDrag();
+  const dir = library.folder(drop.folderId);
+  if (library.moveToFolder(entry, drop.folderId)) {
+    toast(t('library.movedTo', { name: dir ? folderName(dir) : t('library.topLevel') }));
+    if (dir && !expandedFolders.has(dir.id)) { expandedFolders.add(dir.id); saveExpanded(); renderNavPlaylists(); }
+  }
+});
+
+/* 「歌单」标题旁的 +：新建歌单或文件夹 */
+const newButton = nav.querySelector('[data-new-playlist]');
+newButton.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const go = (href) => { setNavExpanded(false); navigate(href); };
+  openMenu(newButton, [
+    { icon: LIB_ICON.add, label: t('library.newPlaylistEllipsis'), onSelect: () => newPlaylist({ open: true, navigate: go, toast }) },
+    { icon: LIB_ICON.newFolder, label: t('library.newFolderEllipsis'), onSelect: () => newFolder({ open: true, navigate: go, toast }) },
+  ]);
 });
 
 /* ---------- 设置：主地区与曲库语言的选择面板 ---------- */

@@ -66,9 +66,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const actions = createActions({ signal, player, navigate, toast });
   const songTarget = () => (meta.resource ? targetOf(meta.resource, meta.country) : null);
   const libraryToggle = actions.libraryButton(songTarget, 'btn lib-toggle');
+  const favoriteToggle = actions.favoriteButton(songTarget, 'btn lib-fav-toggle');
   const playlistBtn = actions.playlistButton(songTarget, 'btn');
   playlistBtn.disabled = true;
-  $('play-best').after(libraryToggle.button, playlistBtn);
+  $('play-best').after(libraryToggle.button, favoriteToggle.button, playlistBtn);
 
   const ICON = {
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
@@ -629,6 +630,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     metaLoaded = true;
     renderMeta();
     libraryToggle.refresh();
+    favoriteToggle.refresh();
     playlistBtn.disabled = !meta.resource;
     if (rows.size) renderVariants(); // 下载文件名需要歌名
   }

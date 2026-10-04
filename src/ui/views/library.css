@@ -16,6 +16,21 @@
   height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); font-size: 13px;
 }
 .lib-new { height: 34px; padding: 0 12px; }
+.lib-heading { min-width: 0; }
+/* 文件夹页标题上方的路径：所有歌单 › 上级文件夹 */
+.lib-crumbs { margin-bottom: 2px; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.lib-crumbs[hidden] { display: none; }
+.lib-crumbs a { color: inherit; text-decoration: none; }
+.lib-crumbs a:hover { color: var(--accent); text-decoration: underline; }
+/* 「喜爱」筛选：按下时为强调色 */
+.lib-chip {
+  height: 34px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 17px; background: var(--surface-2); color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.lib-chip[hidden] { display: none; }
+.lib-chip svg { width: 14px; height: 14px; }
+.lib-chip:hover { color: var(--text); }
+.lib-chip[aria-pressed="true"] { border-color: transparent; background: var(--accent); color: #fff; }
 .lib-more { width: 34px; height: 34px; }
 @media (max-width: 600px) {
   .lib-head { align-items: stretch; }
@@ -51,6 +66,9 @@
   background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, var(--surface-3)), var(--surface-3));
 }
 .lib-cover-ph svg { width: 38%; height: 38%; }
+/* 「喜爱的歌曲」：强调色渐变上的白色星形；文件夹：灰底文件夹图标 */
+.lib-cover-favorite .lib-cover-ph { color: #fff; background: linear-gradient(145deg, #ff5e7a, var(--accent) 55%, #b5002f); }
+.lib-cover-folder .lib-cover-ph { color: var(--muted); background: var(--surface-3); }
 .shelf-art .lib-cover { border-radius: inherit; }
 .album-art .lib-cover-hero { aspect-ratio: 1; border-radius: inherit; }
 
@@ -64,6 +82,9 @@
 
 /* ---------- 歌曲列表：与歌单页的曲目行相同 ---------- */
 .lib-sentinel { height: 1px; }
+/* 喜爱的曲目：歌名后的小星形（与 Apple Music 相同） */
+.lib-fav { margin-left: 6px; flex-shrink: 0; display: inline-flex; color: var(--accent); }
+.lib-fav svg { width: 12px; height: 12px; }
 .lib-page .album-footer { padding-left: 10px; }
 
 /* ---------- 艺人：宽屏左侧列表（固定宽度、随页面滚动吸顶），右侧为选中的艺人；手机上只显示其一 ---------- */
@@ -81,7 +102,8 @@
 .lib-artist-avatar { flex: 0 0 36px; width: 36px; height: 36px; overflow: hidden; border-radius: 50%; background: var(--surface-3); }
 .lib-artist-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .lib-artist-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lib-artist-title { margin: 4px 0 6px; font-size: 24px; font-weight: 700; }
+.lib-artist-head { display: flex; align-items: center; gap: 12px; }
+.lib-artist-title { min-width: 0; margin: 4px 0 6px; font-size: 24px; font-weight: 700; }
 .lib-artist-title a { color: inherit; text-decoration: none; }
 .lib-artist-title a:hover { color: var(--accent); }
 .lib-subhead { margin: 22px 0 12px; font-size: 17px; font-weight: 700; }

@@ -2,12 +2,20 @@
   <main>
     <!-- 资料库（官网 /library/...）：标题、筛选、排序与「更多」（导入 / 导出），内容由 library.mjs 按分类渲染 -->
     <header class="lib-head">
-      <h1 class="lib-title" id="title"></h1>
+      <div class="lib-heading">
+        <!-- 文件夹页：上级文件夹路径 -->
+        <nav class="lib-crumbs" id="crumbs" hidden></nav>
+        <h1 class="lib-title" id="title"></h1>
+      </div>
       <div class="lib-tools">
         <label class="lib-filter">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
           <input id="filter" type="search" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder=library.filter,aria-label=library.filter">
         </label>
+        <button class="lib-chip" id="fav-only" type="button" aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>
+          <span data-i18n="library.favorites"></span>
+        </button>
         <label class="lib-sort" id="sort-wrap" hidden>
           <span class="sr-only" data-i18n="library.sortBy"></span>
           <select id="sort"></select>

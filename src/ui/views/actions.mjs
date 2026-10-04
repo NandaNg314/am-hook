@@ -11,7 +11,7 @@
 //   加入资料库或歌单时不再重新请求；getTracks()：要加入歌单的曲目快照（本地歌单用）；playlistId：「添加到歌单」里不列出的歌单；
 //   extraItems：页面自己的菜单项（如「从歌单中删除」）
 import * as library from '/assets/library.mjs';
-import { LIB_ICON, playlistMenuItems } from './library-ui.mjs';
+import { LIB_ICON, playlistMenuItems, moveMenuItems } from './library-ui.mjs';
 
 const { AmI18n } = window;
 const { t } = AmI18n;
@@ -200,18 +200,40 @@ function libraryKey(target) {
   return m ? { kind: target.kind, id: m[1] } : null;
 }
 
-/** 加入资料库：歌曲 / MV 为自身；专辑连同全部曲目（与 Apple Music 相同）；Apple Music 歌单只加歌单本身。返回新增数量 */
-async function addTargetToLibrary(target) {
+/**
+ * 喜爱用的键：本地歌单为 { local: true, id }，艺人为 { kind: 'artist', id }，其余与 libraryKey 相同；不能喜爱时为 null
+ */
+function favoriteKey(target) {
+  if (target.kind === 'library-playlist') return target.playlistId ? { local: true, id: target.playlistId } : null;
+  if (target.kind === 'artist') {
+    const id = target.resource ? target.resource.id : ((target.href || '').match(/\/(\d+)$/) || [])[1];
+    return id ? { kind: 'artist', id } : null;
+  }
+  return libraryKey(target);
+}
+
+/** 加入资料库的条目：歌曲 / MV 为自身；专辑连同全部曲目（与 Apple Music 相同）；Apple Music 歌单只有歌单本身；艺人为艺人条目 */
+async function libraryRecords(target) {
   if (target.kind === 'song' || target.kind === 'music-video') {
     const track = target.track || (target.resource && snapshotOf(target.resource, target.country));
     if (!track) throw new Error('no metadata');
-    return library.addToLibrary([track]);
+    return [track];
+  }
+  if (target.kind === 'artist') {
+    const key = favoriteKey(target);
+    const a = (target.resource && target.resource.attributes) || {};
+    return [{ kind: 'artist', id: key.id, country: target.country, name: a.name || target.name, href: target.href, artwork: (a.artwork && a.artwork.url) || target.artwork || '' }];
   }
   const c = await fetchCollection(target);
   if (!c) throw new Error('not found');
   const records = [collectionRecord(c.resource, c.country)];
   if (target.kind === 'album') records.push(...collectionSnapshots(c));
-  return library.addToLibrary(records);
+  return records;
+}
+
+/** 加入资料库，返回新增数量 */
+async function addTargetToLibrary(target) {
+  return library.addToLibrary(await libraryRecords(target));
 }
 
 /** 要加入歌单的曲目快照 */
@@ -401,9 +423,39 @@ export function createActions({ signal, player, navigate, toast }) {
     }
   }
 
-  /** 资料库菜单项：添加到资料库 / 从资料库中删除、添加到歌单（子菜单） */
+  const favoriteOf = (key) => !!key && (key.local ? !!(library.playlist(key.id) || {}).favorite : library.isFavorite(key.kind, key.id));
+
+  /** 喜爱 / 取消喜爱（与 Apple Music 相同，喜爱时同时加入资料库）；busy 为请求曲目期间显示忙碌的按钮 */
+  async function toggleFavorite(target, busy) {
+    const key = favoriteKey(target);
+    if (!key) return;
+    const on = !favoriteOf(key);
+    if (key.local) {
+      library.setPlaylistFavorite(key.id, on);
+    } else {
+      if (busy) busy.classList.add('busy');
+      try {
+        // 已在资料库中时不必再取曲目
+        const records = on && !library.libraryItem(key.kind, key.id) ? await libraryRecords(target) : [];
+        library.setFavorite(key.kind, key.id, on, records);
+      } catch (err) {
+        toast(t('library.failed', { msg: err.message }));
+        return;
+      } finally {
+        if (busy) busy.classList.remove('busy');
+      }
+    }
+    toast(t(on ? 'library.favoritedName' : 'library.unfavoritedName', { name: target.name }));
+  }
+
+  /** 资料库菜单项：喜爱 / 取消喜爱、添加到资料库 / 从资料库中删除、添加到歌单（子菜单）、移到文件夹（子菜单） */
   function libraryItems(target, button) {
     const items = [];
+    const fav = favoriteKey(target);
+    if (fav) {
+      const on = favoriteOf(fav);
+      items.push({ icon: on ? LIB_ICON.star : LIB_ICON.starFilled, label: t(on ? 'library.unfavorite' : 'library.favorite'), onSelect: () => toggleFavorite(target, button) });
+    }
     const key = libraryKey(target);
     if (key) {
       const has = library.inLibrary(key.kind, key.id);
@@ -414,6 +466,14 @@ export function createActions({ signal, player, navigate, toast }) {
         icon: LIB_ICON.addToPlaylist, label: t('library.addToPlaylist'),
         submenu: () => playlistMenuItems(() => targetTracks(target), { toast, navigate, except: target.playlistId }),
       });
+    }
+    // 移到文件夹：本地歌单、文件夹（页面给出 moveEntry），以及已添加到资料库的 Apple Music 歌单
+    const catalog = key && key.kind === 'playlist' && library.libraryItem('playlist', key.id);
+    const entry = target.moveEntry || (catalog ? { type: 'catalog', id: key.id } : null);
+    if (entry) {
+      const current = entry.type === 'folder' ? (library.folder(entry.id) || {}).parentId
+        : entry.type === 'playlist' ? (library.playlist(entry.id) || {}).folderId : catalog.folderId;
+      items.push({ icon: LIB_ICON.move, label: t('library.moveToFolder'), submenu: () => moveMenuItems(entry, current || '', { toast }) });
     }
     return items;
   }
@@ -497,6 +557,30 @@ export function createActions({ signal, player, navigate, toast }) {
     return { button, refresh };
   }
 
+  /**
+   * 喜爱按钮（☆ / ★），用法与 libraryButton 相同；className 默认为详情页头部的圆形按钮。返回 { button, refresh }
+   */
+  function favoriteButton(getTarget, className = 'detail-circle-btn lib-fav-toggle') {
+    const button = el('button', { className, type: 'button', disabled: true });
+    const refresh = () => {
+      const target = getTarget();
+      const key = target && favoriteKey(target);
+      const on = favoriteOf(key);
+      button.disabled = !key;
+      button.innerHTML = on ? LIB_ICON.starFilled : LIB_ICON.star;
+      button.setAttribute('aria-pressed', String(on));
+      button.title = t(on ? 'library.unfavorite' : 'library.favorite');
+      button.setAttribute('aria-label', button.title);
+    };
+    button.addEventListener('click', () => {
+      const target = getTarget();
+      if (target) toggleFavorite(target, button);
+    });
+    signal.addEventListener('abort', library.onChange(refresh), { once: true });
+    refresh();
+    return { button, refresh };
+  }
+
   /** 「添加到歌单」按钮：直接打开歌单子菜单 */
   function playlistButton(getTarget, className) {
     const button = el('button', { className, type: 'button', innerHTML: LIB_ICON.addToPlaylist, title: t('library.addToPlaylist') });
@@ -525,5 +609,5 @@ export function createActions({ signal, player, navigate, toast }) {
     return wrap;
   }
 
-  return { moreButton, coverActions, wrapCard, wrapRow, libraryButton, playlistButton };
+  return { moreButton, coverActions, wrapCard, wrapRow, libraryButton, favoriteButton, playlistButton, toggleFavorite };
 }

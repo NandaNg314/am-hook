@@ -33,9 +33,9 @@ static CHARTS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^new/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?/?$").unwrap()
 });
 /// 资料库与本地歌单（与 music.apple.com 的 `/library/...` 相同，数据只保存在浏览器中，不含开头的 `/`）：
-/// `library`、各分类、`library/artists/<名称>` 与 `library/playlist/p.<id>`
+/// `library`、各分类、`library/artists/<名称>`、`library/playlist/p.<id>`、`library/favorite-songs` 与 `library/playlist-folder/f.<id>`
 static LIBRARY_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^library(?:/(?:recently-added|albums|songs|music-videos|all-playlists|artists(?:/[^/?#]+)?|playlist/p\.[0-9A-Za-z_-]+))?/?$").unwrap()
+    Regex::new(r"^library(?:/(?:recently-added|albums|songs|music-videos|all-playlists|favorite-songs|artists(?:/[^/?#]+)?|playlist/p\.[0-9A-Za-z_-]+|playlist-folder/f\.[0-9A-Za-z_-]+))?/?$").unwrap()
 });
 static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
@@ -436,6 +436,9 @@ mod tests {
         assert!(is_library_path("library/artists/Taylor%20Swift"));
         assert!(is_library_path("library/playlist/p.A1b2_c3-d4"));
         assert!(!is_library_path("library/playlist/pl.123"));
+        assert!(is_library_path("library/favorite-songs"));
+        assert!(is_library_path("library/playlist-folder/f.Ab3_x"));
+        assert!(!is_library_path("library/playlist-folder/p.Ab3"));
         assert!(!is_library_path("library/other"));
         assert!(!is_library_path("library/artists/a/b"));
         assert!(!is_editorial_link("https://music.apple.com/us/room/abc"));

@@ -1816,3 +1816,28 @@ body.lyrics-open { overflow: hidden; }
 .lib-dialog-btn.primary:hover { background: var(--accent-hover); }
 .lib-dialog-btn.danger { border-color: color-mix(in srgb, var(--error) 40%, transparent); color: var(--error); }
 .lib-dialog-btn.primary.danger { background: var(--error); color: #fff; }
+
+/* 喜爱（☆ / ★）：已喜爱时为强调色；「喜爱的歌曲」导航图标同色 */
+.lib-fav-toggle[aria-pressed="true"], .nav-icon-favorite { color: var(--accent); }
+.detail-circle-btn[hidden], .artist-round-btn[hidden] { display: none; }
+
+/* 导航中的歌单文件夹：左侧展开箭头，内容缩进；拖动歌单 / 文件夹到文件夹（或「歌单」标题）上时高亮 */
+.nav-folder-row { display: flex; align-items: center; }
+.nav-folder-row .nav-link { flex: 1; min-width: 0; }
+.nav-folder-toggle {
+  flex: 0 0 18px; width: 18px; height: 28px; margin-left: -12px; padding: 0; display: grid; place-items: center;
+  border: 0; border-radius: 4px; background: none; color: var(--muted);
+}
+.nav-folder-toggle:hover { color: var(--text); }
+.nav-folder-toggle svg { width: 12px; height: 12px; transition: transform .15s ease; }
+.nav-folder-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.nav-folder-art { display: grid; place-items: center; color: var(--muted); background: none; }
+.nav-folder-art svg { width: 100%; height: 100%; }
+.nav-folder-children { padding-left: 16px; }
+.nav-section.is-drop-target, .nav-folder.is-drop-target > .nav-folder-row {
+  border-radius: 8px; background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+@media (max-width: 483px) {
+  .nav-folder-toggle { flex-basis: 24px; width: 24px; height: 44px; margin-left: -6px; }
+  .nav-folder-toggle svg { width: 14px; height: 14px; }
+}

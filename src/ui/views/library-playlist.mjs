@@ -1,10 +1,11 @@
 // 本地歌单页（与 music.apple.com 的 /library/playlist/p.… 相同），由 app.mjs 挂载。
-// 歌单保存在浏览器中（/assets/library.mjs）：可以编辑名称与描述、拖动排序、从歌单中删除曲目、复制、导出与删除。
+// 歌单保存在浏览器中（/assets/library.mjs）：可以编辑名称与描述、喜爱、拖动排序、从歌单中删除曲目、移到文件夹、复制、导出与删除。
+// /library/favorite-songs 为「喜爱的歌曲」：由喜爱的歌曲自动组成（最近喜爱的在前），不能编辑与排序，取消喜爱即移出。
 import * as library from '/assets/library.mjs';
 import { createActions, openMenu } from './actions.mjs';
 import {
   LIB_ICON, playlistCover, playlistName, editPlaylist, deletePlaylist, duplicatePlaylist, exportPlaylist,
-  playlistMenuItems, trackRow, syncTrackRows,
+  playlistMenuItems, trackRow, syncTrackRows, favoriteCover, folderName, moveMenuItems,
 } from './library-ui.mjs';
 
 const { AmI18n } = window;
@@ -16,7 +17,9 @@ export const styles = ['/assets/views/library.css'];
 export function mount({ root, url, signal, player, navigate, toast, onLangChange }) {
   const actions = createActions({ signal, player, navigate, toast });
   const $ = (id) => root.querySelector(`#${id}`);
-  const id = url.pathname.split('/').filter(Boolean)[2] || '';
+  /** 「喜爱的歌曲」 */
+  const smart = /^\/library\/favorite-songs\/?$/.test(url.pathname);
+  const id = smart ? 'favorite-songs' : url.pathname.split('/').filter(Boolean)[2] || '';
   let rows = [];
   let notesExpanded = false;
   /** 排序后要恢复焦点的曲目 uid（键盘移动后） */
@@ -28,7 +31,15 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
     return node;
   }
 
-  const current = () => library.playlist(id);
+  /** 当前歌单；「喜爱的歌曲」为按喜爱时间排列的虚拟歌单 */
+  function current() {
+    if (!smart) return library.playlist(id);
+    const tracks = library.favoriteSongs().map((item) => ({ ...item, uid: item.key }));
+    return {
+      id, name: t('library.favoriteSongs'), description: '', folderId: '', favorite: 0,
+      updatedAt: tracks.length ? tracks[0].favorite : Date.now(), tracks,
+    };
+  }
   const songs = () => (current() ? current().tracks.filter((track) => track.kind === 'song') : []);
 
   function formatDate(ms) {
@@ -39,9 +50,12 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
   function renderHero(list) {
     document.title = `${playlistName(list)} · am-hook`;
     $('title').textContent = playlistName(list);
-    $('artist').textContent = t('library.localPlaylist');
+    // 副标题：所在文件夹（链接到文件夹页）
+    const dir = list.folderId ? library.folder(list.folderId) : null;
+    $('artist').replaceChildren(smart ? t('library.autoPlaylist') : t('library.localPlaylist'),
+      ...(dir ? [' · ', el('a', { href: `/library/playlist-folder/${dir.id}`, textContent: folderName(dir) })] : []));
     $('sub').textContent = t('playlist.updated', { date: formatDate(list.updatedAt) });
-    $('art').replaceChildren(playlistCover(list, 632, 'lib-cover lib-cover-hero'));
+    $('art').replaceChildren(smart ? favoriteCover('lib-cover lib-cover-hero') : playlistCover(list, 632, 'lib-cover lib-cover-hero'));
     const first = list.tracks.find((track) => track.artwork);
     $('radiosity').replaceChildren(...(first ? [el('img', { src: library.artUrl(first.artwork, 160), alt: '' })] : []));
     $('art').setAttribute('role', 'img');
@@ -64,6 +78,10 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
   function renderTracks(list) {
     const songList = songs();
     rows = list.tracks.map((track, index) => {
+      const songIndex = songList.indexOf(track);
+      const onPlay = track.kind === 'song' ? () => playFrom(songIndex) : null;
+      // 「喜爱的歌曲」按喜爱时间排列，不能排序；移出即取消喜爱（菜单里已有）
+      if (smart) return trackRow(track, { actions, onPlay });
       const grip = el('button', { className: 'lib-grip', type: 'button', innerHTML: LIB_ICON.grip, title: t('library.moveHandle') });
       grip.setAttribute('aria-label', t('library.moveTrack', { name: track.name, pos: index + 1, total: list.tracks.length }));
       grip.dataset.uid = track.uid;
@@ -77,10 +95,8 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
         library.movePlaylistTrack(id, index, to);
       });
       grip.addEventListener('pointerdown', (e) => startDrag(e, index));
-      const songIndex = songList.indexOf(track);
       return trackRow(track, {
-        actions, lead: grip, playlistId: id,
-        onPlay: track.kind === 'song' ? () => playFrom(songIndex) : null,
+        actions, lead: grip, playlistId: id, onPlay,
         extraItems: [{ icon: LIB_ICON.minus, label: t('library.removeFromPlaylist'), onSelect: () => library.removeFromPlaylist(id, [track.uid]) }],
       });
     });
@@ -163,18 +179,36 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
   });
   player.onChange(() => syncTrackRows(rows, player));
 
+  // 喜爱歌单（头部 ☆，在编辑按钮之后）；「喜爱的歌曲」没有编辑与喜爱
+  const star = actions.favoriteButton(() => (!smart && current() ? { kind: 'library-playlist', playlistId: id, name: playlistName(current()) } : null));
+  $('edit').after(star.button);
+  $('edit').hidden = star.button.hidden = smart;
+
   $('edit').addEventListener('click', () => editPlaylist(id));
   $('more').addEventListener('click', (e) => {
     e.stopPropagation();
     const list = current();
     if (!list) return;
+    if (smart) {
+      openMenu($('more'), [
+        { icon: LIB_ICON.addToPlaylist, label: t('library.addToPlaylist'), submenu: () => playlistMenuItems(() => current().tracks, { toast, navigate }) },
+        // 把当前的喜爱歌曲存成一个普通歌单（可以编辑、导出、分享）
+        { icon: LIB_ICON.duplicate, label: t('library.saveAsPlaylist'), onSelect: () => {
+          const copy = library.createPlaylist({ name: `${t('library.favoriteSongs')} ${t('library.copySuffix')}`, tracks: current().tracks });
+          toast(t('library.created', { name: playlistName(copy) }));
+          navigate(`/library/playlist/${copy.id}`);
+        } },
+      ]);
+      return;
+    }
     openMenu($('more'), [
       { icon: LIB_ICON.edit, label: t('library.editEllipsis'), onSelect: () => editPlaylist(id) },
       { icon: LIB_ICON.addToPlaylist, label: t('library.addToPlaylist'), submenu: () => playlistMenuItems(() => current().tracks, { toast, navigate, except: id }) },
+      { icon: LIB_ICON.move, label: t('library.moveToFolder'), submenu: () => moveMenuItems({ type: 'playlist', id }, current().folderId, { toast }) },
       { icon: LIB_ICON.duplicate, label: t('library.duplicate'), onSelect: () => duplicatePlaylist(id, { toast, navigate }) },
       { icon: LIB_ICON.export, label: t('library.exportPlaylist'), onSelect: () => exportPlaylist(id) },
       '-',
-      { icon: LIB_ICON.remove, label: t('library.deletePlaylistEllipsis'), danger: true, onSelect: () => deletePlaylist(id, { toast, onDeleted: () => navigate('/library/all-playlists', { replace: true }) }) },
+      { icon: LIB_ICON.remove, label: t('library.deletePlaylistEllipsis'), danger: true, onSelect: () => deletePlaylist(id, { toast, onDeleted: () => navigate(list.folderId && library.folder(list.folderId) ? `/library/playlist-folder/${list.folderId}` : '/library/all-playlists', { replace: true }) }) },
     ]);
   });
   $('notes-more').addEventListener('click', () => {
@@ -199,6 +233,11 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
       return;
     }
     $('alert').hidden = true;
+    if (smart) {
+      root.querySelector('#empty .lib-empty-title').textContent = t('library.emptyFavorites');
+      root.querySelector('#empty .lib-empty-hint').textContent = t('library.emptyFavoritesHint');
+    }
+    star.refresh();
     renderHero(list);
     renderTracks(list);
     renderFooter(list);

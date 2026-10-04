@@ -104,7 +104,7 @@ static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static LIBRARY_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/library(?:/(recently-added|albums|songs|music-videos|all-playlists|artists|playlist)(?:/([^/?#]+))?)?/?$").unwrap()
+    Regex::new(r"^/library(?:/(recently-added|albums|songs|music-videos|all-playlists|favorite-songs|artists|playlist|playlist-folder)(?:/([^/?#]+))?)?/?$").unwrap()
 });
 
 static NEW_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -413,6 +413,8 @@ mod tests {
         assert_eq!(describe("/library", "").detail, "library");
         assert_eq!(describe("/library/songs", "").detail, "library/songs");
         assert_eq!(describe("/library/playlist/p.abc", "").detail, "library/playlist/p.abc");
+        assert_eq!(describe("/library/favorite-songs", "").detail, "library/favorite-songs");
+        assert_eq!(describe("/library/playlist-folder/f.abc", "").detail, "library/playlist-folder/f.abc");
     }
 
     #[test]

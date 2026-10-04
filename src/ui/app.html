@@ -91,10 +91,11 @@
             <span class="nav-label" data-i18n="library.music-videos"></span>
           </a>
         </li>
-        <!-- 歌单（官网侧边栏的「播放列表」分组）：所有歌单，然后是各个歌单（app.mjs 渲染）；+ 新建歌单 -->
-        <li class="nav-section">
+        <!-- 歌单（官网侧边栏的「播放列表」分组）：所有歌单、喜爱的歌曲，然后是文件夹与各个歌单（app.mjs 渲染，可拖到文件夹里）；
+             + 新建歌单或文件夹。分组标题也是拖放目标：拖到这里移到最上层 -->
+        <li class="nav-section" data-drop-folder="">
           <span class="nav-section-title" data-i18n="nav.playlists"></span>
-          <button class="nav-section-add" type="button" data-new-playlist data-i18n-attr="aria-label=library.newPlaylist,title=library.newPlaylist">
+          <button class="nav-section-add" type="button" data-new-playlist aria-haspopup="menu" aria-expanded="false" data-i18n-attr="aria-label=library.new,title=library.new">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </li>
@@ -102,6 +103,12 @@
           <a class="nav-link" href="/library/all-playlists" data-nav="library:all-playlists">
             <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></span>
             <span class="nav-label" data-i18n="library.all-playlists"></span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/favorite-songs" data-nav="library:favorite-songs">
+            <span class="nav-icon nav-icon-favorite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></span>
+            <span class="nav-label" data-i18n="library.favoriteSongs"></span>
           </a>
         </li>
         <li><ul class="nav-playlists" id="nav-playlists"></ul></li>

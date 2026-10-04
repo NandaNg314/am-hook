@@ -18,6 +18,12 @@ export const LIB_ICON = {
   import: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>',
   minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>',
   grip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 8h14M5 12h14M5 16h14"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
+  starFilled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
+  newFolder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>',
+  move: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M9 13.5h6m-2.5-2.5 2.5 2.5-2.5 2.5"/></svg>',
+  top: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7m-5 5 5-5 5 5"/><path d="M5 4h14"/></svg>',
 };
 
 function el(tag, props = {}, ...children) {
@@ -163,6 +169,7 @@ export function trackRow(track, { actions, onPlay, extraItems, playlistId, lead 
   const main = el('div', { className: 'track-main' },
     el('div', { className: 'track-line' }, title,
       track.explicit ? el('span', { className: 'explicit', textContent: 'E', title: t('search.explicit') }) : null,
+      library.isFavorite(track.kind, track.id) ? el('span', { className: 'lib-fav', innerHTML: LIB_ICON.starFilled, title: t('library.favorited') }) : null,
       video ? el('span', { className: 'track-kind', innerHTML: VIDEO_ICON, title: t('album.video') }) : null),
     el('div', { className: 'track-artist' }, ...artistParts(track)));
   const albumCol = track.albumHref && track.album ? el('a', { className: 'track-album', href: track.albumHref, textContent: track.album })
@@ -191,9 +198,21 @@ export function syncTrackRows(rows, player) {
   }
 }
 
+/** 「喜爱的歌曲」的封面：与 Apple Music 相同，强调色渐变上的星形 */
+export function favoriteCover(className = 'lib-cover') {
+  return el('span', { className: `${className} lib-cover-favorite` }, el('span', { className: 'lib-cover-ph', innerHTML: LIB_ICON.starFilled }));
+}
+
+/** 文件夹的封面：文件夹图标 */
+export function folderCover(className = 'lib-cover') {
+  return el('span', { className: `${className} lib-cover-folder` }, el('span', { className: 'lib-cover-ph', innerHTML: LIB_ICON.folder }));
+}
+
+export const folderName = (dir) => (dir && dir.name) || t('library.untitledFolder');
+
 /* ---------- 歌单操作 ---------- */
 /** 新建歌单（可带初始曲目）；open 为 true 时创建后打开歌单页。返回新歌单，取消时为 null */
-export async function newPlaylist({ tracks = [], name = '', open = false, navigate, toast } = {}) {
+export async function newPlaylist({ tracks = [], name = '', folderId = '', open = false, navigate, toast } = {}) {
   const result = await openDialog({
     title: t('library.newPlaylist'),
     fields: [
@@ -203,7 +222,7 @@ export async function newPlaylist({ tracks = [], name = '', open = false, naviga
     buttons: [{ value: 'create', label: t('library.create') }],
   });
   if (!result) return null;
-  const list = library.createPlaylist({ name: result.values.name.trim() || t('library.untitled'), description: result.values.description, tracks });
+  const list = library.createPlaylist({ name: result.values.name.trim() || t('library.untitled'), description: result.values.description, tracks, folderId });
   if (toast) toast(tracks.length ? t('library.addedTo', { n: tracks.length, name: playlistName(list) }) : t('library.created', { name: playlistName(list) }));
   if (open && navigate) navigate(`/library/playlist/${list.id}`);
   return list;
@@ -243,6 +262,82 @@ export function duplicatePlaylist(id, { toast, navigate } = {}) {
   if (!copy) return;
   if (toast) toast(t('library.created', { name: playlistName(copy) }));
   if (navigate) navigate(`/library/playlist/${copy.id}`);
+}
+
+/* ---------- 歌单文件夹 ---------- */
+/** 新建文件夹（parentId 为上级文件夹）；open 为 true 时创建后打开文件夹页。返回文件夹，取消时为 null */
+export async function newFolder({ parentId = '', open = false, navigate, toast } = {}) {
+  const result = await openDialog({
+    title: t('library.newFolder'),
+    fields: [{ name: 'name', label: t('library.folderName'), placeholder: t('library.untitledFolder') }],
+    buttons: [{ value: 'create', label: t('library.create') }],
+  });
+  if (!result) return null;
+  let dir;
+  try {
+    dir = library.createFolder({ name: result.values.name.trim() || t('library.untitledFolder'), parentId });
+  } catch (err) {
+    if (toast) toast(t('library.failed', { msg: err.message }));
+    return null;
+  }
+  if (toast) toast(t('library.created', { name: folderName(dir) }));
+  if (open && navigate) navigate(`/library/playlist-folder/${dir.id}`);
+  return dir;
+}
+
+export async function renameFolder(id) {
+  const dir = library.folder(id);
+  if (!dir) return;
+  const result = await openDialog({
+    title: t('library.renameFolder'),
+    fields: [{ name: 'name', label: t('library.folderName'), value: dir.name, placeholder: t('library.untitledFolder') }],
+    buttons: [{ value: 'save', label: t('library.save') }],
+  });
+  if (result) library.renameFolder(id, result.values.name.trim() || t('library.untitledFolder'));
+}
+
+/** 删除文件夹前确认（与 Apple Music 相同，其中的歌单一并删除）；删除后 onDeleted() */
+export async function deleteFolder(id, { toast, onDeleted } = {}) {
+  const dir = library.folder(id);
+  if (!dir) return;
+  const counts = library.folderCounts(id);
+  const result = await openDialog({
+    title: t('library.deleteFolderTitle', { name: folderName(dir) }),
+    message: counts.playlists || counts.folders
+      ? t('library.deleteFolderMessage', { playlists: counts.playlists, folders: counts.folders })
+      : t('library.deleteEmptyFolderMessage'),
+    buttons: [{ value: 'delete', label: t('library.delete'), danger: true }],
+  });
+  if (!result) return;
+  library.deleteFolder(id);
+  if (toast) toast(t('library.deleted', { name: folderName(dir) }));
+  if (onDeleted) onDeleted();
+}
+
+/**
+ * 「移到文件夹」的子菜单项：最上层，然后是全部文件夹（按层级缩进）；当前所在位置标为「当前位置」，
+ * 文件夹不能移到自身或自己的子文件夹里。entry：{ type: 'playlist' | 'catalog' | 'folder', id }，current 为当前所在文件夹 id
+ */
+export function moveMenuItems(entry, current = '', { toast } = {}) {
+  const move = (folderId, name) => {
+    if (library.moveToFolder(entry, folderId) && toast) toast(t('library.movedTo', { name }));
+  };
+  const items = [{
+    icon: LIB_ICON.top, label: t('library.topLevel'), hint: current ? '' : t('library.currentLocation'),
+    onSelect: () => move('', t('library.topLevel')),
+  }];
+  const walk = (parentId, depth) => {
+    for (const dir of library.folders().filter((d) => d.parentId === parentId)) {
+      if (entry.type === 'folder' && !library.canMoveFolder(entry.id, dir.id)) continue;
+      items.push({
+        icon: LIB_ICON.folder, label: `${'\u2003'.repeat(depth)}${folderName(dir)}`, hint: dir.id === current ? t('library.currentLocation') : '',
+        onSelect: () => move(dir.id, folderName(dir)),
+      });
+      walk(dir.id, depth + 1);
+    }
+  };
+  walk('', 0);
+  return items;
 }
 
 /**
@@ -300,12 +395,18 @@ const today = () => new Date().toISOString().slice(0, 10);
 export function exportLibrary({ toast } = {}) {
   const data = library.exportData();
   download(`am-hook-library-${today()}.json`, data);
-  if (toast) toast(t('library.exported', { items: data.items.length, playlists: data.playlists.length }));
+  if (toast) toast(t('library.exported', { items: data.items.length, playlists: data.playlists.length, folders: data.folders.length }));
 }
 
 export function exportPlaylist(id) {
   const list = library.playlist(id);
-  if (list) download(`${safeName(playlistName(list))}.am-hook-playlist.json`, library.exportData([id]));
+  if (list) download(`${safeName(playlistName(list))}.am-hook-playlist.json`, library.exportData({ playlists: [id] }));
+}
+
+/** 导出文件夹（连同其中的子文件夹与歌单） */
+export function exportFolder(id) {
+  const dir = library.folder(id);
+  if (dir) download(`${safeName(folderName(dir))}.am-hook-folder.json`, library.exportData({ folder: id }));
 }
 
 /** 选择文件 → 解析 → 确认（整库文件可选合并或替换，单个歌单直接导入）→ 写入。返回导入结果，取消或失败时为 null */
@@ -325,14 +426,15 @@ export function importLibrary({ toast, navigate } = {}) {
         return;
       }
       const tracks = parsed.playlists.reduce((sum, list) => sum + list.tracks.length, 0);
-      if (!parsed.items.length && !parsed.playlists.length) {
+      if (!parsed.items.length && !parsed.playlists.length && !parsed.folders.length) {
         if (toast) toast(t('library.importEmpty'));
         resolve(null);
         return;
       }
-      const summary = t('library.importSummary', { items: parsed.items.length, playlists: parsed.playlists.length, tracks })
+      const summary = t('library.importSummary', { items: parsed.items.length, playlists: parsed.playlists.length, folders: parsed.folders.length, tracks })
         + (parsed.dropped ? ` ${t('library.importDropped', { n: parsed.dropped })}` : '');
-      const whole = parsed.items.length > 0;
+      // 整个资料库的文件可以合并或替换；歌单、文件夹文件（只含歌单）直接加入
+      const whole = parsed.items.some((item) => item.kind !== 'playlist');
       const result = await openDialog({
         title: t('library.importTitle', { name: file.name }),
         message: whole ? `${summary}\n${t('library.importHint')}` : summary,
@@ -342,9 +444,11 @@ export function importLibrary({ toast, navigate } = {}) {
       });
       if (!result) { resolve(null); return; }
       const done = await library.importData(parsed, { replace: result.action === 'replace' });
-      if (toast) toast(t('library.imported', { items: done.items, playlists: done.playlists }));
-      // 只导入了一个歌单时直接打开它
-      if (!whole && parsed.playlists.length === 1 && navigate) navigate(`/library/playlist/${parsed.playlists[0].id}`);
+      if (toast) toast(t('library.imported', { items: done.items, playlists: done.playlists, folders: done.folders }));
+      // 导入的是一个文件夹或一个歌单时直接打开它
+      const topFolders = parsed.folders.filter((dir) => !dir.parentId);
+      if (!whole && navigate && topFolders.length === 1) navigate(`/library/playlist-folder/${topFolders[0].id}`);
+      else if (!whole && navigate && !parsed.folders.length && parsed.playlists.length === 1) navigate(`/library/playlist/${parsed.playlists[0].id}`);
       resolve(done);
     });
     input.click();

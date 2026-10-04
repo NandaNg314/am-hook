@@ -1,7 +1,8 @@
 // Run with: node tests/library_ui.cjs <path-to-playwright-package>
 // 资料库与歌单（src/ui/library.mjs、views/library*.mjs）：用本地 fixture 与已安装的 Chrome，不需要 wrapper-lite 或 Apple CDN。
 // 覆盖：专辑页「+」把专辑与曲目加入资料库、资料库各分类、新建歌单、「添加到歌单」子菜单、键盘排序、
-// 刷新后数据仍在（IndexedDB）、导出 / 清空 / 导入（合并）、导入文件的链接校验，以及手机宽度下不横向溢出。
+// 刷新后数据仍在（IndexedDB）、导出 / 清空 / 导入（合并）、导入文件的链接校验、喜爱与「喜爱的歌曲」、
+// 歌单文件夹（新建、嵌套、移动、拖放、删除）、旧版数据库（版本 1）升级，以及手机宽度下不横向溢出。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -49,6 +50,8 @@ const album = {
       if (url.pathname === '/amp/v1/catalog/us/albums/100') return route.fulfill({ json: { data: [album] } });
       if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
       if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us'] } });
+      // 同源的空白页：在打开应用之前写入旧版数据库
+      if (url.pathname === '/blank') return route.fulfill({ body: '<!doctype html><title>blank</title>', contentType: 'text/html' });
       if (url.pathname.startsWith('/lyrics/') || url.pathname.startsWith('/parse/')) return route.fulfill({ status: 404, json: { code: 1, msg: 'offline' } });
       // 单页应用：页面地址返回 app.html，页面视图在 /assets/views/
       const file = url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
@@ -92,8 +95,9 @@ const album = {
     assert.equal(await page.locator('#view .lib-artist-title').textContent(), 'Fixture Artist');
     assert.equal(await page.locator('#view .lib-artist-detail .lib-track').count(), 3, 'artist shows their songs');
 
-    // 3. 侧边栏「+」新建歌单：对话框 → 创建后打开歌单页（空）
+    // 3. 侧边栏「+」→「新建歌单…」：对话框 → 创建后打开歌单页（空）
     await page.locator('[data-new-playlist]').click();
+    await page.locator('.menu .menu-label').filter({ hasText: /^New Playlist…$/ }).click();
     await page.locator('.lib-dialog input[name="name"]').fill('Road Trip');
     await page.locator('.lib-dialog textarea[name="description"]').fill('Songs for the drive');
     await page.locator('.lib-dialog .primary').click();
@@ -153,15 +157,16 @@ const album = {
     await page.locator('#lib-more').click();
     await page.locator('.menu .menu-item', { hasText: 'Clear Library' }).click();
     await page.locator('.lib-dialog .primary').click();
-    await page.locator('#view .lib-empty').waitFor();
+    // 只剩固定在最前的「喜爱的歌曲」
+    await page.waitForFunction(() => [...document.querySelectorAll('#view .lib-grid .shelf-title')].map((n) => n.textContent).join() === 'Favorite Songs');
     assert.equal(await page.locator('#nav-playlists a').count(), 0, 'sidebar empties too');
     await page.locator('#lib-more').click();
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.locator('.menu .menu-item', { hasText: 'Import' }).click()]);
     await chooser.setFiles(exportFile);
     await page.locator('.lib-dialog').waitFor();
-    assert.match(await page.locator('.lib-dialog-message').textContent(), /4 library items and 1 playlists \(2 tracks\)/);
+    assert.match(await page.locator('.lib-dialog-message').textContent(), /4 library items, 1 playlists \(2 tracks\) and 0 folders/);
     await page.locator('.lib-dialog .primary').click();
-    await toast(/Imported 4 library items and 1 playlists/);
+    await toast(/Imported 4 library items, 1 playlists and 0 folders/);
     await page.goto(playlistUrl);
     await page.locator('#view .lib-track').nth(1).waitFor();
     assert.deepEqual(await rowTitles(), ['Third Song', 'First Song'], 'import restores the playlist with the same id');
@@ -189,9 +194,99 @@ const album = {
     assert.equal(await page.locator('#view .lib-track a[href^="javascript"], #view .lib-track a[href^="https://evil"]').count(), 0, 'unsafe links dropped');
     assert.equal(await page.locator('#view .lib-track span.track-title').textContent(), 'Evil', 'title kept as plain text');
 
-    // 10. 手机宽度：资料库与歌单页不横向溢出
+    // 10. 喜爱：歌曲行菜单「喜爱」→ 行内星形、「喜爱」筛选、「喜爱的歌曲」；专辑页 ☆
+    const menuLabel = (text) => page.locator('.menu .menu-label').filter({ hasText: new RegExp(`^${text}$`) });
+    await page.goto(BASE + '/library/songs');
+    await page.locator('#view .lib-track').nth(2).waitFor();
+    await page.locator('#view .lib-track', { hasText: 'Second Song' }).locator('.track-more').click();
+    await menuLabel('Favorite').click();
+    await toast(/Favorited “Second Song”/);
+    await page.locator('#view .lib-track', { hasText: 'Second Song' }).locator('.lib-fav').waitFor();
+    await page.locator('#fav-only').click();
+    assert.deepEqual(await rowTitles(), ['Second Song'], 'favorites filter');
+    await page.locator('#fav-only').click();
+    await page.locator('#nav [data-nav="library:favorite-songs"]').click();
+    await page.waitForURL('**/library/favorite-songs', { waitUntil: 'commit' });
+    await page.locator('#view .lib-track').first().waitFor();
+    assert.equal(await page.locator('#title').textContent(), 'Favorite Songs');
+    assert.deepEqual(await rowTitles(), ['Second Song']);
+    assert(await page.locator('#edit').isHidden(), 'Favorite Songs cannot be edited');
+    assert.equal(await page.locator('#view .lib-grip').count(), 0, 'Favorite Songs cannot be reordered');
+    await page.locator('#view .lib-track .track-more').click();
+    await menuLabel('Undo Favorite').click();
+    await page.locator('#empty:not([hidden])').waitFor();
+    assert.equal(await page.locator('#empty .lib-empty-title').textContent(), 'No favorite songs yet');
+    await page.goto(BASE + ALBUM_PATH);
+    await page.waitForFunction(() => document.querySelector('.detail-extra .lib-fav-toggle')?.disabled === false);
+    await page.locator('.detail-extra .lib-fav-toggle').click();
+    await toast(/Favorited “Test Album”/);
+    assert.equal(await page.locator('.detail-extra .lib-fav-toggle').getAttribute('aria-pressed'), 'true');
+    await page.goto(BASE + '/library/albums');
+    await page.locator('#fav-only').click();
+    assert.deepEqual(await page.locator('#view .lib-grid .shelf-title').allTextContents(), ['Test Album'], 'favorite album listed');
+
+    // 11. 歌单文件夹：+ → 新建文件夹 → 在其中新建子文件夹 → 歌单「移到文件夹」→ 侧边栏拖放 → 不能移进自己的子文件夹 → 删除
+    await page.locator('[data-new-playlist]').click();
+    await menuLabel('New Playlist Folder…').click();
+    await page.locator('.lib-dialog input[name="name"]').fill('Mix');
+    await page.locator('.lib-dialog .primary').click();
+    await page.waitForURL(/\/library\/playlist-folder\/f\.[\w-]+$/, { waitUntil: 'commit' });
+    const mixUrl = page.url();
+    await page.locator('#view .lib-empty').waitFor();
+    assert.equal(await page.locator('#title').textContent(), 'Mix');
+    await page.locator('#lib-more').click();
+    await menuLabel('New Playlist Folder…').click();
+    await page.locator('.lib-dialog input[name="name"]').fill('Sub');
+    await page.locator('.lib-dialog .primary').click();
+    await page.waitForFunction(() => document.getElementById('title')?.textContent === 'Sub');
+    assert.equal(await page.locator('#crumbs').textContent(), 'All Playlists › Mix', 'breadcrumb shows the parent folder');
+
+    await page.goto(playlistUrl);
+    await page.locator('#view .lib-track').first().waitFor();
+    await page.locator('#more').click();
+    await menuLabel('Move to Folder').click();
+    await page.locator('.menu .menu-item', { hasText: 'Sub' }).click();
+    await toast(/Moved to “Sub”/);
+    assert.equal(await page.locator('#artist a').textContent(), 'Sub', 'playlist header links its folder');
+    // 所在文件夹在侧边栏中自动展开
+    await page.locator('#nav-playlists .nav-folder-children a', { hasText: 'Road Trip' }).waitFor();
+
+    await page.locator('#nav-playlists a', { hasText: 'Shared' }).dragTo(page.locator('#nav-playlists .nav-folder-row', { hasText: 'Mix' }).first());
+    await toast(/Moved to “Mix”/);
+    await page.goto(mixUrl);
+    await page.locator('#view .lib-grid .shelf-title').first().waitFor();
+    assert.deepEqual(await page.locator('#view .lib-grid .shelf-title').allTextContents(), ['Sub', 'Shared'], 'folder lists subfolders first');
+    await page.locator('#lib-more').click();
+    await menuLabel('Move to Folder').click();
+    assert.equal(await page.locator('.menu .menu-item', { hasText: 'Sub' }).count(), 0, 'a folder cannot move into its own subfolder');
+    await page.keyboard.press('Escape');
+
+    // 导出包含文件夹与歌单所在的文件夹
+    await page.goto(BASE + '/library/all-playlists');
+    await page.locator('#view .lib-grid').waitFor();
+    await page.locator('#lib-more').click();
+    const [download2] = await Promise.all([page.waitForEvent('download'), page.locator('.menu .menu-item', { hasText: 'Export Library' }).click()]);
+    const exported2 = JSON.parse(fs.readFileSync(await download2.path(), 'utf8'));
+    assert.deepEqual(exported2.folders.map((dir) => dir.name).sort(), ['Mix', 'Sub']);
+    const mixId = exported2.folders.find((dir) => dir.name === 'Mix').id;
+    assert.equal(exported2.folders.find((dir) => dir.name === 'Sub').parentId, mixId);
+    assert.equal(exported2.playlists.find((list) => list.name === 'Shared').folderId, mixId);
+    assert(exported2.items.some((item) => item.kind === 'album' && item.favorite > 0), 'favorites are exported');
+
+    await page.goto(mixUrl);
+    await page.locator('#view .lib-grid').waitFor();
+    await page.locator('#lib-more').click();
+    await menuLabel('Delete Folder…').click();
+    assert.match(await page.locator('.lib-dialog-message').textContent(), /2 playlists and 1 subfolders/);
+    await page.locator('.lib-dialog .primary').click();
+    await page.waitForURL('**/library/all-playlists', { waitUntil: 'commit' });
+    await page.locator('#view .lib-grid .shelf-title').first().waitFor();
+    assert.deepEqual(await page.locator('#view .lib-grid .shelf-title').allTextContents(), ['Favorite Songs'], 'folder deleted with its playlists');
+    assert.equal(await page.locator('#nav-playlists li').count(), 0);
+
+    // 12. 手机宽度：资料库与歌单页不横向溢出
     await page.setViewportSize({ width: 360, height: 780 });
-    for (const target of ['/library/songs', '/library/albums', '/library/artists', playlistUrl]) {
+    for (const target of ['/library/songs', '/library/albums', '/library/artists', '/library/all-playlists', '/library/favorite-songs']) {
       await page.goto(target.startsWith('http') ? target : BASE + target);
       await page.locator('#view .app-page').waitFor({ state: 'attached' });
       await page.waitForTimeout(150);
@@ -205,7 +300,51 @@ const album = {
 
     assert.deepEqual(errors, []);
     await context.close();
-    console.log('Passed library: add album, sections, playlists, add-to-playlist, reorder, persistence, export / clear / import, validation, mobile layout.');
+
+    // 13. 旧版数据库（版本 1：只有 items 与 playlists）升级到版本 2：原有歌单保留，新增 folders
+    const legacy = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await legacy.addInitScript(() => localStorage.setItem('am-hook:lang', 'en'));
+    await legacy.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.origin !== BASE) return route.fulfill({ status: 404, body: '' });
+      if (url.pathname === '/blank') return route.fulfill({ body: '<!doctype html><title>blank</title>', contentType: 'text/html' });
+      if (url.pathname === '/status') return route.fulfill({ json: { code: 0, regions: ['us'] } });
+      if (url.pathname.startsWith('/amp/') || url.pathname.startsWith('/lyrics/')) return route.fulfill({ status: 404, json: {} });
+      const file = url.pathname.startsWith('/assets/lyrics/') ? path.join('lyrics', path.basename(url.pathname))
+        : url.pathname.startsWith('/assets/views/') ? path.join('views', path.basename(url.pathname))
+        : url.pathname.startsWith('/assets/') ? path.basename(url.pathname) : 'app.html';
+      const type = file.endsWith('.css') ? 'text/css' : /\.m?js$/.test(file) ? 'text/javascript' : 'text/html';
+      return route.fulfill({ body: fs.readFileSync(path.join(root, file)), contentType: type });
+    });
+    const old = await legacy.newPage();
+    const oldErrors = [];
+    old.on('pageerror', (e) => oldErrors.push(e.message));
+    await old.goto(BASE + '/blank');
+    await old.evaluate(() => new Promise((resolve, reject) => {
+      const req = indexedDB.open('am-hook-library', 1);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('items', { keyPath: 'key' });
+        req.result.createObjectStore('playlists', { keyPath: 'id' });
+      };
+      req.onsuccess = () => {
+        const tx = req.result.transaction(['playlists'], 'readwrite');
+        tx.objectStore('playlists').put({ id: 'p.legacy1', name: 'Legacy', description: '', createdAt: 1, updatedAt: 2, tracks: [] });
+        tx.oncomplete = () => { req.result.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    }));
+    await old.goto(BASE + '/library/all-playlists');
+    await old.locator('#view .lib-grid .shelf-title', { hasText: 'Legacy' }).waitFor();
+    assert.equal(await old.locator('#nav-playlists a').textContent(), 'Legacy', 'v1 playlist survives the upgrade');
+    const stores = await old.evaluate(() => new Promise((resolve) => {
+      const req = indexedDB.open('am-hook-library');
+      req.onsuccess = () => { resolve({ version: req.result.version, stores: [...req.result.objectStoreNames] }); req.result.close(); };
+    }));
+    assert.deepEqual(stores, { version: 2, stores: ['folders', 'items', 'playlists'] });
+    assert.deepEqual(oldErrors, []);
+    await legacy.close();
+    console.log('Passed library: add album, sections, playlists, add-to-playlist, reorder, persistence, export / clear / import, validation, favorites, folders, v1 upgrade, mobile layout.');
   } finally {
     await browser.close();
     fs.rmSync(tmp, { recursive: true, force: true });

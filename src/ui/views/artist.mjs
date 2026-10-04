@@ -22,6 +22,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   let rows = new Map();
   let bioExpanded = false;
   let loadToken = 0;
+  // 操作行最后的 ☆（官网艺人页的「喜爱」）：喜爱的艺人出现在资料库的艺人中
+  const favoriteToggle = actions.favoriteButton(() => (artist ? targetOf(artist, country) : null), 'artist-round-btn lib-fav-toggle');
+  root.querySelector('.artist-actions').append(favoriteToggle.button);
 
   const ICON = {
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
@@ -390,6 +393,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     renderAbout();
     renderFeatured();
     renderShelves();
+    favoriteToggle.refresh();
   }
 
   async function loadArtist() {

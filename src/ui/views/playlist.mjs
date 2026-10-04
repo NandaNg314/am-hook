@@ -21,9 +21,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   let playlist = null;
   let tracks = [];
   // 头部的资料库按钮（官网的「+」）：把这个 Apple Music 歌单加入资料库
-  const libraryToggle = actions.libraryButton(() => (playlist ? targetOf(playlist, country, { collection: { resource: playlist, tracks } }) : null));
+  const libraryTarget = () => (playlist ? targetOf(playlist, country, { collection: { resource: playlist, tracks } }) : null);
+  const libraryToggle = actions.libraryButton(libraryTarget);
   root.querySelector('.detail-actions').append(Object.assign(document.createElement('span'), { className: 'detail-extra' }));
-  root.querySelector('.detail-extra').append(libraryToggle.button);
+  // 喜爱（与 Apple Music 相同，喜爱即加入资料库）
+  const favoriteToggle = actions.favoriteButton(libraryTarget);
+  root.querySelector('.detail-extra').append(libraryToggle.button, favoriteToggle.button);
   let rows = new Map();
   let notesExpanded = false;
   let loadToken = 0;
@@ -290,6 +293,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     renderFooter();
     renderShelves();
     libraryToggle.refresh();
+    favoriteToggle.refresh();
   }
 
   async function loadPlaylist() {
