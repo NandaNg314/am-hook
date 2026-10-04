@@ -58,6 +58,33 @@ For example: `http://127.0.0.1:8888/https://music.apple.com/cn/music-video/super
   - Space and arrow keys control playback on every page. Playing a music video pauses the music and vice versa.
   - How it works: like music.apple.com, the site is a single-page app. Every page URL gets `app.html`, which owns the player bar, audio, decryption workers and lyrics view; a client-side router (`app.mjs`) takes over in-site links, changes the address with `history.pushState` and swaps page views (`src/ui/views/`) without reloading the document. It relies on no request headers, so it works the same over `http://<LAN IP>`.
 
+### Library and Playlists
+
+Like music.apple.com's Library and Playlists, but **stored only in your browser** (IndexedDB). The server keeps no library data and needs no account; nothing leaves the browser except the usual catalog requests.
+
+- Sidebar: a Library group (Recently Added, Artists, Albums, Songs, Music Videos) and a Playlists group (All Playlists, then each playlist; + creates one). Pages live under `/library/...` and survive reloads and shared links (on the same browser).
+- Adding: every More menu (search results, shelves, album / playlist / artist / chart rows) has **Add to Library** / **Delete from Library** and an **Add to Playlist** submenu (New Playlist…, then your playlists, most recently changed first). Album and playlist pages have a + button next to Play; song pages have Library and Add to Playlist buttons. As in Apple Music, adding an album adds all its songs and music videos, adding a single song makes its album and artist appear in the library, deleting an album deletes its songs, and adding an Apple Music playlist adds the playlist itself (it still opens the live catalog page). Tracks already in a playlist are skipped.
+- Library pages: Songs (play / shuffle the filtered list, sort by title, artist, album, date added or duration; long lists render as you scroll), Albums and Music Videos grids, Artists (list beside the selected artist's albums and songs; on phones the list opens each artist), Recently Added, and All Playlists. Every page has a filter; the sort choice is remembered.
+- Playlists (`/library/playlist/p.<id>`): a 2×2 mosaic of the first four album covers, name and description (Edit), play / shuffle, drag the handle to reorder (mouse or touch; ↑ / ↓ on the focused handle), Remove from Playlist, Duplicate, Export and Delete. Playlists keep a snapshot of each track (title, artists, album, artwork, duration), so they open instantly without catalog requests and also hold songs that are not in the library.
+- Import / export (the ⋯ menu on library pages): **Export Library** saves `am-hook-library-<date>.json` with every library item and playlist; **Export Playlist** saves one playlist (`<name>.am-hook-playlist.json`) to share. **Import…** reads either file: a whole-library file can be merged (existing items stay, playlists with the same id keep the newer copy) or replace the library; a playlist file is added and opened. Every entry is validated: only `/https://music.apple.com/...` page links and https artwork are kept and invalid entries are skipped, so a shared file cannot inject links or scripts. **Clear Library…** deletes everything after a confirmation.
+- Storage notes: data is per browser and per site address (`http://127.0.0.1:8888` and `http://<LAN IP>:8888` are separate libraries); export to move it. Tabs of the same browser stay in sync. If the browser refuses IndexedDB (some private modes), the library works in memory for the session and the library pages say so.
+
+File format (version 1):
+
+```jsonc
+{
+  "format": "am-hook-library", "version": 1, "exportedAt": "2026-10-04T12:00:00.000Z",
+  "items": [   // library: kind song / music-video / album / playlist (Apple Music), addedAt in ms
+    { "kind": "song", "id": "1468058171", "country": "cn", "name": "…", "artist": "…", "artists": [{ "name": "…", "href": "/https://music.apple.com/cn/artist/…/159260351" }],
+      "album": "…", "albumId": "1468058165", "albumHref": "/https://music.apple.com/cn/album/…/1468058165", "href": "/https://music.apple.com/cn/song/…/1468058171",
+      "artwork": "https://…/{w}x{h}bb.jpg", "bgColor": "1d1d1f", "duration": 221000, "explicit": false, "addedAt": 1759579200000 }
+  ],
+  "playlists": [   // local playlists: tracks are the same snapshots plus uid / addedAt
+    { "id": "p.Ab3dE…", "name": "…", "description": "…", "createdAt": 1759579200000, "updatedAt": 1759579300000, "tracks": [ { "uid": "…", "addedAt": 1759579200000, "kind": "song", "id": "…" } ] }
+  ]
+}
+```
+
 ### Songs
 
 - Every variant is parsed automatically (lossless ALAC, Dolby Atmos, AAC, HE-AAC, including binaural and downmix versions), with artwork and track info fetched from the Apple Music catalog API (amp-api) via the server's `/amp` proxy.
@@ -143,6 +170,7 @@ Box handling shared by both modes: FairPlay metadata boxes (`sinf`, `senc`, `sai
 | `GET /https://music.apple.com/<cc>/album/<slug>/<id>` | Album page (motion artwork from `editorialVideo` like music.apple.com — square on wide screens, full-width 3:4 on phones — tracks, playback queue, related shelves; data from the same amp-api `albums` request as music.apple.com). Album links with `?i=` open the album page with that track selected and scrolled into view, like music.apple.com |
 | `GET /https://music.apple.com/<cc>/playlist/<slug>/<pl.id>` | Playlist page (editorial and public user playlists: motion artwork like the album page, tracks with artwork / artist / album columns, playback queue, featured-artists and more-by-curator shelves; data from the same amp-api `playlists` request as music.apple.com, fetched through `/amp`) |
 | `GET /https://music.apple.com/<cc>/artist/<slug>/<id>` | Artist page (header like music.apple.com: motion video, wide image or circular portrait from the catalog data; latest release, top songs with a playback queue, album / music-video / playlist / similar-artist shelves with See All, bio; data from the same amp-api `artists` request as music.apple.com, fetched through `/amp`). Artist names on song, music-video and album pages (each artist of a multi-artist line separately) and artist shelves link here |
+| `GET /library[/<section>]`, `GET /library/artists/<name>`, `GET /library/playlist/p.<id>` | Library pages (sections `recently-added`, `artists`, `albums`, `songs`, `music-videos`, `all-playlists`) and local playlists. The server only returns the single-page app; library data lives in the browser's IndexedDB (`src/ui/library.mjs`) |
 | `GET /new` | New (the sidebar's New entry): the same editorial sections as music.apple.com/{cc}/new (amp-api `editorial/{cc}/groupings?name=music`) for the primary storefront, reloaded when it changes — hero cards, four-row song shelves, album / playlist / radio / video shelves with the music.apple.com shelf-grid column counts, and the Explore More links; `/https://music.apple.com/<cc>/new` shows a fixed storefront |
 | `GET /new/top-charts[/<kind>]` | Top Charts, linked from New's Explore More like music.apple.com/{cc}/new/top-charts (amp-api `catalog/{cc}/charts`, primary storefront): ranked top songs (three rows), city charts, Daily Top 100, and ranked top playlists / albums / music videos. Each ranked chart's See All (`songs`, `playlists`, `albums`, `music-videos`, also `city-charts`, `daily-global-top-charts`) lists the whole chart, paged on scroll — songs as chart rows like the playlist page — and songs / albums / music videos can be filtered by genre (`?genreId=`, genres from `catalog/{cc}/genres`); `/https://music.apple.com/<cc>/new/top-charts[/<kind>]` shows a fixed storefront |
 | `GET /https://music.apple.com/<cc>/room/<id>`, `.../multi-room/<id>`, `.../grouping/<id>`, `.../curator/<slug>/<id>` | Editorial pages, routed like music.apple.com: a room is a section's See All (all contents in a grid, paged on scroll); multi-room (`editorial/{cc}/multirooms`, header art + sections), grouping (`editorial/{cc}/groupings/{id}`, e.g. Music Videos and genre pages) and curator (`catalog/{cc}?ids[apple-curators]=`: its grouping's sections, or its playlists) reuse the New layout. Legacy links in editorial data (`collection/...?fcId=`, `viewGrouping?id=`, `viewFeature?id=`) open these pages in app; stations and other content the site cannot open link to Apple Music. Pasting these links on the home page opens them too |
@@ -199,7 +227,7 @@ Browser-side tests are plain Node scripts:
 | Kind | Command |
 |---|---|
 | Offline, Node only | `node --test tests/player_*.cjs`, `node tests/mv_hls.cjs`, `node tests/mv_captions.cjs` |
-| Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>` |
+| Offline, Playwright + Chrome with local fixtures | `node tests/ui_layout.cjs <playwright>`, `node tests/lyrics_ui.cjs <playwright>`, `node tests/mv_ui.cjs <playwright>`, `node tests/library_ui.cjs <playwright>` (library and playlists: add, playlists, reorder, persistence, export / import and file validation) |
 | Live (running am-hook, wrapper-lite, Apple CDN access) | `node tests/mv_live.cjs <playwright> [base]`, `node tests/mv_captions_live.cjs <playwright> [base]`, `node tests/alac_recovery.cjs <playwright>`, `node tests/alac_source_recovery.cjs <playwright>` (needs `--hook`), `node tests/search_ui.cjs <playwright> [base]`, `node tests/album_ui.cjs <playwright> [base]`, `node tests/playlist_ui.cjs <playwright> [base]`, `node tests/artist_ui.cjs <playwright> [base]`, `node tests/browse_ui.cjs <playwright> [base]` (need access to music.apple.com), `node tests/app_ui.cjs <playwright> [base]` (single-page app: playback across navigation, queue, Back / Forward, lyrics) |
 
 `<playwright>` is the path to a Playwright package; when `[base]` is omitted, the MV live tests default to `http://127.0.0.1:18888` and the others to `AM_HOOK_URL` or `http://127.0.0.1:8888` (the ALAC tests only read `AM_HOOK_URL`).
@@ -226,6 +254,7 @@ src/
     app.css / mv.css   Styles
     i18n.js            Chinese / English strings; primary storefront and catalog language settings
     settings.mjs       Primary storefront / catalog language picker
+    library.mjs        Library and playlist store (IndexedDB, cross-tab sync, import / export format and validation); pages in views/library*.mjs, shared dialogs and menus in views/library-ui.mjs
     player.js          Song player (MSE) and playback queue; page views use the persistent player via scope()
     motion-art.mjs     Motion artwork on album, playlist and artist pages (editorialVideo HLS via MSE)
     decrypt.js         Song decryption: m3u8 parsing, Worker pool, templates, download and OPFS

@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use am_mp4::{alac_track, repair_alac_fragment, decrypt_fragment, fixed_template, patch_init_segment};
 
 use crate::m3u8::{
-    is_charts_path, is_editorial_link, parse_album_link, parse_artist_link, parse_media_m3u8, parse_mv_link, parse_playlist_link,
+    is_charts_path, is_editorial_link, is_library_path, parse_album_link, parse_artist_link, parse_media_m3u8, parse_mv_link, parse_playlist_link,
     parse_post_link, parse_song_link, to_compat_playlist,
 };
 use crate::log;
@@ -28,7 +28,7 @@ const BYTERANGE_PARAM: &str = "hook=byterange";
 pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, uri: Uri, headers: HeaderMap) -> Response<Body> {
     let path = uri.path().strip_prefix('/').unwrap_or(uri.path());
 
-    // Apple Music 页面路径本身也是 "https://..."：歌曲 / MV / post / 专辑 / 歌单 / 艺人页与编辑页都返回单页应用（见 app_handler）
+    // Apple Music 页面路径本身也是 "https://..."：歌曲 / MV / post / 专辑 / 歌单 / 艺人页、编辑页与资料库页都返回单页应用（见 app_handler）
     if parse_song_link(path).is_ok()
         || parse_mv_link(path).is_ok()
         || parse_post_link(path).is_ok()
@@ -37,6 +37,7 @@ pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, ur
         || parse_artist_link(path).is_ok()
         || is_editorial_link(path)
         || is_charts_path(path)
+        || is_library_path(path)
     {
         return app_handler(headers).await;
     }

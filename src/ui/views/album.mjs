@@ -27,6 +27,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   /** 当前专辑（amp-api albums 资源）与其中的曲目 */
   let album = null;
   let tracks = [];
+  // 头部的资料库按钮（官网的「+」）：专辑连同全部曲目加入资料库，曲目已取到，不再重新请求
+  const libraryToggle = actions.libraryButton(() => (album ? targetOf(album, country, { collection: { resource: album, tracks } }) : null));
+  root.querySelector('.detail-actions').append(Object.assign(document.createElement('span'), { className: 'detail-extra' }));
+  root.querySelector('.detail-extra').append(libraryToggle.button);
   let rows = new Map();
   let notesExpanded = false;
   let loadToken = 0;
@@ -290,6 +294,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     renderTracks();
     renderFooter();
     renderShelves();
+    libraryToggle.refresh();
   }
 
   async function loadAlbum() {

@@ -32,6 +32,11 @@ static EDITORIAL_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
 static CHARTS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^new/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?/?$").unwrap()
 });
+/// 资料库与本地歌单（与 music.apple.com 的 `/library/...` 相同，数据只保存在浏览器中，不含开头的 `/`）：
+/// `library`、各分类、`library/artists/<名称>` 与 `library/playlist/p.<id>`
+static LIBRARY_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^library(?:/(?:recently-added|albums|songs|music-videos|all-playlists|artists(?:/[^/?#]+)?|playlist/p\.[0-9A-Za-z_-]+))?/?$").unwrap()
+});
 static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([A-Z0-9-]+)=("[^"]*"|[^,\r\n]+)"#).unwrap());
 static ADAM_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_A(\d+)_").unwrap());
 
@@ -107,6 +112,11 @@ pub fn is_editorial_link(url: &str) -> bool {
 /// 是否为跟随主地区的排行榜路径（`new/top-charts`、`new/top-charts/songs` 等），同样返回单页应用
 pub fn is_charts_path(path: &str) -> bool {
     CHARTS_PATH_RE.is_match(path)
+}
+
+/// 是否为资料库路径（`library/songs`、`library/playlist/p.xxx` 等），同样返回单页应用
+pub fn is_library_path(path: &str) -> bool {
+    LIBRARY_PATH_RE.is_match(path)
 }
 
 fn parse_attributes(input: &str) -> HashMap<&str, &str> {
@@ -420,6 +430,14 @@ mod tests {
         assert!(is_charts_path("new/top-charts/music-videos"));
         assert!(!is_charts_path("new/top-charts/x"));
         assert!(!is_charts_path("top-charts"));
+        assert!(is_library_path("library"));
+        assert!(is_library_path("library/songs"));
+        assert!(is_library_path("library/all-playlists/"));
+        assert!(is_library_path("library/artists/Taylor%20Swift"));
+        assert!(is_library_path("library/playlist/p.A1b2_c3-d4"));
+        assert!(!is_library_path("library/playlist/pl.123"));
+        assert!(!is_library_path("library/other"));
+        assert!(!is_library_path("library/artists/a/b"));
         assert!(!is_editorial_link("https://music.apple.com/us/room/abc"));
         assert!(!is_editorial_link("https://music.apple.com/us/curator/name"));
         assert!(!is_editorial_link("https://music.apple.com/us/album/name/123"));

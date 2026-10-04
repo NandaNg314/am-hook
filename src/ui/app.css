@@ -1758,3 +1758,61 @@ body.lyrics-open { overflow: hidden; }
 .picker.is-sheet .picker-option { min-height: 46px; font-size: 15px; }
 .picker-scrim:has(+ .picker.is-sheet) { background: rgba(0, 0, 0, .4); }
 @keyframes picker-sheet-in { from { transform: translateY(40%); opacity: 0; } }
+
+/* ---------- 资料库与歌单（views/library-ui.mjs）：导航中的分组、对话框、菜单里的子菜单返回项；资料库页面自己的样式在 views/library.css ---------- */
+/* 导航分组标题（官网 navigation__header：小字、灰色），歌单分组右侧为「新建歌单」 */
+.nav-section { margin: 18px 0 4px; padding: 0 6px 0 8px; display: flex; align-items: center; justify-content: space-between; gap: 6px; list-style: none; }
+.nav-section-title { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.nav-section-add {
+  width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px;
+  background: none; color: var(--muted);
+}
+.nav-section-add:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--accent); }
+.nav-section-add svg { width: 16px; height: 16px; }
+.nav-playlists { margin: 0; padding: 0; list-style: none; }
+.nav-playlists .nav-item { margin-top: 2px; }
+.nav-playlist-art { flex: 0 0 22px; width: 22px; height: 22px; margin-inline: 2px; overflow: hidden; border-radius: 4px; background: var(--surface-3); }
+.nav-playlist-art img { width: 100%; height: 100%; display: block; object-fit: cover; }
+@media (max-width: 483px) {
+  .nav-section-title { font-size: 13px; }
+  .nav-playlist-art { flex-basis: 28px; height: 28px; }
+}
+
+/* 详情页头部的额外按钮（专辑 / 歌单页的资料库按钮、本地歌单的编辑与更多）：窄屏在播放按钮右侧，宽屏排在最后 */
+.detail-extra { grid-column: 3; grid-row: 1; justify-self: start; display: flex; gap: 10px; }
+.detail-actions .lib-toggle[aria-pressed="true"], .song-actions .lib-toggle[aria-pressed="true"] { color: var(--accent); }
+.detail-circle-btn.busy, .btn.busy { cursor: progress; animation: pulse 1s ease-in-out infinite; }
+
+/* 菜单：子菜单的返回项（加粗）与删除类操作 */
+.menu-item.menu-back .menu-label { font-weight: 700; }
+.menu-item.danger, .menu-item.danger svg, .menu-item.danger:hover svg, .menu-item.danger:focus svg { color: var(--error); }
+
+/* 对话框（新建 / 编辑 / 删除歌单、导入、清空资料库）：原生 <dialog>，样式同下拉菜单 */
+.lib-dialog {
+  width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+}
+.lib-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.lib-dialog[open] { animation: menu-in .14s ease-out; }
+.lib-dialog-form { padding: 20px; display: grid; gap: 14px; }
+.lib-dialog-title { margin: 0; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+.lib-dialog-message { margin: -4px 0 0; color: var(--muted); font-size: 13px; white-space: pre-line; }
+.lib-dialog-field { display: grid; gap: 6px; }
+.lib-dialog-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.lib-dialog-input {
+  width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+  font-size: 14px; resize: vertical; outline: none;
+}
+.lib-dialog-input:focus { border-color: var(--accent); }
+/* DOM 顺序：默认按钮在前（回车提交），反向排列后在最右；最后一个是「取消」，靠左 */
+.lib-dialog-actions { margin-top: 4px; display: flex; flex-direction: row-reverse; flex-wrap: wrap; gap: 8px; }
+.lib-dialog-btn {
+  height: 34px; padding: 0 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+  font-size: 13px; font-weight: 600;
+}
+.lib-dialog-btn:hover { background: var(--surface-3); }
+.lib-dialog-btn:last-child { margin-right: auto; }
+.lib-dialog-btn.primary { border-color: transparent; background: var(--accent); color: #fff; }
+.lib-dialog-btn.primary:hover { background: var(--accent-hover); }
+.lib-dialog-btn.danger { border-color: color-mix(in srgb, var(--error) 40%, transparent); color: var(--error); }
+.lib-dialog-btn.primary.danger { background: var(--error); color: #fff; }

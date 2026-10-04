@@ -1,4 +1,6 @@
 // 歌曲页（/https://music.apple.com/{cc}/song/{slug}/{id}），由 app.mjs 挂载
+import { createActions, targetOf } from './actions.mjs';
+
 const { detectMode, artistNodes, qualityBadge, qualityIcon, formatTime } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
 const { t } = AmI18n;
@@ -38,7 +40,7 @@ function disposeSaved() {
 }
 addEventListener('pagehide', disposeSaved);
 
-export function mount({ root, url, signal, player, onLangChange, toast }) {
+export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
   document.title = t('song.pageTitle');
   const songUrl = decodeURIComponent(url.pathname.slice(1));
   const linkMatch = songUrl.match(/music\.apple\.com\/([a-z]{2})\/song\/[^/?#]+\/(\d+)/i) || [];
@@ -59,6 +61,14 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
 
   $('source').textContent = songUrl;
   $('apple-link').href = songUrl;
+
+  // 资料库：添加到资料库 / 从资料库中删除、添加到歌单（歌曲信息取到后可用）
+  const actions = createActions({ signal, player, navigate, toast });
+  const songTarget = () => (meta.resource ? targetOf(meta.resource, meta.country) : null);
+  const libraryToggle = actions.libraryButton(songTarget, 'btn lib-toggle');
+  const playlistBtn = actions.playlistButton(songTarget, 'btn');
+  playlistBtn.disabled = true;
+  $('play-best').after(libraryToggle.button, playlistBtn);
 
   const ICON = {
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>',
@@ -562,6 +572,8 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
           durationMs: a.durationInMillis,
           explicit: a.contentRating === 'explicit',
           url: a.url || '',
+          // 加入资料库、歌单时用来生成曲目快照
+          resource: song,
         };
       } catch {}
     }
@@ -616,6 +628,8 @@ export function mount({ root, url, signal, player, onLangChange, toast }) {
     meta = result;
     metaLoaded = true;
     renderMeta();
+    libraryToggle.refresh();
+    playlistBtn.disabled = !meta.resource;
     if (rows.size) renderVariants(); // 下载文件名需要歌名
   }
 

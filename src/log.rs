@@ -103,6 +103,10 @@ static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/https:/{1,2}music\.apple\.com/([a-z]{2})/(song|album|playlist|artist|music-video|post|room|multi-room|grouping|curator)/(?:[^/?#]+/)?([^/?#]+?)/?$").unwrap()
 });
 
+static LIBRARY_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/library(?:/(recently-added|albums|songs|music-videos|all-playlists|artists|playlist)(?:/([^/?#]+))?)?/?$").unwrap()
+});
+
 static NEW_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/(?:https://music\.apple\.com/([a-z]{2})/)?(new(?:/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?)?)/?$").unwrap()
 });
@@ -130,6 +134,15 @@ fn describe(path: &str, query: &str) -> Entry {
         }
         if let Some(genre) = query_param(query, "genreId").filter(|v| !v.is_empty()) {
             detail.push_str(&format!(" genre {genre}"));
+        }
+        return Entry::new("page", detail);
+    }
+    // 资料库页：数据只在浏览器中，服务端只返回单页应用
+    if let Some(caps) = LIBRARY_PAGE_RE.captures(path) {
+        let mut detail = String::from("library");
+        for part in [caps.get(1), caps.get(2)].into_iter().flatten() {
+            detail.push('/');
+            detail.push_str(part.as_str());
         }
         return Entry::new("page", detail);
     }
@@ -397,6 +410,9 @@ mod tests {
         }
         assert_eq!(describe("/new/top-charts/songs", "genreId=20").detail, "new/top-charts/songs genre 20");
         assert_eq!(describe("/new/top-charts/unknown", "").kind, "other");
+        assert_eq!(describe("/library", "").detail, "library");
+        assert_eq!(describe("/library/songs", "").detail, "library/songs");
+        assert_eq!(describe("/library/playlist/p.abc", "").detail, "library/playlist/p.abc");
     }
 
     #[test]

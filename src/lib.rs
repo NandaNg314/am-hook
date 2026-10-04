@@ -16,7 +16,7 @@ use axum::Router;
 
 use crate::state::AppState;
 
-/// 首页与解析接口优先，歌曲 / MV / 专辑 / 歌单 / 艺人页、编辑页（room / multi-room / grouping / curator）与 --hook 解密代理统一由 fallback 分流
+/// 首页与解析接口优先，歌曲 / MV / 专辑 / 歌单 / 艺人页、编辑页（room / multi-room / grouping / curator）、资料库页与 --hook 解密代理统一由 fallback 分流
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(ui::app_handler))
@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/assets/app.css", get(ui::css_handler))
         .route("/assets/app.mjs", get(ui::app_js_handler))
         .route("/assets/settings.mjs", get(ui::settings_js_handler))
+        .route("/assets/library.mjs", get(ui::library_js_handler))
         .route("/assets/views/:file", get(ui::view_asset_handler))
         .route("/assets/motion-art.mjs", get(ui::motion_art_handler))
         .route("/assets/player.js", get(ui::player_js_handler))

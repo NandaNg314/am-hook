@@ -1,0 +1,116 @@
+/* 资料库页与本地歌单页（views/library.mjs、library-playlist.mjs）。对话框、导航中的资料库与歌单在 app.css 中（其他页面也会用到） */
+
+/* ---------- 头部：大标题，右侧为筛选、排序、新建歌单与「更多」；窄屏时工具换到标题下方 ---------- */
+.lib-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; margin-bottom: 18px; }
+.lib-title { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
+.lib-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lib-filter {
+  position: relative; display: flex; align-items: center; width: 220px; max-width: 100%; height: 34px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+}
+.lib-filter:focus-within { border-color: var(--accent); }
+.lib-filter svg { position: absolute; left: 9px; width: 15px; height: 15px; color: var(--muted); pointer-events: none; }
+.lib-filter input { width: 100%; height: 100%; padding: 0 10px 0 30px; border: 0; background: none; outline: none; font-size: 13px; }
+.lib-sort[hidden] { display: none; }
+.lib-sort select {
+  height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); font-size: 13px;
+}
+.lib-new { height: 34px; padding: 0 12px; }
+.lib-more { width: 34px; height: 34px; }
+@media (max-width: 600px) {
+  .lib-head { align-items: stretch; }
+  .lib-title { font-size: 26px; }
+  .lib-tools { width: 100%; }
+  .lib-filter { flex: 1; width: auto; }
+}
+
+/* 歌曲：播放 / 随机播放两个胶囊（强调色），与 Apple Music 资料库的歌曲列表相同 */
+.lib-play { display: flex; gap: 12px; margin: 0 0 14px; }
+.lib-play[hidden] { display: none; }
+.lib-play .detail-play-btn { min-width: 120px; background: var(--accent); color: #fff; }
+
+.lib-page .alert { margin: 0 0 16px; }
+.alert.warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 38%, transparent); }
+
+/* ---------- 封面网格：列数随宽度变化（与官网 shelf-grid 的列数接近），MV 为 16:9 ---------- */
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 24px 20px; }
+.lib-grid.mv { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.lib-grid.compact { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.lib-grid .card-wrap, .lib-grid .shelf-item { min-width: 0; }
+@media (max-width: 483px) {
+  .lib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 14px; }
+  .lib-grid.mv { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 本地歌单封面：4 张以上不同的专辑封面拼成 2×2，否则一张；没有曲目时为占位图标 */
+.lib-cover { width: 100%; height: 100%; display: grid; overflow: hidden; background: var(--surface-3); }
+.lib-cover.mosaic { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.lib-cover img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.lib-cover-ph {
+  display: grid; place-items: center; color: var(--faint);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, var(--surface-3)), var(--surface-3));
+}
+.lib-cover-ph svg { width: 38%; height: 38%; }
+.shelf-art .lib-cover { border-radius: inherit; }
+.album-art .lib-cover-hero { aspect-ratio: 1; border-radius: inherit; }
+
+/* ---------- 空状态 ---------- */
+.lib-empty { padding: 72px 16px; display: grid; justify-items: center; gap: 6px; text-align: center; }
+.lib-empty[hidden] { display: none; }
+.lib-empty-icon { width: 56px; height: 56px; margin-bottom: 8px; display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+.lib-empty-icon svg { width: 28px; height: 28px; }
+.lib-empty-title { margin: 0; font-size: 17px; font-weight: 600; }
+.lib-empty-hint { max-width: 420px; margin: 0; color: var(--muted); font-size: 13px; }
+
+/* ---------- 歌曲列表：与歌单页的曲目行相同 ---------- */
+.lib-sentinel { height: 1px; }
+.lib-page .album-footer { padding-left: 10px; }
+
+/* ---------- 艺人：宽屏左侧列表（固定宽度、随页面滚动吸顶），右侧为选中的艺人；手机上只显示其一 ---------- */
+.lib-artists { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 28px; align-items: start; }
+.lib-artist-list {
+  position: sticky; top: 16px; max-height: calc(100dvh - var(--player-height, 0px) - 64px); overflow-y: auto;
+  display: grid; gap: 2px; padding-right: 4px; scrollbar-width: thin;
+}
+.lib-artist-link {
+  min-width: 0; padding: 6px 8px; display: flex; align-items: center; gap: 10px; border-radius: 8px;
+  color: var(--text); font-size: 14px; text-decoration: none;
+}
+.lib-artist-link:hover { background: var(--surface-2); }
+.lib-artist-link[aria-current="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+.lib-artist-avatar { flex: 0 0 36px; width: 36px; height: 36px; overflow: hidden; border-radius: 50%; background: var(--surface-3); }
+.lib-artist-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.lib-artist-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-artist-title { margin: 4px 0 6px; font-size: 24px; font-weight: 700; }
+.lib-artist-title a { color: inherit; text-decoration: none; }
+.lib-artist-title a:hover { color: var(--accent); }
+.lib-subhead { margin: 22px 0 12px; font-size: 17px; font-weight: 700; }
+@media (max-width: 760px) {
+  .lib-artists { grid-template-columns: minmax(0, 1fr); }
+  .lib-artist-list { position: static; max-height: none; overflow: visible; }
+  .lib-artists.has-selection .lib-artist-list { display: none; }
+  .lib-artists:not(.has-selection) .lib-artist-detail { display: none; }
+}
+
+/* ---------- 本地歌单页：曲目行首为拖动把手（悬停时显示，触屏常显），拖动时其他行让位 ---------- */
+.lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) minmax(0, .8fr) auto 40px; padding-left: 4px; }
+.lib-playlist-tracks .pl-track + .pl-track::before { left: 86px; }
+.lib-grip {
+  width: 24px; height: 36px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px;
+  background: none; color: var(--faint); cursor: grab; touch-action: none; opacity: 0;
+}
+.lib-grip svg { width: 16px; height: 16px; }
+.track:hover .lib-grip, .lib-grip:focus-visible { opacity: 1; }
+.lib-grip:hover, .lib-grip:focus-visible { color: var(--text); }
+.is-sorting .pl-track { transition: transform .15s ease; }
+.is-sorting .pl-track.is-dragging { z-index: 2; transition: none; background: var(--surface-2); box-shadow: var(--shadow); }
+.is-sorting .lib-grip { cursor: grabbing; }
+@media (pointer: coarse) { .lib-grip { opacity: 1; } }
+@media (max-width: 1000px) {
+  .lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) auto 40px; }
+}
+@media (max-width: 760px) {
+  .lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) auto 36px; gap: 8px; }
+  .lib-playlist-tracks .pl-track + .pl-track::before { left: 76px; }
+}
+.lib-playlist-page .lib-empty { padding-top: 40px; }

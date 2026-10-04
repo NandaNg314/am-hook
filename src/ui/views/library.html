@@ -1,0 +1,37 @@
+<div class="page lib-page">
+  <main>
+    <!-- 资料库（官网 /library/...）：标题、筛选、排序与「更多」（导入 / 导出），内容由 library.mjs 按分类渲染 -->
+    <header class="lib-head">
+      <h1 class="lib-title" id="title"></h1>
+      <div class="lib-tools">
+        <label class="lib-filter">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+          <input id="filter" type="search" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder=library.filter,aria-label=library.filter">
+        </label>
+        <label class="lib-sort" id="sort-wrap" hidden>
+          <span class="sr-only" data-i18n="library.sortBy"></span>
+          <select id="sort"></select>
+        </label>
+        <button class="btn lib-new" id="new-playlist" type="button" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span data-i18n="library.newPlaylist"></span>
+        </button>
+        <button class="icon-btn lib-more" id="lib-more" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-attr="aria-label=library.menu,title=library.menu">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="lib-play" id="play-row" hidden>
+      <button class="detail-play-btn" id="play-all" type="button">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
+        <span data-i18n="album.play"></span>
+      </button>
+      <button class="detail-play-btn" id="shuffle" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
+        <span data-i18n="album.shuffle"></span>
+      </button>
+    </div>
+    <div class="alert warn" id="alert" hidden></div>
+    <div class="lib-content" id="content"></div>
+  </main>
+</div>

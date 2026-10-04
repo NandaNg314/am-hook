@@ -1,0 +1,49 @@
+<div class="page">
+  <main>
+    <!-- 本地歌单（官网 /library/playlist/p.…）：头部与歌单页相同，封面为曲目专辑封面拼图；歌单只保存在本浏览器中 -->
+    <section class="detail-header no-notes" id="hero">
+      <div class="detail-art">
+        <div class="detail-radiosity" id="radiosity" aria-hidden="true"></div>
+        <div class="album-art" id="art"></div>
+      </div>
+      <div class="detail-headings">
+        <h1 class="album-title" id="title">&nbsp;</h1>
+        <p class="album-artist" id="artist"></p>
+        <div class="detail-meta"><span class="album-sub" id="sub"></span></div>
+      </div>
+      <div class="album-notes" id="notes" hidden>
+        <p class="album-notes-text" id="notes-text"></p>
+        <button class="album-notes-more" id="notes-more" type="button" hidden></button>
+      </div>
+      <div class="detail-actions">
+        <button class="detail-play-btn" id="play-all" type="button" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg>
+          <span data-i18n="album.play"></span>
+        </button>
+        <button class="detail-circle-btn" id="shuffle" type="button" disabled data-i18n-attr="aria-label=album.shuffle,title=album.shuffle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
+        </button>
+        <span class="detail-extra">
+          <button class="detail-circle-btn" id="edit" type="button" data-i18n-attr="aria-label=library.edit,title=library.edit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>
+          </button>
+          <button class="detail-circle-btn" id="more" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-attr="aria-label=action.more,title=action.more">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+          </button>
+        </span>
+      </div>
+    </section>
+
+    <div class="alert info" id="alert" hidden aria-live="polite"></div>
+
+    <section class="tracklist lib-tracklist lib-playlist-tracks" id="tracks"></section>
+    <div class="lib-empty" id="empty" hidden>
+      <span class="lib-empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11M4 11h11M4 16h7"/><path d="M18 8v8.5"/><circle cx="16" cy="17" r="2"/></svg>
+      </span>
+      <p class="lib-empty-title" data-i18n="library.emptyPlaylist"></p>
+      <p class="lib-empty-hint" data-i18n="library.emptyPlaylistHint"></p>
+    </div>
+    <div class="album-footer" id="footer" hidden></div>
+  </main>
+</div>

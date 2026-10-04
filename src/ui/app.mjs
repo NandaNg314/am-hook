@@ -7,6 +7,8 @@
 //   离开页面时 signal 中止，监听随之移除。
 
 import { mountSettings } from '/assets/settings.mjs';
+import * as library from '/assets/library.mjs';
+import { newPlaylist, playlistName } from '/assets/views/library-ui.mjs';
 
 const { AmPlayer } = window.AmHook;
 const { AmI18n } = window;
@@ -37,6 +39,9 @@ const PAGES = [
 const VIEW_FILES = { new: 'browse', charts: 'browse', editorial: 'browse', post: 'mv' };
 /** 跟随主地区的排行榜路径（与 src/m3u8.rs 的 is_charts_path 相同） */
 const CHARTS_PATH = /^\/new\/top-charts(?:\/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?\/?$/;
+/** 资料库（与 src/m3u8.rs 的 is_library_path 相同）：各分类与本地歌单，数据只在浏览器中 */
+const LIBRARY_PATH = /^\/library(?:\/(?:recently-added|albums|songs|music-videos|all-playlists|artists(?:\/[^/?#]+)?))?\/?$/;
+const LIBRARY_PLAYLIST_PATH = /^\/library\/playlist\/p\.[0-9A-Za-z_-]+\/?$/;
 
 /** 地址对应的页面名；不是站内页面时为 null（交给浏览器正常跳转）。与服务端一样匹配未解码的路径 */
 function route(url) {
@@ -45,6 +50,8 @@ function route(url) {
   // 「新发现」（跟随主地区）
   if (url.pathname === '/new') return 'new';
   if (CHARTS_PATH.test(url.pathname)) return 'charts';
+  if (LIBRARY_PATH.test(url.pathname)) return 'library';
+  if (LIBRARY_PLAYLIST_PATH.test(url.pathname)) return 'library-playlist';
   const path = url.pathname.slice(1);
   const hit = PAGES.find(([, re]) => re.test(path));
   return hit ? hit[0] : null;
@@ -109,14 +116,53 @@ nav.addEventListener('click', (event) => {
 });
 setNavExpanded(false);
 
-/** 顶层页面（主页、新发现、排行榜首页）不显示「返回」，导航中对应的一项标为当前页；各榜单的「查看全部」仍标为排行榜 */
+/**
+ * 顶层页面（主页、新发现、排行榜首页、资料库与本地歌单）不显示「返回」，导航中对应的一项标为当前页；
+ * 各榜单的「查看全部」仍标为排行榜；资料库按分类（library:songs 等），歌单按地址
+ */
 function syncNav(name, path) {
-  nav.classList.toggle('is-home', name === 'home' || name === 'new' || path === '/new/top-charts');
+  nav.classList.toggle('is-home', name === 'home' || name === 'new' || path === '/new/top-charts' || name === 'library' || name === 'library-playlist');
+  const key = name === 'library' ? `library:${path.split('/')[2] || 'recently-added'}` : name;
   for (const link of nav.querySelectorAll('[data-nav]')) {
-    if (link.dataset.nav === name) link.setAttribute('aria-current', 'page');
+    if (link.dataset.nav === key) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  for (const link of navPlaylists.querySelectorAll('a')) {
+    if (link.getAttribute('href') === path) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
 }
+
+/* ---------- 导航中的歌单（官网侧边栏「播放列表」分组）：本地歌单与添加到资料库的 Apple Music 歌单，按名称排列 ---------- */
+const navPlaylists = $('nav-playlists');
+function renderNavPlaylists() {
+  const collator = new Intl.Collator(AmI18n.lang === 'zh' ? 'zh-CN' : 'en', { numeric: true, sensitivity: 'base' });
+  const entries = [
+    ...library.playlists().map((list) => ({
+      name: playlistName(list), href: `/library/playlist/${list.id}`, artwork: (list.tracks.find((track) => track.artwork) || {}).artwork,
+    })),
+    ...library.libraryItems('playlist').filter((item) => item.href).map((item) => ({ name: item.name, href: item.href, artwork: item.artwork })),
+  ].sort((a, b) => collator.compare(a.name, b.name));
+  navPlaylists.replaceChildren(...entries.map((entry) => {
+    const art = document.createElement('span');
+    art.className = 'nav-playlist-art';
+    const src = library.artUrl(entry.artwork, 64);
+    if (src) art.append(Object.assign(document.createElement('img'), { src, alt: '', loading: 'lazy', decoding: 'async' }));
+    const label = Object.assign(document.createElement('span'), { className: 'nav-label', textContent: entry.name });
+    const link = Object.assign(document.createElement('a'), { className: 'nav-link', href: entry.href, title: entry.name });
+    link.append(art, label);
+    const item = Object.assign(document.createElement('li'), { className: 'nav-item' });
+    item.append(link);
+    return item;
+  }));
+  if (current) syncNav(current.name, current.path);
+}
+library.onChange(renderNavPlaylists);
+AmI18n.onChange(renderNavPlaylists);
+nav.querySelector('[data-new-playlist]').addEventListener('click', () => {
+  setNavExpanded(false);
+  newPlaylist({ open: true, navigate: (href) => navigate(href), toast });
+});
 
 /* ---------- 设置：主地区与曲库语言的选择面板 ---------- */
 const settings = mountSettings({ picker: $('picker'), scrim: $('picker-scrim') });

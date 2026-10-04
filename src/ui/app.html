@@ -14,7 +14,7 @@
 -->
 <body>
   <!--
-    导航（官网 .navigation）：≥484px 为左侧边栏（logo、返回、主页，底部为主地区、曲库语言、界面语言与 wrapper-lite 状态）；
+    导航（官网 .navigation）：≥484px 为左侧边栏（logo、返回、主页、新发现、排行榜、资料库与歌单，底部为主地区、曲库语言、界面语言与 wrapper-lite 状态）；
     <484px 为顶部固定的 52px 顶栏（返回 / logo / 菜单按钮），菜单按钮展开为整屏菜单，内容与侧边栏相同
   -->
   <nav class="navigation" id="nav" data-i18n-attr="aria-label=nav.label">
@@ -59,6 +59,52 @@
             <span class="nav-label" data-i18n="nav.charts"></span>
           </a>
         </li>
+        <!-- 资料库（官网侧边栏的「资料库」分组）：数据只保存在本浏览器中，见 library.mjs 与 views/library.mjs -->
+        <li class="nav-section"><span class="nav-section-title" data-i18n="nav.library"></span></li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/recently-added" data-nav="library:recently-added">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span>
+            <span class="nav-label" data-i18n="library.recently-added"></span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/artists" data-nav="library:artists">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></span>
+            <span class="nav-label" data-i18n="library.artists"></span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/albums" data-nav="library:albums">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".9" fill="currentColor"/></svg></span>
+            <span class="nav-label" data-i18n="library.albums"></span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/songs" data-nav="library:songs">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg></span>
+            <span class="nav-label" data-i18n="library.songs"></span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/music-videos" data-nav="library:music-videos">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="13" rx="2.5"/><path d="M8 21h8"/><path d="m10.5 9 4 2.5-4 2.5z" fill="currentColor"/></svg></span>
+            <span class="nav-label" data-i18n="library.music-videos"></span>
+          </a>
+        </li>
+        <!-- 歌单（官网侧边栏的「播放列表」分组）：所有歌单，然后是各个歌单（app.mjs 渲染）；+ 新建歌单 -->
+        <li class="nav-section">
+          <span class="nav-section-title" data-i18n="nav.playlists"></span>
+          <button class="nav-section-add" type="button" data-new-playlist data-i18n-attr="aria-label=library.newPlaylist,title=library.newPlaylist">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/library/all-playlists" data-nav="library:all-playlists">
+            <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></span>
+            <span class="nav-label" data-i18n="library.all-playlists"></span>
+          </a>
+        </li>
+        <li><ul class="nav-playlists" id="nav-playlists"></ul></li>
       </ul>
       <!-- 设置：主地区与曲库语言打开选择面板（settings.mjs），界面语言直接在中文 / English 间切换 -->
       <div class="nav-footer">

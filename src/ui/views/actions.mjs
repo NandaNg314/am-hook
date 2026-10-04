@@ -1,10 +1,18 @@
 // 各页面共用的条目操作（与 music.apple.com 相同）：封面悬停时的「播放」「更多」按钮、曲目行的「更多」菜单，
 // 菜单项有播放、打开、复制本站链接与 Apple Music 链接。整张专辑 / 歌单的播放在这里取曲目后交给播放器队列。
 //
-// 条目 target：{ kind, href, apple, name, country, resource?, albumHref?, onPlay? }
-//   kind：song / music-video / album / playlist / artist；href：本站页面路径（/https://music.apple.com/...）；
+// 菜单里还有资料库操作（与 music.apple.com 相同）：添加到资料库 / 从资料库中删除、添加到歌单（子菜单），见 library.mjs。
+//
+// 条目 target：{ kind, href, apple, name, country, resource?, albumHref?, onPlay?, track?, collection?, getTracks?, extraItems? }
+//   kind：song / music-video / album / playlist / artist / library-playlist（本地歌单）；href：本站页面路径（/https://music.apple.com/...）；
 //   apple：Apple Music 原始地址；resource：amp-api 资源（歌曲单独播放时用来生成队列条目）；
-//   albumHref：曲目所属专辑的本站路径（菜单里的「前往专辑」）；onPlay：页面自己的播放方式（如按专辑顺序播放）
+//   albumHref：曲目所属专辑的本站路径（菜单里的「前往专辑」）；onPlay：页面自己的播放方式（如按专辑顺序播放）；
+//   track：资料库中的曲目快照（没有 resource 时用它加入资料库、歌单）；collection：页面已取到的专辑 / 歌单 { resource, tracks }，
+//   加入资料库或歌单时不再重新请求；getTracks()：要加入歌单的曲目快照（本地歌单用）；playlistId：「添加到歌单」里不列出的歌单；
+//   extraItems：页面自己的菜单项（如「从歌单中删除」）
+import * as library from '/assets/library.mjs';
+import { LIB_ICON, playlistMenuItems } from './library-ui.mjs';
+
 const { AmI18n } = window;
 const { t } = AmI18n;
 
@@ -98,19 +106,62 @@ export function songEntry(track, country, context = {}) {
   };
 }
 
-/** 专辑 / 歌单的全部歌曲（分页取完），MV 与无法播放的曲目跳过 */
-async function collectionEntries(target) {
+/** 歌曲 / MV 资源 → 资料库曲目快照（见 library.mjs）；album 为所属专辑资源（专辑页的曲目没有专辑字段时补上） */
+export function snapshotOf(track, country, album) {
+  const a = track.attributes || {};
+  const albumHref = album ? pagePath(album, country) : albumPathOf(track);
+  const artwork = a.artwork || (album && album.attributes && album.attributes.artwork) || {};
+  return {
+    kind: KINDS[track.type],
+    id: track.id,
+    country,
+    name: a.name || '',
+    artist: a.artistName || '',
+    artists: ((track.relationships && track.relationships.artists && track.relationships.artists.data) || [])
+      .filter((artist) => artist.attributes && artist.attributes.name)
+      .map((artist) => ({ name: artist.attributes.name, href: pagePath(artist, country) })),
+    album: a.albumName || (album && album.attributes && album.attributes.name) || '',
+    albumId: (albumHref.match(/\/(\d+)$/) || [])[1] || '',
+    albumHref,
+    href: pagePath(track, country),
+    artwork: artwork.url || '',
+    bgColor: artwork.bgColor || '',
+    duration: a.durationInMillis || 0,
+    explicit: a.contentRating === 'explicit',
+  };
+}
+
+/** 专辑 / 歌单资源 → 资料库条目 */
+function collectionRecord(res, country) {
+  const a = res.attributes || {};
+  const href = pagePath(res, country);
+  if (res.type === 'playlists') {
+    const artwork = (a.editorialArtwork && a.editorialArtwork.staticDetailSquare) || a.artwork || {};
+    return { kind: 'playlist', id: res.id, country, name: a.name, curator: a.curatorName || '', href, artwork: artwork.url || '', bgColor: artwork.bgColor || '' };
+  }
+  const artist = ((res.relationships && res.relationships.artists && res.relationships.artists.data) || [])[0];
+  return {
+    kind: 'album', id: res.id, country, name: a.name, artist: a.artistName || '',
+    artistHref: artist && artist.attributes ? pagePath(artist, country) : '', href,
+    artwork: (a.artwork && a.artwork.url) || '', bgColor: (a.artwork && a.artwork.bgColor) || '',
+    releaseDate: a.releaseDate || '', trackCount: a.trackCount || 0,
+  };
+}
+
+/** 专辑 / 歌单的资源与全部曲目（分页取完）：{ country, resource, tracks }；页面已取到时（target.collection）直接使用 */
+async function fetchCollection(target) {
   const m = target.href.match(/^\/https:\/\/music\.apple\.com\/([a-z]{2})\/(album|playlist)\/(?:[^/?#]+\/)?([^/?#]+)/i);
-  if (!m) return [];
+  if (!m) return null;
   const country = m[1].toLowerCase();
+  if (target.collection && target.collection.resource) return { country, ...target.collection };
   const playlist = m[2] === 'playlist';
   const l = await AmI18n.catalogLang(country);
-  const trackParams = { l, 'include[songs]': 'artists', 'fields[artists]': 'name,url' };
+  const trackParams = { l, 'include[songs]': 'artists', 'include[music-videos]': 'artists', 'fields[artists]': 'name,url' };
   const data = await amp(`/v1/catalog/${country}/${playlist ? 'playlists' : 'albums'}/${m[3]}`, {
-    platform: 'web', include: 'tracks', ...(playlist ? { 'limit[tracks]': '300' } : {}), ...trackParams,
+    platform: 'web', include: playlist ? 'tracks' : 'tracks,artists', ...(playlist ? { 'limit[tracks]': '300' } : {}), ...trackParams,
   });
   const res = data.data && data.data[0];
-  if (!res) return [];
+  if (!res) return null;
   const rel = res.relationships && res.relationships.tracks;
   let list = (rel && rel.data) || [];
   for (let more = rel && rel.next, pages = 0; more && pages < 20; pages++) {
@@ -118,11 +169,60 @@ async function collectionEntries(target) {
     list = list.concat(page.data || []);
     more = page.next;
   }
+  return { country, resource: res, tracks: list };
+}
+
+/** 专辑 / 歌单的全部歌曲，MV 与无法播放的曲目跳过 */
+async function collectionEntries(target) {
+  const c = await fetchCollection(target);
+  if (!c) return [];
+  const res = c.resource;
   const a = res.attributes || {};
-  const context = playlist
+  const context = res.type === 'playlists'
     ? { album: a.name, artwork: (a.editorialArtwork && a.editorialArtwork.staticDetailSquare) || a.artwork }
-    : { album: a.name, albumHref: pagePath(res, country), artwork: a.artwork };
-  return list.filter((track) => track.type === 'songs' && playable(track)).map((track) => songEntry(track, country, context));
+    : { album: a.name, albumHref: pagePath(res, c.country), artwork: a.artwork };
+  return c.tracks.filter((track) => track.type === 'songs' && playable(track)).map((track) => songEntry(track, c.country, context));
+}
+
+/** 专辑 / 歌单中可以加入资料库、歌单的曲目快照（歌曲与 MV，尚未发行的跳过） */
+function collectionSnapshots(c) {
+  const album = c.resource.type === 'albums' ? c.resource : null;
+  return c.tracks.filter((track) => (track.type === 'songs' || track.type === 'music-videos') && playable(track))
+    .map((track) => snapshotOf(track, c.country, album));
+}
+
+/** 条目在资料库中的 kind 与 id；不能加入资料库的条目为 null */
+function libraryKey(target) {
+  if (!['song', 'music-video', 'album', 'playlist'].includes(target.kind)) return null;
+  if (target.track) return { kind: target.track.kind, id: target.track.id };
+  if (target.resource) return { kind: target.kind, id: target.resource.id };
+  const m = (target.href || '').match(target.kind === 'playlist' ? /\/(pl\.[\w-]+)$/ : /\/(\d+)$/);
+  return m ? { kind: target.kind, id: m[1] } : null;
+}
+
+/** 加入资料库：歌曲 / MV 为自身；专辑连同全部曲目（与 Apple Music 相同）；Apple Music 歌单只加歌单本身。返回新增数量 */
+async function addTargetToLibrary(target) {
+  if (target.kind === 'song' || target.kind === 'music-video') {
+    const track = target.track || (target.resource && snapshotOf(target.resource, target.country));
+    if (!track) throw new Error('no metadata');
+    return library.addToLibrary([track]);
+  }
+  const c = await fetchCollection(target);
+  if (!c) throw new Error('not found');
+  const records = [collectionRecord(c.resource, c.country)];
+  if (target.kind === 'album') records.push(...collectionSnapshots(c));
+  return library.addToLibrary(records);
+}
+
+/** 要加入歌单的曲目快照 */
+async function targetTracks(target) {
+  if (target.getTracks) return target.getTracks();
+  if (target.kind === 'song' || target.kind === 'music-video') {
+    const track = target.track || (target.resource && snapshotOf(target.resource, target.country));
+    return track ? [track] : [];
+  }
+  const c = await fetchCollection(target);
+  return c ? collectionSnapshots(c) : [];
 }
 
 /* ---------- 复制 ---------- */
@@ -179,26 +279,46 @@ function closeMenu(focusTrigger) {
   menu.trigger = null;
 }
 
-/** items：'-' 分隔线，或 { icon, label, title?, onSelect }；title 为悬停提示（如完整链接） */
-function openMenu(trigger, items) {
+/**
+ * items：'-' 分隔线，或 { icon, label, hint?, title?, onSelect }；hint 为第二行小字，title 为悬停提示（如完整链接）；
+ * 带 submenu()（返回子菜单项）的项点击后在原位置换成子菜单，第一项「‹ 名称」返回上一级（如「添加到歌单」）
+ */
+export function openMenu(trigger, items) {
   const box = menuEl();
   const reopen = menu.trigger === trigger;
   closeMenu(false);
   if (reopen) return;
-  box.replaceChildren(...items.map((it) => {
-    if (it === '-') return el('div', { className: 'menu-sep', role: 'separator' });
-    const node = el('button', { className: 'menu-item', type: 'button', innerHTML: it.icon, tabIndex: -1 });
-    node.setAttribute('role', 'menuitem');
-    node.append(el('span', { className: 'menu-text' }, el('span', { className: 'menu-label', textContent: it.label })));
-    if (it.title) node.title = it.title;
-    node.addEventListener('click', () => { closeMenu(false); it.onSelect(); });
-    return node;
-  }));
   box.hidden = false;
   menu.trigger = trigger;
   trigger.setAttribute('aria-expanded', 'true');
   // 菜单打开期间封面上的按钮保持显示
   trigger.closest('.card-wrap, .row-wrap')?.classList.add('menu-open');
+  fillMenu(items);
+}
+
+function fillMenu(items) {
+  const box = menu.el;
+  box.replaceChildren(...items.map((it) => {
+    if (it === '-') return el('div', { className: 'menu-sep', role: 'separator' });
+    const node = el('button', { className: `menu-item${it.back ? ' menu-back' : ''}${it.danger ? ' danger' : ''}`, type: 'button', innerHTML: it.icon, tabIndex: -1 });
+    node.setAttribute('role', 'menuitem');
+    if (it.submenu) node.setAttribute('aria-haspopup', 'menu');
+    node.append(el('span', { className: 'menu-text' }, el('span', { className: 'menu-label', textContent: it.label }),
+      it.hint ? el('span', { className: 'menu-hint', textContent: it.hint }) : null));
+    if (it.title) node.title = it.title;
+    node.addEventListener('click', () => {
+      if (it.submenu) {
+        fillMenu([{ icon: LIB_ICON.back, label: it.label, back: true, onSelect: () => fillMenu(items) }, '-', ...it.submenu()]);
+        return;
+      }
+      if (it.back) { it.onSelect(); return; }
+      closeMenu(false);
+      it.onSelect();
+    });
+    return node;
+  }));
+  // 换成子菜单后高度变了，重新定位
+  box.style.maxHeight = '';
   positionMenu();
   box.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
 }
@@ -236,12 +356,14 @@ export function createActions({ signal, player, navigate, toast }) {
   menu.player = player;
   signal.addEventListener('abort', () => closeMenu(false), { once: true });
 
-  const playable = (target) => ['song', 'album', 'playlist', 'music-video'].includes(target.kind) && (target.kind !== 'song' || target.onPlay || target.resource);
+  const playable = (target) => ['song', 'album', 'playlist', 'music-video', 'library-playlist'].includes(target.kind)
+    && (target.kind !== 'song' || target.onPlay || target.resource || target.track)
+    && (target.kind !== 'library-playlist' || !!target.onPlay);
 
   async function play(target, button, shuffle = false) {
     if (target.kind === 'music-video') { navigate(target.href); return; }
     if (target.onPlay) { target.onPlay(); return; }
-    if (target.kind === 'song') { player.playQueue([songEntry(target.resource, target.country)], 0); return; }
+    if (target.kind === 'song') { player.playQueue([target.resource ? songEntry(target.resource, target.country) : library.entryOf(target.track)], 0); return; }
     if (button) button.classList.add('busy');
     try {
       // 离开页面后取回的曲目照样播放：播放条常驻
@@ -259,13 +381,57 @@ export function createActions({ signal, player, navigate, toast }) {
     copyText(url, () => toast(t('action.copied')));
   }
 
+  /** 加入 / 移出资料库；busy 为请求曲目期间显示忙碌的按钮 */
+  async function toggleLibrary(target, busy) {
+    const key = libraryKey(target);
+    if (!key) return;
+    if (library.inLibrary(key.kind, key.id)) {
+      library.removeFromLibrary(key.kind, key.id);
+      toast(t('library.removedFrom', { name: target.name }));
+      return;
+    }
+    if (busy) busy.classList.add('busy');
+    try {
+      await addTargetToLibrary(target);
+      toast(t('library.addedToLibrary', { name: target.name }));
+    } catch (err) {
+      toast(t('library.failed', { msg: err.message }));
+    } finally {
+      if (busy) busy.classList.remove('busy');
+    }
+  }
+
+  /** 资料库菜单项：添加到资料库 / 从资料库中删除、添加到歌单（子菜单） */
+  function libraryItems(target, button) {
+    const items = [];
+    const key = libraryKey(target);
+    if (key) {
+      const has = library.inLibrary(key.kind, key.id);
+      items.push({ icon: has ? LIB_ICON.remove : LIB_ICON.add, label: t(has ? 'library.remove' : 'library.add'), onSelect: () => toggleLibrary(target, button) });
+    }
+    if (key || target.getTracks) {
+      items.push({
+        icon: LIB_ICON.addToPlaylist, label: t('library.addToPlaylist'),
+        submenu: () => playlistMenuItems(() => targetTracks(target), { toast, navigate, except: target.playlistId }),
+      });
+    }
+    return items;
+  }
+
   function menuItems(target, button) {
     const items = [];
     if (target.kind === 'music-video') items.push({ icon: ICON.video, label: t('action.playMv'), onSelect: () => navigate(target.href) });
     else if (playable(target)) items.push({ icon: ICON.play, label: t('action.play'), onSelect: () => play(target, button) });
-    if (target.kind === 'album' || target.kind === 'playlist') items.push({ icon: ICON.shuffle, label: t('action.shuffle'), onSelect: () => play(target, button, true) });
+    if (target.kind === 'album' || target.kind === 'playlist' || target.onShuffle) {
+      items.push({ icon: ICON.shuffle, label: t('action.shuffle'), onSelect: () => (target.onShuffle ? target.onShuffle() : play(target, button, true)) });
+    }
     if (target.kind === 'song') items.push({ icon: ICON.quality, label: t('album.quality'), onSelect: () => navigate(target.href) });
     if (target.albumHref) items.push({ icon: ICON.album, label: t('action.goAlbum'), onSelect: () => navigate(target.albumHref) });
+    const lib = libraryItems(target, button);
+    if (lib.length) items.push(...(items.length ? ['-'] : []), ...lib);
+    if (target.extraItems && target.extraItems.length) items.push(...(items.length ? ['-'] : []), ...target.extraItems);
+    // 本地歌单没有 Apple Music 链接
+    if (!target.href || !target.apple) return items;
     if (items.length) items.push('-');
     const site = location.origin + target.href;
     items.push(
@@ -306,6 +472,46 @@ export function createActions({ signal, player, navigate, toast }) {
     return actions;
   }
 
+  /**
+   * 详情页头部的资料库按钮（与 music.apple.com 专辑 / 歌单页的「+」相同）：不在资料库中显示 +，在时显示 ✓，点击切换。
+   * getTarget() 返回当前条目（页面数据载入前为 null，按钮不可用）。返回 { button, refresh }，数据载入后调用 refresh()
+   */
+  function libraryButton(getTarget, className = 'detail-circle-btn lib-toggle') {
+    const button = el('button', { className, type: 'button', disabled: true });
+    const refresh = () => {
+      const target = getTarget();
+      const key = target && libraryKey(target);
+      const has = !!key && library.inLibrary(key.kind, key.id);
+      button.disabled = !key;
+      button.innerHTML = has ? LIB_ICON.added : LIB_ICON.add;
+      button.setAttribute('aria-pressed', String(has));
+      button.title = t(has ? 'library.inLibrary' : 'library.add');
+      button.setAttribute('aria-label', button.title);
+    };
+    button.addEventListener('click', () => {
+      const target = getTarget();
+      if (target) toggleLibrary(target, button);
+    });
+    signal.addEventListener('abort', library.onChange(refresh), { once: true });
+    refresh();
+    return { button, refresh };
+  }
+
+  /** 「添加到歌单」按钮：直接打开歌单子菜单 */
+  function playlistButton(getTarget, className) {
+    const button = el('button', { className, type: 'button', innerHTML: LIB_ICON.addToPlaylist, title: t('library.addToPlaylist') });
+    button.setAttribute('aria-label', t('library.addToPlaylist'));
+    button.setAttribute('aria-haspopup', 'menu');
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const target = getTarget();
+      if (target) openMenu(button, playlistMenuItems(() => targetTracks(target), { toast, navigate }));
+    });
+    return button;
+  }
+
   /** 封面卡片（链接）外包一层 .card-wrap，加上 coverActions（按钮不能放进链接里） */
   function wrapCard(card, target) {
     return el('div', { className: `card-wrap${target.kind === 'music-video' ? ' mv' : ''}${target.kind === 'artist' ? ' artist' : ''}` }, card, coverActions(target));
@@ -319,5 +525,5 @@ export function createActions({ signal, player, navigate, toast }) {
     return wrap;
   }
 
-  return { moreButton, coverActions, wrapCard, wrapRow };
+  return { moreButton, coverActions, wrapCard, wrapRow, libraryButton, playlistButton };
 }

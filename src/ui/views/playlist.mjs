@@ -20,6 +20,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   /** 当前歌单（amp-api playlists 资源）与其中的曲目 */
   let playlist = null;
   let tracks = [];
+  // 头部的资料库按钮（官网的「+」）：把这个 Apple Music 歌单加入资料库
+  const libraryToggle = actions.libraryButton(() => (playlist ? targetOf(playlist, country, { collection: { resource: playlist, tracks } }) : null));
+  root.querySelector('.detail-actions').append(Object.assign(document.createElement('span'), { className: 'detail-extra' }));
+  root.querySelector('.detail-extra').append(libraryToggle.button);
   let rows = new Map();
   let notesExpanded = false;
   let loadToken = 0;
@@ -285,6 +289,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     renderTracks();
     renderFooter();
     renderShelves();
+    libraryToggle.refresh();
   }
 
   async function loadPlaylist() {

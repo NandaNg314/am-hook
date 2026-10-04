@@ -29,6 +29,11 @@ pub async fn settings_js_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/settings.mjs"))
 }
 
+/// 资料库与歌单的存储（浏览器 IndexedDB，服务端不保存任何资料库数据）
+pub async fn library_js_handler(headers: HeaderMap) -> Response<Body> {
+    static_response(&headers, "text/javascript; charset=utf-8", include_bytes!("ui/library.mjs"))
+}
+
 /// 页面视图（src/ui/views/）：`<name>.html` 为页面内容，`<name>.mjs` 为页面脚本（导出 mount，见 app.mjs）
 pub async fn view_asset_handler(
     headers: HeaderMap,
@@ -57,6 +62,14 @@ pub async fn view_asset_handler(
         "actions.mjs" => (JS, include_bytes!("ui/views/actions.mjs")),
         // 专辑页与歌单页共用的头部（主题色、动态封面）
         "detail-header.mjs" => (JS, include_bytes!("ui/views/detail-header.mjs")),
+        // 资料库（最近添加、艺人、专辑、歌曲、音乐视频、全部歌单）与本地歌单页
+        "library.html" => (HTML, include_bytes!("ui/views/library.html")),
+        "library.mjs" => (JS, include_bytes!("ui/views/library.mjs")),
+        "library.css" => ("text/css; charset=utf-8", include_bytes!("ui/views/library.css")),
+        "library-playlist.html" => (HTML, include_bytes!("ui/views/library-playlist.html")),
+        "library-playlist.mjs" => (JS, include_bytes!("ui/views/library-playlist.mjs")),
+        // 资料库的对话框、歌单封面拼图、导入与导出（导航与各页面共用）
+        "library-ui.mjs" => (JS, include_bytes!("ui/views/library-ui.mjs")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)
