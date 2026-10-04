@@ -54,7 +54,7 @@ pub async fn access_log(request: Request, next: Next) -> Response {
     let status = response.status();
     let note = response.extensions_mut().remove::<LogNote>().map(|n| n.0);
     let entry = describe(&path, &query);
-    let mut line = format!("{} {:<4} {:<7} {}", status.as_u16(), method.as_str(), entry.kind, entry.detail);
+    let mut line = format!("{} {:<4} {:<9} {}", status.as_u16(), method.as_str(), entry.kind, entry.detail);
     if let Some(note) = note.filter(|n| !n.is_empty()) {
         line.push_str(" · ");
         line.push_str(&note);
@@ -100,13 +100,38 @@ impl Entry {
 }
 
 static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/https:/{1,2}music\.apple\.com/([a-z]{2})/(song|album|playlist|artist|music-video)/(?:[^/]*/)?([^/?#]+)").unwrap()
+    Regex::new(r"^/https:/{1,2}music\.apple\.com/([a-z]{2})/(song|album|playlist|artist|music-video|post|room|multi-room|grouping|curator)/(?:[^/?#]+/)?([^/?#]+?)/?$").unwrap()
 });
+
+static NEW_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/(?:https://music\.apple\.com/([a-z]{2})/)?(new(?:/top-charts(?:/(?:songs|playlists|albums|music-videos|city-charts|daily-global-top-charts))?)?)/?$").unwrap()
+});
+
+/// 只记录定位页面数据所需的参数，省略冗长的 fields/include 等字段。
+fn data_detail(rest: &str, query: &str) -> String {
+    let mut detail = rest.to_owned();
+    for key in ["name", "types", "with", "chart", "genre", "ids", "ids[curators]", "ids[apple-curators]", "offset", "limit"] {
+        if let Some(value) = query_param(query, key).filter(|v| !v.is_empty()) {
+            detail.push_str(&format!(" {key} {value}"));
+        }
+    }
+    detail
+}
 
 /// 按路径归类请求，取出日志要点
 fn describe(path: &str, query: &str) -> Entry {
     if let Some(file) = path.strip_prefix("/assets/") {
         return Entry::new("asset", file).quiet();
+    }
+    if let Some(caps) = NEW_PAGE_RE.captures(path) {
+        let mut detail = caps[2].to_owned();
+        if let Some(cc) = caps.get(1) {
+            detail.push_str(&format!(" {}", cc.as_str().to_uppercase()));
+        }
+        if let Some(genre) = query_param(query, "genreId").filter(|v| !v.is_empty()) {
+            detail.push_str(&format!(" genre {genre}"));
+        }
+        return Entry::new("page", detail);
     }
     if let Some(caps) = PAGE_RE.captures(path) {
         let kind = match &caps[2] {
@@ -145,7 +170,11 @@ fn describe(path: &str, query: &str) -> Entry {
             let offset = query_param(query, "offset").map(|o| format!(" offset {o}")).unwrap_or_default();
             return Entry::new("search", format!("{} {term:?}{offset}", cc.to_uppercase()));
         }
-        return Entry::new("catalog", rest);
+        let kind = if rest.split('/').nth(1) == Some("charts") { "charts" } else { "catalog" };
+        return Entry::new(kind, data_detail(rest, query));
+    }
+    if let Some(rest) = path.strip_prefix("/amp/v1/editorial/") {
+        return Entry::new("editorial", data_detail(rest, query));
     }
     // 其余为 --hook 解密代理（URL 前缀式）
     let file = source::filename(path);
@@ -161,7 +190,13 @@ fn describe(path: &str, query: &str) -> Entry {
 
 /// 取查询参数并做百分号解码（`+` 视为空格）
 fn query_param(query: &str, key: &str) -> Option<String> {
-    let raw = query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))?;
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (decode_query(name) == key).then(|| decode_query(value))
+    })
+}
+
+fn decode_query(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -179,7 +214,7 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         }
         i += 1;
     }
-    Some(String::from_utf8_lossy(&out).into_owned())
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn format_elapsed(elapsed: Duration) -> String {
@@ -230,7 +265,8 @@ pub fn print_banner(listen: SocketAddr, config: &Config, lru_cache_mb: usize) {
         secs => format!("keep-alive {secs}s"),
     };
     lines.push(format!("  amp-api       warm connection, {keepalive}, response cache {} MB", config.amp_cache_mb));
-    lines.push("  Pages         home & search · song · album · playlist · artist · music video".into());
+    lines.push("  Pages         home & search · new · top charts · song · album · playlist · artist".into());
+    lines.push("                music video · post · room · multi-room · grouping · curator".into());
     lines.push("  Features      lyrics · motion artwork · ALAC / FLAC / Dolby Atmos (EC-3) · MV PlayReady".into());
     lines.push("  Verbose log   RUST_LOG=am_hook=debug (assets, status, suggestions, segments)".into());
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
@@ -337,5 +373,47 @@ mod tests {
         assert_eq!(describe("/amp/v1/catalog/cn/albums/1", "").kind, "catalog");
         assert!(describe("/assets/player.js", "").quiet);
         assert_eq!(describe("/lyrics/123", "").kind, "lyrics");
+    }
+
+    #[test]
+    fn new_pages_are_visible() {
+        for (path, expected) in [
+            ("/new", "new"),
+            ("/new/top-charts/", "new/top-charts"),
+            ("/new/top-charts/songs", "new/top-charts/songs"),
+            ("/https://music.apple.com/cn/new", "new CN"),
+            ("/https://music.apple.com/us/new/top-charts/albums/", "new/top-charts/albums US"),
+            ("/https://music.apple.com/cn/room/123", "room CN 123"),
+            ("/https://music.apple.com/us/multi-room/456", "multi-room US 456"),
+            ("/https://music.apple.com/us/grouping/789", "grouping US 789"),
+            ("/https://music.apple.com/us/curator/123", "curator US 123"),
+            ("/https://music.apple.com/us/curator/apple-music/123", "curator US 123"),
+            ("/https://music.apple.com/us/post/123/", "post US 123"),
+            ("/https://music.apple.com/us/post/video/123", "post US 123"),
+            ("/https://music.apple.com/us/music-video/video/123", "MV US 123"),
+        ] {
+            let e = describe(path, "");
+            assert_eq!((e.kind, e.detail.as_str(), e.quiet), ("page", expected, false), "{path}");
+        }
+        assert_eq!(describe("/new/top-charts/songs", "genreId=20").detail, "new/top-charts/songs genre 20");
+        assert_eq!(describe("/new/top-charts/unknown", "").kind, "other");
+    }
+
+    #[test]
+    fn page_data_requests_include_context() {
+        for (path, query, kind, detail) in [
+            ("/amp/v1/editorial/cn/groupings", "name=music&include=contents", "editorial", "cn/groupings name music"),
+            ("/amp/v1/editorial/us/rooms/123/contents", "offset=50&limit=25", "editorial", "us/rooms/123/contents offset 50 limit 25"),
+            ("/amp/v1/catalog/us/charts", "types=songs%2Calbums&genre=20&offset=50", "charts", "us/charts types songs,albums genre 20 offset 50"),
+            ("/amp/v1/catalog/us", "ids%5Bcurators%5D=123&ids%5Bapple-curators%5D=123", "catalog", "us ids[curators] 123 ids[apple-curators] 123"),
+            ("/amp/v1/catalog/us/uploaded-videos/123", "token=secret&fields=name", "catalog", "us/uploaded-videos/123"),
+        ] {
+            let e = describe(path, query);
+            assert_eq!((e.kind, e.detail.as_str(), e.quiet), (kind, detail, false));
+            assert_eq!(level(StatusCode::OK, e.quiet), Level::INFO);
+            assert_eq!(level(StatusCode::BAD_REQUEST, e.quiet), Level::WARN);
+        }
+        assert_eq!(level(StatusCode::OK, describe("/status", "").quiet), Level::DEBUG);
+        assert_eq!(level(StatusCode::BAD_GATEWAY, true), Level::WARN);
     }
 }
