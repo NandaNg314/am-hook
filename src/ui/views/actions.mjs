@@ -621,16 +621,16 @@ export function createActions({ signal, player, navigate, toast }) {
   }
 
   /**
-   * 喜爱按钮（☆ / ★），用法与 libraryButton 相同；className 默认为详情页头部的圆形按钮。返回 { button, refresh }
+   * 喜爱按钮（☆ / ★），用法与 libraryButton 相同；className 默认为详情页头部的圆形按钮；icons（{ star, starFilled }）可换成别的图标。返回 { button, refresh }
    */
-  function favoriteButton(getTarget, className = 'detail-circle-btn lib-fav-toggle') {
+  function favoriteButton(getTarget, className = 'detail-circle-btn lib-fav-toggle', icons = LIB_ICON) {
     const button = el('button', { className, type: 'button', disabled: true });
     const refresh = () => {
       const target = getTarget();
       const key = target && favoriteKey(target);
       const on = favoriteOf(key);
       button.disabled = !key;
-      button.innerHTML = on ? LIB_ICON.starFilled : LIB_ICON.star;
+      button.innerHTML = on ? icons.starFilled : icons.star;
       button.setAttribute('aria-pressed', String(on));
       button.title = t(on ? 'library.unfavorite' : 'library.favorite');
       button.setAttribute('aria-label', button.title);

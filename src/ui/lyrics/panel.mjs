@@ -10,7 +10,7 @@
  * 歌词界面只在打开时运行动画循环；关闭后停止，背景保留最后一帧。
  *
  * 同 music.apple.com 的全屏播放界面：点击播放条（封面、标题、空白处）总能展开，没有歌词的歌曲只显示封面与播放控件；
- * 展开后播放条上的歌词按钮（并入界面底部）改为显示 / 隐藏歌词，隐藏时封面与控件居中，这个选择保存在浏览器中。
+ * 展开后播放条上的歌词按钮（随播放条并入界面，固定在右下角，手机上在控件下方）改为显示 / 隐藏歌词，隐藏时封面与控件居中，这个选择保存在浏览器中。
  */
 import { parseTTML } from './ttml.mjs';
 import { DomLyricPlayer, BackgroundRender, MeshGradientRenderer } from './amll-core.mjs';
@@ -36,21 +36,30 @@ const svgNode = (name, attrs) => {
   return node;
 };
 
+/* 歌词开关的图标，取自 music.apple.com 的 toggle-button--lyrics（64×64）：未显示歌词时为空心气泡，显示时为实心气泡 */
+const LYRICS_PATHS = {
+  off: 'M18.53 62.724c1.764 0 3.115-.81 5.257-2.707l9.816-8.638h16.62c8.72 0 13.777-5.152 13.777-13.777V15.053c0-8.625-5.056-13.777-13.777-13.777H13.777C5.057 1.276 0 6.42 0 15.053v22.549c0 8.633 5.27 13.777 13.456 13.777h1.016v6.793c0 2.812 1.511 4.552 4.057 4.552zm1.57-7.16v-8.11c0-1.81-.805-2.485-2.486-2.485h-3.55c-5.165 0-7.654-2.603-7.654-7.654V15.34c0-5.033 2.489-7.632 7.654-7.632h35.872c5.149 0 7.654 2.599 7.654 7.632v21.975c0 5.051-2.505 7.654-7.654 7.654H33.188c-1.835 0-2.702.33-4.012 1.65zm-2.212-32.177c0 3.398 2.156 5.936 5.388 5.936 1.361 0 2.592-.302 3.372-1.263h.385c-.868 2.231-3 3.845-5.303 4.4-.95.243-1.327.737-1.327 1.425 0 .8.658 1.36 1.51 1.36 3.174 0 8.8-3.775 8.8-10.6 0-4.138-2.602-7.336-6.588-7.336-3.576 0-6.237 2.518-6.237 6.078m15.663 0c0 3.398 2.134 5.936 5.387 5.936 1.34 0 2.593-.302 3.373-1.263h.39c-.865 2.231-3.023 3.845-5.308 4.4-.947.243-1.327.737-1.327 1.425 0 .8.636 1.36 1.51 1.36 3.178 0 8.779-3.775 8.779-10.6 0-4.138-2.577-7.336-6.567-7.336-3.577 0-6.237 2.518-6.237 6.078',
+  on: 'M17.347 62.821c1.254 0 2.21-.572 3.705-1.933L31.78 51.26h18.443C58.943 51.26 64 46.13 64 37.504V14.956C64 6.33 58.944 1.179 50.223 1.179H13.777C5.057 1.179 0 6.322 0 14.956v22.548C0 46.137 5.27 51.26 13.456 51.26h.994v8.327c0 1.97 1.095 3.235 2.897 3.235zm-.108-39.64c0-3.71 2.79-6.37 6.53-6.37 4.18 0 6.89 3.383 6.89 7.694 0 7.102-5.871 11.086-9.19 11.086-.917 0-1.596-.593-1.596-1.43 0-.742.387-1.242 1.403-1.474 2.4-.587 4.629-2.31 5.53-4.606h-.407c-.823.983-2.108 1.318-3.512 1.318-3.417 0-5.648-2.669-5.648-6.217zm16.387 0c0-3.71 2.77-6.37 6.508-6.37 4.18 0 6.912 3.383 6.912 7.694 0 7.102-5.871 11.086-9.179 11.086-.928 0-1.617-.593-1.617-1.43 0-.742.39-1.242 1.392-1.474 2.436-.587 4.654-2.31 5.551-4.606h-.407c-.823.983-2.108 1.318-3.523 1.318-3.405 0-5.637-2.669-5.637-6.217z',
+};
+/* 待播清单开关的图标，取自 music.apple.com 的 toggle-button--queue（64×64，遮罩为 20×20） */
+const QUEUE_PATH = 'M19.489 16.272h41.284A3.204 3.204 0 0 0 64 13.046a3.203 3.203 0 0 0-3.227-3.222H19.49a3.2 3.2 0 0 0-3.226 3.222 3.2 3.2 0 0 0 3.226 3.226zm0 18.954h41.284A3.207 3.207 0 0 0 64 32a3.206 3.206 0 0 0-3.227-3.226H19.49A3.204 3.204 0 0 0 16.263 32a3.204 3.204 0 0 0 3.226 3.226m0 18.95h41.284A3.203 3.203 0 0 0 64 50.954a3.204 3.204 0 0 0-3.227-3.226H19.49a3.2 3.2 0 0 0-3.226 3.226 3.2 3.2 0 0 0 3.226 3.222zM4.636 17.682c2.54 0 4.632-2.091 4.632-4.636 0-2.54-2.092-4.631-4.632-4.631C2.092 8.415 0 10.506 0 13.046c0 2.545 2.092 4.636 4.636 4.636m0 18.954c2.54 0 4.632-2.091 4.632-4.636s-2.092-4.636-4.632-4.636C2.092 27.364 0 29.455 0 32s2.092 4.636 4.636 4.636m0 18.95c2.54 0 4.632-2.092 4.632-4.632 0-2.545-2.092-4.636-4.632-4.636C2.092 46.318 0 48.409 0 50.954c0 2.54 2.092 4.631 4.636 4.631z';
+
 /**
- * 歌词翻译按钮的图标，同 music.apple.com 的 invertible-mask：28×28 的方块以 22×22 的图标为遮罩，
- * 未开启时只显示图标，开启翻译或发音后反转为实心方块、图标镂空。返回 setInverted(bool)。
+ * 歌词翻译按钮、歌词开关与待播清单开关的图标，同 music.apple.com 的 invertible-mask：28×28 的方块以 size×size（默认 22）的图标为遮罩，
+ * 未开启时只显示图标，开启后反转为实心方块、图标镂空。paths(inverted) 返回图标的路径；
+ * 图标加在按钮原有内容之后。返回 setInverted(bool)。
  */
-function invertibleMask(button) {
-  const id = `lyrics-translation-mask-${Math.random().toString(36).slice(2)}`;
+function invertibleMask(button, { viewBox, paths, transform, size = 22 }) {
+  const id = `lyrics-mask-${Math.random().toString(36).slice(2)}`;
   const svg = svgNode('svg', { class: 'invertible-mask', viewBox: '0 0 28 28', width: '28', height: '28', role: 'presentation' });
   const mask = svgNode('mask', { id });
   const base = svgNode('rect', { width: '100%', height: '100%' });
-  const icon = svgNode('svg', { x: '3', y: '3', width: '22', height: '22', viewBox: '0 0 17 16' });
-  for (const d of TRANSLATE_PATHS) icon.append(svgNode('path', { d, transform: 'translate(-.51 4.44)scale(.101)' }));
+  const icon = svgNode('svg', { x: String((28 - size) / 2), y: String((28 - size) / 2), width: String(size), height: String(size), viewBox });
   mask.append(base, icon);
   svg.append(mask, svgNode('rect', { width: '100%', height: '100%', mask: `url(#${id})` }));
-  button.replaceChildren(svg);
+  button.append(svg);
   return (inverted) => {
+    icon.replaceChildren(...paths(inverted).map((d) => svgNode('path', transform ? { d, transform } : { d })));
     base.setAttribute('fill', inverted ? 'white' : 'black');
     icon.setAttribute('fill', inverted ? 'black' : 'white');
     svg.classList.toggle('invertible-mask--inverted', inverted);
@@ -119,7 +128,18 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   const translationButton = $('.lyrics-translation-button');
   const menu = $('.lyrics-menu');
   const scrim = $('.lyrics-menu-scrim');
-  const setInverted = invertibleMask(translationButton);
+  const setInverted = invertibleMask(translationButton, { viewBox: '0 0 17 16', paths: () => TRANSLATE_PATHS, transform: 'translate(-.51 4.44)scale(.101)' });
+  // 展开界面里的歌词开关（播放条上仍显示原来的图标，见 app.css）
+  const setToggleInverted = invertibleMask(toggle, { viewBox: '0 0 64 64', paths: (inverted) => [inverted ? LYRICS_PATHS.on : LYRICS_PATHS.off] });
+  // 手机上展开界面里的待播清单开关（播放条上的待播清单按钮，见 player.js），清单打开时反转
+  const queueButton = bar.querySelector('.player-queue');
+  if (queueButton) {
+    const setQueueInverted = invertibleMask(queueButton, { viewBox: '0 0 64 64', paths: () => [QUEUE_PATH], size: 20 });
+    const syncQueue = () => setQueueInverted(queueButton.getAttribute('aria-expanded') === 'true');
+    // 清单打开时歌词开关不反转（两个开关只有当前显示的一个反转）
+    new MutationObserver(() => { syncQueue(); syncToggle(); }).observe(queueButton, { attributes: true, attributeFilter: ['aria-expanded'] });
+    syncQueue();
+  }
   const shown = { translation: false, pronunciation: false };
   const has = { translation: false, pronunciation: false };
   const view = new DomLyricPlayer();
@@ -265,6 +285,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     toggle.title = label;
     toggle.setAttribute('aria-label', label);
     toggle.setAttribute('aria-pressed', String(open && lyricsVisible));
+    setToggleInverted(open && lyricsVisible && !root.classList.contains('queue-open'));
   }
 
   /**
@@ -296,6 +317,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (open || !adamId) return;
     open = true;
     // 播放控件并入歌词界面（桌面在封面下方，手机在底部），关闭时放回原处
+    player.closeQueue();
     bar.replaceWith(barHome);
     $('.lyrics-controls').append(bar);
     root.hidden = false;
@@ -315,6 +337,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (!open) return;
     open = false;
     closeMenu();
+    player.closeQueue();
     barHome.replaceWith(bar);
     root.hidden = true;
     document.body.classList.remove('lyrics-open');
@@ -467,6 +490,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
 
   /** 播放条上的歌词按钮：打开界面并显示歌词（没有歌词时提示，不展开）；展开后切换是否显示歌词 */
   function onToggle() {
+    // 手机上待播清单占着歌词的位置：这时点歌词开关是回到歌词
+    if (open && root.classList.contains('queue-open')) { player.closeQueue(); if (!lyricsShown) setShown(true); return; }
     if (open) { setShown(!lyricsShown); return; }
     if (song) { setShown(true); show(); return; }
     if (unavailable || toggle.hasAttribute('aria-busy')) return;

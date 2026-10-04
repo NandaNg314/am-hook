@@ -191,6 +191,28 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         await page.locator(lineSel).filter({ hasText: 'Third line' }).waitFor({ state: 'visible', timeout: 2000 });
         assert.equal(await page.evaluate(() => localStorage.getItem('am-hook:lyrics-hidden')), null);
 
+        // 待播清单开关只在手机的界面里：清单占据歌词的位置，随机 / 重复在清单标题旁；Esc 或歌词开关回到歌词
+        const queueToggle = page.locator('#lyrics-overlay .player-queue');
+        if (width === 390) {
+          assert(await page.locator('#lyrics-overlay .player-shuffle').isHidden(), 'no shuffle among the phone controls');
+          await queueToggle.click();
+          await page.locator('#queue-panel.in-lyrics').waitFor();
+          assert(await page.locator('#lyrics-overlay.queue-open').count(), 'queue replaces the lyrics');
+          assert(await page.locator('#queue-panel .player-shuffle').isVisible() && await page.locator('#queue-panel .player-repeat').isVisible(), 'shuffle and repeat are in the queue');
+          const queue = await page.locator('#queue-panel').boundingBox();
+          const controls = await page.locator('#player').boundingBox();
+          const title = await page.locator('.lyrics-side').boundingBox();
+          assert(queue.y >= title.y + title.height - 1 && queue.y + queue.height <= controls.y + 1, 'queue sits between the title row and the controls');
+          await page.screenshot({ path: 'target/ui-lyrics-queue-390.png' });
+          await page.keyboard.press('Escape');
+          assert(await page.locator('#queue-panel').isHidden() && await page.locator('#lyrics-overlay').isVisible(), 'Escape closes only the queue');
+          await queueToggle.click();
+          await lyricToggle.click();
+          assert(await page.locator('#queue-panel').isHidden() && await page.locator('#lyrics-overlay.queue-open, #lyrics-overlay.lyrics-hidden').count() === 0, 'the lyrics toggle returns to the lyrics');
+        } else {
+          assert(await queueToggle.isHidden(), 'no queue toggle in the desktop view');
+        }
+
         await page.keyboard.press('Escape');
         assert(await page.locator('#lyrics-overlay').isHidden());
         assert(await page.locator('.player-lyrics').evaluate(el => el === document.activeElement), 'focus returns to the lyrics button');

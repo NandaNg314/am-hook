@@ -1391,33 +1391,38 @@ body.lyrics-open { overflow: hidden; }
   background: rgba(255, 255, 255, .08); box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
 }
 .lyrics-art[hidden] { display: none; }
-/* 标题行：歌名与艺人，右侧为喜爱与「更多」（同 music.apple.com 全屏播放界面的圆形按钮） */
-.lyrics-head { width: min(100%, 44vh); display: flex; align-items: center; gap: 12px; min-width: 0; }
+/*
+ * 标题行：歌名与艺人，右侧为喜爱与「更多」，取自 music.apple.com 全屏播放界面的 accessory-buttons：
+ * 28px 的圆形按钮、间距 16px，底色 systemQuaternary-onDark（悬停时不变）；喜爱图标铺满按钮，已喜爱时为镂空星形的圆盘。
+ */
+.lyrics-head { width: min(100%, 44vh); display: flex; align-items: center; justify-content: space-between; min-width: 0; }
 .lyrics-meta { flex: 1; min-width: 0; }
-.lyrics-actions { flex: none; display: flex; gap: 8px; }
+.lyrics-actions { flex: none; display: flex; align-items: center; gap: 16px; padding-inline-start: 4px; }
 .lyrics-action {
-  width: 32px; height: 32px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%;
-  background: rgba(255, 255, 255, .12); color: #fff; backdrop-filter: blur(12px); cursor: pointer;
+  width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%;
+  background: rgba(255, 255, 255, .1); color: #fff; line-height: 0; cursor: pointer;
 }
-.lyrics-action svg { width: 18px; height: 18px; }
-.lyrics-action:hover:not(:disabled), .lyrics-action[aria-expanded="true"] { background: rgba(255, 255, 255, .24); }
+.lyrics-action svg { width: 20px; height: 20px; }
+.lyrics-fav svg { width: 28px; height: 28px; fill: rgba(255, 255, 255, .85); }
+.lyrics-fav[aria-pressed="true"] svg { fill: rgba(255, 255, 255, .55); }
 .lyrics-action:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .lyrics-action:disabled { opacity: .4; cursor: default; }
 .lyrics-action.busy { opacity: .5; cursor: progress; }
-.lyrics-title { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 700; overflow-wrap: anywhere; }
-.lyrics-artist { margin: 4px 0 0; color: rgba(255, 255, 255, .6); font-size: 15px; overflow-wrap: anywhere; }
+/* 歌名与艺人同 music.apple.com 的 amp-lcd-metadata：都是 17px 粗体（title-2-emphasized），艺人为 systemSecondary-onDark；手机上艺人不加粗（title-2） */
+.lyrics-title { margin: 0; font-size: 17px; line-height: 1.2941176471; font-weight: 700; overflow-wrap: anywhere; }
+.lyrics-artist { margin: 0; color: rgba(255, 255, 255, .55); font-size: 17px; line-height: 1.2941176471; font-weight: 700; overflow-wrap: anywhere; }
 .lyrics-artist a { color: inherit; text-decoration: none; }
 .lyrics-artist a:hover { color: #fff; text-decoration: underline; }
 /*
- * 歌词翻译按钮与菜单，取自 music.apple.com：全屏歌词里的 lyrics-translation-button--in-modal（歌词区右上角）、
- * invertible-mask（开启翻译或发音后图标反转为实心方块）与 amp-contextual-menu（深色菜单）。
- * 高对比度下 Apple 用 keyColor，这里即 --accent。
+ * 歌词翻译按钮与菜单，取自 music.apple.com：全屏歌词里的 lyrics-translation-button--in-modal（界面右上角，
+ * 距顶 20px、距右 20px，按钮左右另有 10px 外边距）、invertible-mask（开启翻译或发音后图标反转为实心方块）
+ * 与 amp-contextual-menu（深色菜单）。高对比度下 Apple 用 keyColor，这里即 --accent。
  */
-.lyrics-translation-menu { grid-column: 2; grid-row: 1; align-self: start; justify-self: end; position: relative; z-index: 1; margin: 20px 20px 0 0; }
+.lyrics-translation-menu { position: absolute; z-index: 1; top: 20px; inset-inline-end: 20px; }
 .lyrics-translation-menu[hidden] { display: none; }
 .lyrics-translation-button {
   --trigger-bg: rgba(255, 255, 255, .1); --svgFill: rgba(255, 255, 255, .55);
-  display: block; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; line-height: 0;
+  display: block; width: 28px; height: 28px; margin: 0 10px; padding: 0; border: 0; border-radius: 8px; line-height: 0;
   background-color: var(--trigger-bg); backdrop-filter: blur(60px); cursor: pointer; transition: opacity .1s ease-in;
 }
 .lyrics-translation-button:hover { --trigger-bg: rgba(255, 255, 255, .25); }
@@ -1487,7 +1492,7 @@ body.lyrics-open { overflow: hidden; }
   --text: #f5f3f1; --muted: rgba(255, 255, 255, .6); --faint: rgba(255, 255, 255, .4); --bg: #1b1a19;
   position: static; transform: none; width: 100%; padding: 0; border: 0; border-radius: 0;
   background: none; backdrop-filter: none; box-shadow: none; color: var(--text); color-scheme: dark;
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto minmax(0, 1fr); gap: 0 10px; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 65px)) minmax(0, 1fr); gap: 0; align-items: center;
 }
 .lyrics-controls .player .player-track, .lyrics-controls .player .player-mode { display: none; }
 .lyrics-controls .player .player-center { display: contents; }
@@ -1498,33 +1503,60 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-controls .player .time { grid-row: 2; min-width: 0; font-size: 11px; color: var(--faint); }
 .lyrics-controls .player .time-cur { grid-column: 1; justify-self: start; text-align: left; }
 .lyrics-controls .player .time-total { grid-column: 5; justify-self: end; text-align: right; }
+/*
+ * 播放按钮同 music.apple.com 全屏播放界面的 apple-music-playback-controls（theme=dark）：五个按钮没有底色、紧挨着居中排成一行，
+ * 随机 / 重复宽 60px，上一首 / 播放 / 下一首宽 65px，行高 55px；播放为白色，上一首 / 下一首 80% 白（悬停时白色），
+ * 随机 / 重复 64% 白，开启时为 keyColor（这里即 --accent）。界面较窄时按钮等比收窄。窄屏时随机 / 重复也显示。
+ */
+.lyrics-controls .player :is(.player-toggle, .player-skip, .player-switch) { height: 55px; margin: 0; border-radius: 8px; background: none; }
 .lyrics-controls .player .skip-prev { grid-row: 3; grid-column: 2; }
-.lyrics-controls .player .player-toggle { grid-row: 3; grid-column: 3; width: 52px; height: 52px; margin: 8px 6px; background: #f5f3f1; color: #1b1a19; }
-.lyrics-controls .player .player-toggle svg { width: 20px; height: 20px; }
+.lyrics-controls .player .player-toggle { grid-row: 3; grid-column: 3; width: 100%; color: #fff; }
+.lyrics-controls .player .player-toggle svg { width: 34px; height: 34px; }
 .lyrics-controls .player .skip-next { grid-row: 3; grid-column: 4; }
-/* 随机 / 重复在歌词界面排在播放控件两端，窄屏时也显示 */
-.lyrics-controls .player .player-switch { display: grid; grid-row: 3; color: rgba(255, 255, 255, .7); }
-.lyrics-controls .player .player-shuffle { grid-column: 1; justify-self: start; }
-.lyrics-controls .player .player-repeat { grid-column: 5; justify-self: end; }
-.lyrics-controls .player .player-switch[aria-pressed="true"] { background: rgba(255, 255, 255, .85); color: #1b1a19; }
-.lyrics-controls .player .player-skip { color: rgba(255, 255, 255, .8); }
-/* 歌词按钮在这里切换是否显示歌词（按下时为显示），与音量排在最后一行；手机上没有音量，只有歌词按钮 */
+.lyrics-controls .player .player-skip { width: 100%; color: rgba(255, 255, 255, .8); transition: transform .05s linear; }
+.lyrics-controls .player .player-skip svg { width: 30px; height: 30px; }
+.lyrics-controls .player .player-skip:hover:not(:disabled) { color: #fff; }
+.lyrics-controls .player .player-skip:active:not(:disabled) { transform: scale(.85); }
+.lyrics-controls .player .player-switch { display: grid; grid-row: 3; width: min(60px, 100%); color: rgba(255, 255, 255, .64); }
+.lyrics-controls .player .player-switch svg { width: 20px; height: 20px; }
+.lyrics-controls .player .player-switch:hover { color: #f5f5f7; }
+.lyrics-controls .player .player-shuffle { grid-column: 1; justify-self: end; }
+.lyrics-controls .player .player-repeat { grid-column: 5; justify-self: start; }
+.lyrics-controls .player .player-switch:is(:active, [aria-pressed="true"]) { color: var(--accent); }
+/* 最后一行是音量；手机上没有音量，这一行只有歌词开关 */
 .lyrics-controls .player .player-queue { display: none; }
 .lyrics-controls .player .player-right { grid-row: 4; grid-column: 1 / -1; justify-content: flex-start; gap: 10px; }
-.lyrics-controls .player .player-lyrics { width: 36px; height: 36px; color: rgba(255, 255, 255, .7); }
-.lyrics-controls .player .player-lyrics:hover { color: #fff; background: rgba(255, 255, 255, .14); }
-.lyrics-controls .player .player-lyrics[aria-pressed="true"] { color: #1b1a19; background: rgba(255, 255, 255, .85); }
-.lyrics-controls .player .volume { flex: 1; min-width: 0; width: 100%; height: 24px; accent-color: #e8e6e3; opacity: .75; }
+/*
+ * 歌词开关（显示 / 隐藏歌词），取自 music.apple.com 的 toggle-button--lyrics：28px、圆角 8px 的 invertible-mask 图标（见 panel.mjs），
+ * 显示歌词时反转为实心方块、图标镂空；同官网的 now-playing-toggle 固定在界面右下角（距底 20px、距右 20px，按钮左右另有 10px 外边距）。
+ */
+.player-lyrics .invertible-mask, .player-queue .invertible-mask { display: none; }
+.lyrics-controls .player .player-lyrics {
+  --svgFill: rgba(255, 255, 255, .55);
+  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); inset-inline-end: 20px; z-index: 1;
+  width: 28px; height: 28px; margin: 0 10px; border-radius: 8px; background: none; line-height: 0;
+}
+.lyrics-controls .player .player-lyrics > svg:not(.invertible-mask) { display: none; }
+.lyrics-controls .player .player-lyrics .invertible-mask { display: block; width: 28px; height: 28px; }
+@media (prefers-contrast: more) { .lyrics-controls .player .player-lyrics { --svgFill: var(--accent); } }
+.lyrics-controls .player .volume { flex: 1; min-width: 0; width: 100%; height: 26px; accent-color: #e8e6e3; opacity: .75; }
 /* 播放方式提示（FLAC 转码、EC-3 / Atmos 回退）只在普通播放条显示；播放错误仍显示 */
 .lyrics-controls .player .player-notice { display: none; }
 .lyrics-controls .player .player-msg { grid-row: 5; margin: 4px 0 0; }
 .lyrics-overlay.has-backdrop .lyrics-stage { z-index: 1; }
-.lyrics-close, .lyrics-follow {
+.lyrics-follow {
   position: absolute; z-index: 2; border: 0; color: #fff; background: rgba(255, 255, 255, .12); backdrop-filter: blur(12px);
 }
-.lyrics-close { top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; }
-.lyrics-close svg { width: 22px; height: 22px; }
-.lyrics-close:hover, .lyrics-follow:hover { background: rgba(255, 255, 255, .22); }
+/* 关闭按钮同 music.apple.com 全屏播放界面的 close-button：左上角 18px 的 ✕，没有底色，颜色为 systemSecondary-onDark；::after 扩大点击区域 */
+.lyrics-close {
+  position: absolute; z-index: 2; top: env(safe-area-inset-top, 0px); inset-inline-start: env(safe-area-inset-left, 0px);
+  width: 18px; height: 18px; margin: 16px 20px 10px; padding: 0; border: 0; background: none; color: rgba(255, 255, 255, .55); line-height: 0;
+}
+.lyrics-close::after { content: ''; position: absolute; inset: -13px; }
+.lyrics-close svg { display: block; width: 18px; height: 18px; fill: currentColor; }
+.lyrics-close-handle { display: none !important; }
+.lyrics-close:focus-visible { outline: 3px solid var(--accent); outline-offset: 6px; border-radius: 2px; }
+.lyrics-follow:hover { background: rgba(255, 255, 255, .22); }
 .lyrics-follow { right: 10vw; bottom: 32px; min-height: 36px; padding: 0 16px; border-radius: 999px; font-size: 13px; font-weight: 600; }
 .lyrics-follow[hidden] { display: none; }
 @media (min-width: 1680px) { .lyrics-stage { grid-template-columns: 31vw 38vw; padding-inline: 12vw; } }
@@ -1534,26 +1566,81 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-overlay.lyrics-hidden .lyrics-stage { grid-template-columns: min(100%, 50vh); justify-content: center; }
 .lyrics-overlay.lyrics-hidden :is(.lyrics-art, .lyrics-head, .lyrics-controls) { width: 100%; }
 @media (max-width: 760px) {
-  .lyrics-stage { display: flex; flex-direction: column; gap: 12px; padding: max(16px, env(safe-area-inset-top)) 20px max(12px, env(safe-area-inset-bottom)); }
-  .lyrics-side { align-self: stretch; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px 12px; padding-right: 52px; }
-  .lyrics-head { grid-column: 2; width: auto; gap: 8px; }
-  .lyrics-actions { gap: 6px; }
-  .lyrics-art { width: 52px; border-radius: 7px; }
-  .lyrics-title { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .lyrics-artist { margin: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* 手机上同 music.apple.com 放在歌词区左下方 */
-  .lyrics-translation-menu { align-self: flex-start; margin: 0; }
+  /*
+   * 手机上同 music.apple.com 的播放界面（now-playing-structure）：左右留 32px，底部向上渐暗；
+   * 顶部居中是收起界面的下拉把手（sliding-modal-collapse：上 18px、下 17px、图标高 8px）。
+   */
+  .lyrics-stage {
+    display: flex; flex-direction: column; gap: 0;
+    padding: calc(env(safe-area-inset-top, 0px) + 43px) 32px max(20px, env(safe-area-inset-bottom));
+    background: linear-gradient(0deg, rgba(0, 0, 0, .4) 0, transparent 50%);
+  }
+  .lyrics-close { inset-inline: 0; width: 100%; height: 43px; margin: 0; padding: 18px 0 17px; color: rgba(255, 255, 255, .4); }
+  .lyrics-close::after { content: none; }
+  .lyrics-close svg { width: auto; height: 8px; margin: auto; }
+  .lyrics-close-handle { display: block !important; }
+  .lyrics-close-x { display: none !important; }
+  .lyrics-close:focus-visible { outline-offset: -6px; }
+  /* 显示歌词时为紧凑的标题行（playback-item--compact）：高 66px，60px 的封面，喜爱与「更多」占 72px */
+  .lyrics-side { flex: none; align-self: stretch; flex-direction: row; align-items: center; gap: 12px; height: 66px; }
+  .lyrics-art { flex: none; width: 60px; border-radius: 5px; box-shadow: none; }
+  .lyrics-head { flex: 1; width: auto; }
+  .lyrics-actions { flex: 0 0 72px; padding: 0; }
+  .lyrics-title, .lyrics-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lyrics-artist { font-weight: 400; }
+  /* 歌词翻译按钮叠在歌词区左下角（距底 20px） */
+  .lyrics-translation-menu { position: relative; top: auto; inset-inline-end: auto; align-self: flex-start; margin: -48px 0 20px; }
+  .lyrics-translation-button { margin: 0; }
   .lyrics-overlay .lyric-panel { flex: 1; }
-  .lyrics-controls { width: 100%; margin-top: 0; }
-  .lyrics-controls .player .player-toggle { width: 56px; height: 56px; margin-block: 4px; }
-  .lyrics-follow { right: 20px; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 136px); }
-  /* 隐藏歌词时同 iPhone 的播放界面：大封面在上，标题行与控件在下 */
-  .lyrics-overlay.lyrics-hidden .lyrics-stage { gap: 20px; }
-  .lyrics-overlay.lyrics-hidden .lyrics-side { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 24px; padding: 52px 0 0; }
-  .lyrics-overlay.lyrics-hidden .lyrics-art { align-self: center; width: min(100%, 46vh); border-radius: 10px; }
-  .lyrics-overlay.lyrics-hidden .lyrics-title { font-size: 20px; }
-  .lyrics-overlay.lyrics-hidden .lyrics-artist { font-size: 16px; }
+  /*
+   * 播放控件（mobile 的 playback-controls）：7px 高的进度条、没有滑块；只有上一首 / 播放 / 下一首（50px / 68px / 50px，
+   * 都是 systemPrimary-onDark），随机 / 重复在待播清单里；下面是歌词开关与待播清单开关（toggle-buttons：上边距 26px、圆角 7px）。
+   */
+  .lyrics-controls { flex: none; width: 100%; margin-top: 0; }
+  .lyrics-controls .player { grid-template-columns: minmax(0, 1fr) minmax(0, 105px) 68px minmax(0, 105px) minmax(0, 1fr); }
+  .lyrics-controls .player .seek-track { height: 7px; border-radius: 7px; background: rgba(255, 255, 255, .25); }
+  .lyrics-controls .player .seek-fill { background: rgba(255, 255, 255, .55); }
+  .lyrics-controls .player .seek-thumb { display: none; }
+  .lyrics-controls .player .time { color: rgba(255, 255, 255, .55); font-weight: 500; }
+  .lyrics-controls .player .player-switch { display: none; }
+  .lyrics-controls .player :is(.player-toggle, .player-skip) { margin-block: 14px; color: rgba(255, 255, 255, .85); }
+  .lyrics-controls .player .player-toggle { height: 68px; }
+  .lyrics-controls .player .player-toggle svg { width: 44px; height: 44px; }
+  .lyrics-controls .player .player-skip { width: 50px; height: 50px; }
+  .lyrics-controls .player .player-skip svg { width: 34px; height: 34px; }
+  .lyrics-controls .player .skip-prev { justify-self: start; }
+  .lyrics-controls .player .skip-next { justify-self: end; }
+  /* 歌词开关与待播清单开关各占一半、居中（toggle-buttons 的 space-around；没有歌词时清单开关仍在右半边） */
+  .lyrics-controls .player .player-right { display: grid; grid-template-columns: 1fr 1fr; justify-items: center; gap: 0; margin-top: 26px; }
+  .lyrics-controls .player .player-lyrics { position: static; grid-column: 1; margin: 0; border-radius: 7px; }
+  .lyrics-controls .player .player-queue {
+    --svgFill: rgba(255, 255, 255, .55);
+    display: grid; grid-column: 2; width: 28px; height: 28px; border-radius: 7px; background: none; line-height: 0;
+  }
+  .lyrics-controls .player .player-queue > svg:not(.invertible-mask) { display: none; }
+  .lyrics-controls .player .player-queue .invertible-mask { display: block; width: 28px; height: 28px; }
+  /*
+   * 打开待播清单（now-playing-structure--queue）：清单占据歌词或大封面的位置（面板由 player.js 定位），标题行为紧凑样式；
+   * 随机 / 重复在清单标题旁（.queue-switches）。
+   */
+  .lyrics-overlay.queue-open :is(.lyric-panel, .lyrics-translation-menu, .lyrics-follow) { visibility: hidden; }
+  .lyrics-overlay.queue-open .lyrics-side { margin-bottom: auto; }
+  .lyrics-overlay.lyrics-hidden.queue-open .lyrics-art { width: 60px; }
+  .lyrics-follow { right: 32px; bottom: calc(max(20px, env(safe-area-inset-bottom)) + 216px); }
+  /* 隐藏歌词时为大封面（playback-item--large）：封面居中、圆角 10px，下面是标题行 */
+  .lyrics-overlay.lyrics-hidden:not(.queue-open) .lyrics-side { flex: 1; min-height: 0; height: auto; flex-direction: column; align-items: stretch; justify-content: space-around; gap: 0; }
+  .lyrics-overlay.lyrics-hidden:not(.queue-open) .lyrics-art { align-self: center; width: min(100%, 100dvh - 335px); border-radius: 10px; box-shadow: 0 20px 25px -15px rgba(0, 0, 0, .22); }
+  .lyrics-overlay.lyrics-hidden:not(.queue-open) .lyrics-head { flex: none; margin-bottom: 18px; }
 }
+/* 手机的歌词界面里的待播清单（同 music.apple.com 的 up-next-mobile-queue）：没有卡片外观，左右与界面对齐，标题行高 72px，底部渐隐 */
+.queue-panel.in-lyrics {
+  --surface: #1b1a19; --surface-3: rgba(255, 255, 255, .14); --line: rgba(255, 255, 255, .1); --line-strong: rgba(255, 255, 255, .3);
+  --text: #f5f3f1; --muted: rgba(255, 255, 255, .55); --faint: rgba(255, 255, 255, .4);
+  left: 0; width: auto; max-height: none; padding: 0 22px; border: 0; border-radius: 0;
+  background: none; backdrop-filter: none; box-shadow: none; color: var(--text); color-scheme: dark; animation: none;
+}
+.queue-panel.in-lyrics .queue-head { flex: none; height: 72px; padding: 0 10px; }
+.queue-panel.in-lyrics .queue-list { padding: 0 0 70px; scrollbar-width: none; mask-image: linear-gradient(0deg, transparent, #000 70px); }
 @media (prefers-contrast: more) { .lyrics-backdrop { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

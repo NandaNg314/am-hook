@@ -1245,7 +1245,8 @@
         this.closeQueue();
       });
       doc.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !this.queuePanel.hidden) { this.closeQueue(true); return; }
+        // preventDefault：歌词界面里打开清单时，Esc 只收起清单（见 lyrics/panel.mjs）
+        if (e.key === 'Escape' && !this.queuePanel.hidden) { e.preventDefault(); this.closeQueue(true); return; }
         if (!this.current || e.defaultPrevented || e.target.closest('input, textarea, button, a, [role="slider"]')) return;
         if (e.code === 'Space') { e.preventDefault(); this.toggle(); }
         if (e.key === 'ArrowLeft') this.seekBy(-5);
@@ -1440,16 +1441,33 @@
     closeQueue(refocus = false) {
       if (this.queuePanel.hidden) return;
       this.queuePanel.hidden = true;
+      this.queuePanel.classList.remove('in-lyrics');
+      this.queuePanel.style.top = '';
+      this.root.ownerDocument.querySelector('.lyrics-overlay.queue-open')?.classList.remove('queue-open');
       this.queueButton.setAttribute('aria-expanded', 'false');
       this.queueSelected = null;
       if (refocus) this.queueButton.focus();
     }
 
-    /** 面板右边缘与播放条对齐，底部在播放条上方；播放条并入歌词界面或隐藏时收起 */
+    /**
+     * 面板右边缘与播放条对齐，底部在播放条上方；播放条隐藏时收起。
+     * 播放条并入歌词界面时：手机上（界面里有待播清单开关）同 music.apple.com，清单占据标题行以下、控件以上的区域
+     * （.queue-open / .in-lyrics 的样式见 app.css）；桌面的歌词界面没有这个开关，收起。
+     */
     placeQueue() {
       if (this.queuePanel.hidden) return;
-      if (this.root.hidden || this.root.closest('.lyrics-controls')) { this.closeQueue(); return; }
+      const host = this.root.closest('.lyrics-overlay');
+      if (this.root.hidden || (host && !this.queueButton.offsetParent)) { this.closeQueue(); return; }
       const win = this.root.ownerDocument.defaultView;
+      this.queuePanel.classList.toggle('in-lyrics', !!host);
+      if (host) {
+        host.classList.add('queue-open');
+        this.queuePanel.style.right = '0px';
+        this.queuePanel.style.top = `${host.querySelector('.lyrics-side').getBoundingClientRect().bottom}px`;
+        this.queuePanel.style.bottom = `${win.innerHeight - this.root.getBoundingClientRect().top}px`;
+        return;
+      }
+      this.queuePanel.style.top = '';
       const bar = this.root.getBoundingClientRect();
       this.queuePanel.style.right = `${Math.max(12, win.innerWidth - bar.right)}px`;
       this.queuePanel.style.bottom = `${win.innerHeight - bar.top + 10}px`;
