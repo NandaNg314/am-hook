@@ -80,8 +80,17 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
           assert.equal(await page.locator('#toast').textContent(), '这首歌没有歌词');
           assert(await page.locator('.player-lyrics').isHidden(), 'no lyrics: button hides');
           assert(await page.locator('#lyrics-overlay').isHidden());
+          // 没有歌词时点击播放条仍展开界面（同 music.apple.com），只显示封面、标题与播放控件
           await page.locator('.player-track').click();
+          await page.locator('#lyrics-overlay:not([hidden])').waitFor();
+          assert(await page.locator('#lyrics-overlay').evaluate(el => el.classList.contains('lyrics-hidden')), 'no lyrics: the view opens without lyrics');
+          assert(await page.locator('.lyric-panel').isHidden());
+          assert(await page.locator('#lyrics-overlay .player-lyrics').isHidden(), 'no lyrics: no lyrics toggle');
+          assert(await page.locator('.lyrics-fav').isVisible() && await page.locator('.lyrics-more').isVisible(), 'favorite and More buttons');
+          assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `overflow at ${width}`);
           assert.deepEqual(lyricRequests, ['/lyrics/123456789'], 'the 404 is not refetched');
+          await page.keyboard.press('Escape');
+          await page.locator('#lyrics-overlay').waitFor({ state: 'hidden' });
           assert.deepEqual(errors, []);
           await context.close();
           scenarios++;
@@ -141,6 +150,46 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         assert(await page.locator('#lyrics-overlay .lyrics-controls #player').count(), 'the player moves into the lyrics view');
         assert(await page.locator('.player-notice').isHidden(), 'playback notices are hidden in the lyrics view');
         await page.screenshot({ path: `target/ui-lyrics-${width}.png` });
+
+        // 标题旁的喜爱与「更多」（同 music.apple.com 全屏播放界面）：喜爱正在播放的歌曲并加入资料库
+        const fav = page.locator('.lyrics-fav');
+        assert.equal(await fav.getAttribute('aria-pressed'), 'false');
+        await fav.click();
+        await page.locator('.lyrics-fav[aria-pressed="true"]').waitFor();
+        assert(await page.evaluate(async () => {
+          const library = await import('/assets/library.mjs');
+          return library.isFavorite('song', '123456789') && library.inLibrary('song', '123456789');
+        }), 'the playing song is favorited and added to the library');
+        await page.locator('.lyrics-more').click();
+        // 条目菜单（actions.mjs）没有 id，#menu 是页面上的另一个菜单
+        const moreMenu = page.locator('.menu:not(#menu)');
+        await moreMenu.waitFor();
+        const menuText = await moreMenu.textContent();
+        assert(menuText.includes('Undo Favorite') && menuText.includes('Delete from Library') && menuText.includes('Add to Playlist'), menuText);
+        assert.equal(await moreMenu.locator('.menu-label', { hasText: /^Play$/ }).count(), 0, 'no Play item for the playing song');
+        await page.keyboard.press('Escape');
+        await moreMenu.waitFor({ state: 'hidden' });
+        assert(await page.locator('#lyrics-overlay').isVisible(), 'Escape closes only the More menu');
+
+        // 界面里的歌词按钮：隐藏歌词后封面与控件居中，选择保存在浏览器中，再次点击恢复
+        const lyricToggle = page.locator('#lyrics-overlay .player-lyrics');
+        assert.equal(await lyricToggle.getAttribute('aria-pressed'), 'true');
+        assert.equal(await lyricToggle.getAttribute('aria-label'), 'Hide lyrics');
+        await lyricToggle.click();
+        assert(await page.locator('#lyrics-overlay.lyrics-hidden').count(), 'lyrics hidden');
+        assert(await page.locator('.lyric-panel').isHidden() && await page.locator('.lyrics-translation-menu').isHidden());
+        assert.equal(await lyricToggle.getAttribute('aria-label'), 'Show lyrics');
+        assert.equal(await page.evaluate(() => localStorage.getItem('am-hook:lyrics-hidden')), '1');
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `overflow at ${width} without lyrics`);
+        // 这里的歌曲没有封面（.lyrics-art 隐藏），检查标题行与控件
+        const head = await page.locator('.lyrics-head').boundingBox();
+        const hiddenBar = await page.locator('#player').boundingBox();
+        assert(hiddenBar.y + hiddenBar.height <= 844 && head.y >= 0 && head.y + head.height <= hiddenBar.y, 'title and controls fit on screen');
+        await page.screenshot({ path: `target/ui-lyrics-hidden-${width}.png` });
+        await lyricToggle.click();
+        assert.equal(await page.locator('#lyrics-overlay.lyrics-hidden').count(), 0, 'lyrics shown again');
+        await page.locator(lineSel).filter({ hasText: 'Third line' }).waitFor({ state: 'visible', timeout: 2000 });
+        assert.equal(await page.evaluate(() => localStorage.getItem('am-hook:lyrics-hidden')), null);
 
         await page.keyboard.press('Escape');
         assert(await page.locator('#lyrics-overlay').isHidden());

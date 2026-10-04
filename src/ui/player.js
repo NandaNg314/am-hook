@@ -1599,9 +1599,9 @@
       this.layout();
     }
 
-    /** 播放条上边缘的位置（视口坐标），隐藏时为 Infinity */
+    /** 播放条上边缘的位置（视口坐标），隐藏或并入歌词界面（不再浮在页面底部）时为 Infinity */
     barTop() {
-      return this.root.hidden ? Infinity : this.root.getBoundingClientRect().top;
+      return this.root.hidden || this.root.closest('.lyrics-controls') ? Infinity : this.root.getBoundingClientRect().top;
     }
 
     layout() {

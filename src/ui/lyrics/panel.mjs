@@ -8,6 +8,9 @@
  *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景
  *
  * 歌词界面只在打开时运行动画循环；关闭后停止，背景保留最后一帧。
+ *
+ * 同 music.apple.com 的全屏播放界面：点击播放条（封面、标题、空白处）总能展开，没有歌词的歌曲只显示封面与播放控件；
+ * 展开后播放条上的歌词按钮（并入界面底部）改为显示 / 隐藏歌词，隐藏时封面与控件居中，这个选择保存在浏览器中。
  */
 import { parseTTML } from './ttml.mjs';
 import { DomLyricPlayer, BackgroundRender, MeshGradientRenderer } from './amll-core.mjs';
@@ -90,15 +93,25 @@ export function toAmllLines(song, options) {
   });
 }
 
+/** 是否显示歌词（展开界面里的歌词按钮），保存在浏览器中；存储不可用时默认显示 */
+const SHOWN_KEY = 'am-hook:lyrics-hidden';
+function loadShown() {
+  try { return localStorage.getItem(SHOWN_KEY) !== '1'; } catch { return true; }
+}
+function saveShown(shown) {
+  try { if (shown) localStorage.removeItem(SHOWN_KEY); else localStorage.setItem(SHOWN_KEY, '1'); } catch { /* 只在本次会话生效 */ }
+}
+
 /**
- * root：#lyrics-overlay；toggle：播放条上的歌词按钮；bar：播放条，
- * 点击其中非控件区域（封面、标题、空白处）与点击歌词按钮相同；歌词界面打开时并入 .lyrics-controls。
+ * root：#lyrics-overlay；toggle：播放条上的歌词按钮（打开歌词；展开界面里切换是否显示歌词）；bar：播放条，
+ * 点击其中非控件区域（封面、标题、空白处）展开界面（没有歌词时也能展开）；歌词界面打开时并入 .lyrics-controls。
  * getMeta() 返回正在播放的歌曲的 { title, artist, artists, artwork, country? }（artists: [{ name, href }]，用于艺人链接；
  * 有 country 时优先作为请求歌词的地区）；t 为界面文案函数；notify 显示提示。
  * navigate(href)：前端路由，点击艺人链接时关闭歌词界面并由它打开页面（播放不中断）；省略时按普通链接跳转。
- * 返回 { setTrack(id, country) }：切歌时调用，歌词界面跟随正在播放的歌曲。
+ * onShow()：界面展开或展开期间切歌时调用（如更新标题旁的喜爱与「更多」按钮）。
+ * 返回 { setTrack(id, country), close() }：setTrack 在切歌时调用，歌词界面跟随正在播放的歌曲；close 收起界面。
  */
-export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onLangChange, navigate }) {
+export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onLangChange, navigate, onShow }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
   // 翻译 / 发音：同 music.apple.com，一个「歌词翻译」按钮弹出菜单切换；开关在切歌后保留
@@ -148,6 +161,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   let playing = null;
   let artworkSource = '';
   let artworkController = null;
+  let lyricsShown = loadShown();
+  let lyricsVisible = false;
 
   function currentTime() {
     return player.current ? player.transport().currentTime * 1000 : 0;
@@ -169,11 +184,14 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
       playing = now;
       if (now) view.resume(); else view.pause();
     }
-    view.setCurrentTime(transport ? transport.currentTime * 1000 : 0);
-    view.update(lastFrame ? timestamp - lastFrame : 0);
+    // 隐藏歌词时只有背景在动，歌词视图不再排版
+    if (lyricsVisible) {
+      view.setCurrentTime(transport ? transport.currentTime * 1000 : 0);
+      view.update(lastFrame ? timestamp - lastFrame : 0);
+    }
     lastFrame = timestamp;
     // AMLL 在用户滚动后暂停自动对齐，下一行进入可视范围时才会自己回来；这里提供立即回到当前行的按钮
-    const suspended = !!view.scrollState?.isAutoAlignSuspended;
+    const suspended = lyricsVisible && !!view.scrollState?.isAutoAlignSuspended;
     if (follow.hidden === suspended) follow.hidden = !suspended;
     frame = requestAnimationFrame(tick);
   }
@@ -241,26 +259,56 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     renderCredits();
   }
 
+  /** 歌词按钮的文案：播放条上为「歌词」，展开界面里为「显示 / 隐藏歌词」，按下状态表示歌词正在显示 */
+  function syncToggle() {
+    const label = t(open ? (lyricsVisible ? 'lyrics.hide' : 'lyrics.show') : 'lyrics.open');
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-pressed', String(open && lyricsVisible));
+  }
+
+  /**
+   * 按「是否显示歌词」与歌曲有没有歌词切换布局（加载中按有歌词处理，避免切歌时布局跳动）；
+   * 歌词从隐藏变为显示时，视图需要可见时的尺寸来排版，按当前进度重新对齐
+   */
+  function applyVisibility() {
+    const visible = open && lyricsShown && !unavailable;
+    const changed = visible !== lyricsVisible;
+    lyricsVisible = visible;
+    root.classList.toggle('lyrics-hidden', !visible);
+    if (!visible) { closeMenu(); follow.hidden = true; }
+    backdrop?.setHasLyric(visible);
+    syncToggle();
+    if (!visible || !changed || !song) return;
+    if (!view.getLyricLines().length) setLines();
+    else view.rebuildLyricView(currentTime());
+    view.setCurrentTime(currentTime(), true);
+    view.resetScroll();
+  }
+
+  function setShown(shown) {
+    lyricsShown = shown;
+    saveShown(shown);
+    applyVisibility();
+  }
+
   function show() {
-    if (!song || open) return;
+    if (open || !adamId) return;
     open = true;
     // 播放控件并入歌词界面（桌面在封面下方，手机在底部），关闭时放回原处
     bar.replaceWith(barHome);
     $('.lyrics-controls').append(bar);
     root.hidden = false;
     document.body.classList.add('lyrics-open');
-    toggle.setAttribute('aria-pressed', 'true');
     renderHeader();
     loadArtwork();
-    // 视图需要可见时的尺寸来排版，打开时按当前进度重新对齐
-    if (!view.getLyricLines().length) setLines();
-    else view.rebuildLyricView(currentTime());
-    view.setCurrentTime(currentTime(), true);
-    view.resetScroll();
+    lyricsVisible = false;
+    applyVisibility();
     playing = null;
     lastFrame = 0;
     frame = requestAnimationFrame(tick);
     $('.lyrics-close').focus({ preventScroll: true });
+    onShow?.();
   }
 
   function hide() {
@@ -270,7 +318,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     barHome.replaceWith(bar);
     root.hidden = true;
     document.body.classList.remove('lyrics-open');
-    toggle.setAttribute('aria-pressed', 'false');
+    lyricsVisible = false;
+    syncToggle();
     cancelAnimationFrame(frame);
     frame = 0;
     backdrop?.pause();
@@ -360,10 +409,10 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
         .then((parsed) => {
           if (id !== adamId) return; // 已切换到另一首歌
           if (!parsed) {
+            // 展开界面保持打开，只显示封面与播放控件
             unavailable = true;
             toggle.hidden = true;
-            bar.classList.remove('lyrics-available');
-            notify(t('lyrics.none'));
+            applyVisibility();
             return;
           }
           song = parsed;
@@ -372,6 +421,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
           has.translation = voices.some((voice) => voice.translation);
           has.pronunciation = voices.some((voice) => voice.pronunciation || voice.pronunciationTokens.length);
           syncOptions();
+          // 展开界面里正在等这首歌的歌词时直接排版
+          if (lyricsVisible) {
+            setLines();
+            view.setCurrentTime(currentTime(), true);
+            view.resetScroll();
+          }
         })
         .catch((error) => {
           if (id !== adamId) return;
@@ -384,7 +439,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     return request;
   }
 
-  /** 切换歌曲（id 为空表示没有歌曲）：歌词界面打开时取回新歌词原地刷新，没有歌词时关闭 */
+  /** 切换歌曲（id 为空表示没有歌曲）：歌词界面打开时取回新歌词原地刷新，没有歌词时只显示封面与播放控件 */
   function setTrack(id, cc) {
     id = id || null;
     if (id === adamId) return;
@@ -405,26 +460,29 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (!id) { hide(); return; }
     renderHeader();
     loadArtwork();
+    applyVisibility();
+    onShow?.();
+    fetchLyrics();
+  }
+
+  /** 播放条上的歌词按钮：打开界面并显示歌词（没有歌词时提示，不展开）；展开后切换是否显示歌词 */
+  function onToggle() {
+    if (open) { setShown(!lyricsShown); return; }
+    if (song) { setShown(true); show(); return; }
+    if (unavailable || toggle.hasAttribute('aria-busy')) return;
+    const id = adamId;
     fetchLyrics().then(() => {
-      if (id !== adamId || !open) return;
-      if (!song) { hide(); return; }
-      setLines();
-      view.setCurrentTime(currentTime(), true);
-      view.resetScroll();
+      if (id !== adamId || open) return;
+      if (song) { setShown(true); show(); } else if (unavailable) notify(t('lyrics.none'));
     });
   }
 
-  function toggleOpen() {
-    if (open) { hide(); return; }
-    if (song) { show(); return; }
-    if (unavailable || toggle.hasAttribute('aria-busy')) return;
-    fetchLyrics().then(() => { if (song) show(); });
-  }
-
-  toggle.addEventListener('click', toggleOpen);
+  toggle.addEventListener('click', onToggle);
+  // 点击播放条展开界面，按上次的选择显示或隐藏歌词；歌词随后取回
   bar.addEventListener('click', (event) => {
-    if (open || unavailable || !adamId || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;
-    toggleOpen();
+    if (open || !adamId || event.target.closest('button, input, a, [role="slider"], .player-msg, .player-notice')) return;
+    show();
+    fetchLyrics();
   });
   $('.lyrics-close').addEventListener('click', hide);
   $('.lyrics-artist').addEventListener('click', (event) => {
@@ -456,7 +514,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   });
   follow.addEventListener('click', () => { view.resetScroll(); follow.hidden = true; });
   document.addEventListener('keydown', (event) => {
-    if (!open || event.key !== 'Escape') return;
+    // 已由其他菜单处理（如标题旁「更多」的菜单）
+    if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
     event.preventDefault();
     // 菜单打开时 Esc 只关闭菜单
     if (!menu.hidden) closeMenu(true); else hide();
@@ -465,7 +524,9 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     renderCredits();
     if (!menu.hidden) renderMenu();
     if (open) renderHeader();
+    syncToggle();
   });
+  syncToggle();
 
-  return { setTrack };
+  return { setTrack, close: hide };
 }

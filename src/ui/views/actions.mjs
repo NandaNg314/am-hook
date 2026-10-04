@@ -9,7 +9,7 @@
 //   albumHref：曲目所属专辑的本站路径（菜单里的「前往专辑」）；onPlay：页面自己的播放方式（如按专辑顺序播放）；
 //   track：资料库中的曲目快照（没有 resource 时用它加入资料库、歌单）；collection：页面已取到的专辑 / 歌单 { resource, tracks }，
 //   加入资料库或歌单时不再重新请求；getTracks()：要加入歌单的曲目快照（本地歌单用）；playlistId：「添加到歌单」里不列出的歌单；
-//   extraItems：页面自己的菜单项（如「从歌单中删除」）
+//   extraItems：页面自己的菜单项（如「从歌单中删除」）；noPlay：菜单里不列出「播放」（正在播放的歌曲）
 import * as library from '/assets/library.mjs';
 import { LIB_ICON, playlistMenuItems, moveMenuItems } from './library-ui.mjs';
 
@@ -138,6 +138,33 @@ export function songEntry(track, country, context = {}) {
     artwork: artUrl(a.artwork || context.artwork, 600),
     duration: a.durationInMillis || 0,
   };
+}
+
+/**
+ * 正在播放的歌曲（AmPlayer 的 current）→ 条目，歌词界面标题旁的喜爱与「更多」用；没有歌曲时为 null。
+ * 先用播放队列里的信息拼出曲目快照（封面地址还原为 {w}x{h} 模板），之后可用 songTarget() 换成完整资源
+ */
+export function nowPlayingTarget(current) {
+  if (!current || !current.track) return null;
+  const href = current.href || '';
+  const albumHref = current.albumHref || '';
+  return {
+    kind: 'song', href, apple: href.slice(1), name: current.title || '', country: current.country, albumHref, noPlay: true,
+    track: {
+      kind: 'song', id: current.track, country: current.country, name: current.title || '', artist: current.artist || '',
+      artists: current.artists || [], album: current.album || '', albumId: (albumHref.match(/\/(\d+)$/) || [])[1] || '', albumHref, href,
+      artwork: (current.artwork || '').replace(/\/\d+x\d+(\w*)\.(jpg|png|webp)$/, '/{w}x{h}$1.$2'), bgColor: '', duration: 0, explicit: false,
+    },
+  };
+}
+
+/** 歌曲 id → 条目（含 amp-api 资源，曲目快照因此有时长、分级等完整信息）；名称按曲库语言返回 */
+export async function songTarget(id, country) {
+  const l = await Promise.resolve(AmI18n.catalogLang(country)).catch(() => undefined);
+  const data = await amp(`/v1/catalog/${country}/songs/${id}`, { include: 'albums,artists', l });
+  const song = data.data && data.data[0];
+  if (!song || !song.attributes) throw new Error('not found');
+  return targetOf(song, country, { albumHref: albumPathOf(song), noPlay: true });
 }
 
 /** 歌曲 / MV 资源 → 资料库曲目快照（见 library.mjs）；album 为所属专辑资源（专辑页的曲目没有专辑字段时补上） */
@@ -515,7 +542,7 @@ export function createActions({ signal, player, navigate, toast }) {
   function menuItems(target, button) {
     const items = [];
     if (target.kind === 'music-video') items.push({ icon: ICON.video, label: t('action.playMv'), onSelect: () => navigate(target.href) });
-    else if (playable(target)) items.push({ icon: ICON.play, label: t('action.play'), onSelect: () => play(target, button) });
+    else if (playable(target) && !target.noPlay) items.push({ icon: ICON.play, label: t('action.play'), onSelect: () => play(target, button) });
     if (target.kind === 'album' || target.kind === 'playlist' || target.onShuffle) {
       items.push({ icon: ICON.shuffle, label: t('action.shuffle'), onSelect: () => (target.onShuffle ? target.onShuffle() : play(target, button, true)) });
     }
@@ -534,15 +561,17 @@ export function createActions({ signal, player, navigate, toast }) {
     return items;
   }
 
+  /** 「更多」按钮；target 也可以是返回当前条目的函数（如歌词界面里正在播放的歌曲），返回 null 时不弹出菜单 */
   function moreButton(target, className = 'track-more') {
     const button = el('button', { className, type: 'button', innerHTML: ICON.more, title: t('action.more') });
-    button.setAttribute('aria-label', t('action.moreFor', { name: target.name }));
+    button.setAttribute('aria-label', typeof target === 'function' ? t('action.more') : t('action.moreFor', { name: target.name }));
     button.setAttribute('aria-haspopup', 'menu');
     button.setAttribute('aria-expanded', 'false');
     button.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openMenu(button, menuItems(target, button));
+      const current = typeof target === 'function' ? target() : target;
+      if (current) openMenu(button, menuItems(current, button));
     });
     return button;
   }

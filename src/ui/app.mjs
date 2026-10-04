@@ -9,7 +9,7 @@
 import { mountSettings } from '/assets/settings.mjs';
 import * as library from '/assets/library.mjs';
 import { newPlaylist, newFolder, playlistName, folderName, LIB_ICON } from '/assets/views/library-ui.mjs';
-import { openMenu } from '/assets/views/actions.mjs';
+import { openMenu, createActions, nowPlayingTarget, songTarget } from '/assets/views/actions.mjs';
 
 const { AmPlayer } = window.AmHook;
 const { AmI18n } = window;
@@ -84,8 +84,48 @@ import('/assets/lyrics/panel.mjs')
       getMeta: () => ({ title: player.current?.title, artist: player.current?.artist, artists: player.current?.artists, artwork: player.current?.artwork }),
       navigate: (href) => navigate(href),
       onLangChange: AmI18n.onChange,
+      onShow: resolveTarget,
     });
-    const follow = (current) => lyrics.setTrack(current && current.track, current && current.country);
+
+    // 标题旁的喜爱与「更多」（同 music.apple.com 全屏播放界面）：条目为正在播放的歌曲，先用播放队列里的信息，
+    // 界面展开时再取 amp-api 资源换成完整条目；菜单里跳转页面时先收起界面
+    const actions = createActions({
+      signal: new AbortController().signal, player, toast,
+      navigate: (href) => { lyrics.close(); navigate(href); },
+    });
+    let target = null;
+    let targetId = null;
+    let resolved = null;
+    const favorite = actions.favoriteButton(() => target, 'lyrics-action lyrics-fav');
+    const more = actions.moreButton(() => target, 'lyrics-action lyrics-more');
+    $('lyrics-overlay').querySelector('.lyrics-actions').append(favorite.button, more);
+    function syncTarget() {
+      const id = (player.current && player.current.track) || null;
+      if (id === targetId) return;
+      targetId = id;
+      target = nowPlayingTarget(player.current);
+      resolved = null;
+      favorite.refresh();
+    }
+    function resolveTarget() {
+      syncTarget();
+      const id = targetId;
+      if (!id || resolved === id) return;
+      resolved = id;
+      songTarget(id, player.current.country || 'us')
+        .then((full) => { if (id === targetId) { target = full; favorite.refresh(); } })
+        .catch(() => { if (id === targetId) resolved = null; }); // 取不到时沿用播放队列里的信息，下次展开再试
+    }
+    AmI18n.onChange(() => {
+      more.title = t('action.more');
+      more.setAttribute('aria-label', more.title);
+      favorite.refresh();
+    });
+
+    const follow = (current) => {
+      syncTarget();
+      lyrics.setTrack(current && current.track, current && current.country);
+    };
     follow(player.current);
     player.onChange(follow);
   })

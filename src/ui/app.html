@@ -172,9 +172,13 @@
     <div class="lyrics-stage">
       <div class="lyrics-side">
         <img class="lyrics-art" alt="" hidden>
-        <div class="lyrics-meta">
-          <h2 class="lyrics-title"></h2>
-          <p class="lyrics-artist"></p>
+        <div class="lyrics-head">
+          <div class="lyrics-meta">
+            <h2 class="lyrics-title"></h2>
+            <p class="lyrics-artist"></p>
+          </div>
+          <!-- 喜爱与「更多」（同 music.apple.com 全屏播放界面标题旁的按钮），由 app.mjs 填入 -->
+          <div class="lyrics-actions"></div>
         </div>
       </div>
       <div class="lyric-panel"></div>
@@ -219,7 +223,7 @@
       <span class="time time-total">0:00</span>
     </div>
     <div class="player-right">
-      <button class="player-lyrics" type="button" hidden aria-pressed="false" aria-controls="lyrics-overlay" data-i18n-attr="aria-label=lyrics.open,title=lyrics.open">
+      <button class="player-lyrics" type="button" hidden aria-pressed="false" aria-controls="lyrics-overlay">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5z"/><path d="M8 7.5h8M8 11h5"/></svg>
       </button>
       <span class="badge player-mode" data-i18n-attr="title=player.mode"></span>
