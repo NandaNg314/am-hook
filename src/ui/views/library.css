@@ -115,8 +115,9 @@
 }
 
 /* ---------- 本地歌单页：曲目行首为拖动把手（悬停时显示，触屏常显），拖动时其他行让位 ---------- */
-.lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) minmax(0, .8fr) auto 40px; padding-left: 4px; }
-.lib-playlist-tracks .pl-track + .pl-track::before { left: 86px; }
+/* 只有带把手的行（has-lead）多出一列；「喜爱的歌曲」没有把手，沿用 pl-track 的列 */
+.pl-track.has-lead { grid-template-columns: 24px 40px minmax(0, 1fr) minmax(0, .8fr) auto 40px; padding-left: 4px; }
+.pl-track.has-lead + .pl-track.has-lead::before { left: 86px; }
 .lib-grip {
   width: 24px; height: 36px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px;
   background: none; color: var(--faint); cursor: grab; touch-action: none; opacity: 0;
@@ -129,10 +130,10 @@
 .is-sorting .lib-grip { cursor: grabbing; }
 @media (pointer: coarse) { .lib-grip { opacity: 1; } }
 @media (max-width: 1000px) {
-  .lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) auto 40px; }
+  .pl-track.has-lead { grid-template-columns: 24px 40px minmax(0, 1fr) auto 40px; }
 }
 @media (max-width: 760px) {
-  .lib-playlist-tracks .pl-track { grid-template-columns: 24px 40px minmax(0, 1fr) auto 36px; gap: 8px; }
-  .lib-playlist-tracks .pl-track + .pl-track::before { left: 76px; }
+  .pl-track.has-lead { grid-template-columns: 24px 40px minmax(0, 1fr) auto 36px; gap: 8px; }
+  .pl-track.has-lead + .pl-track.has-lead::before { left: 76px; }
 }
 .lib-playlist-page .lib-empty { padding-top: 40px; }
