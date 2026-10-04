@@ -1409,8 +1409,15 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-action:disabled { opacity: .4; cursor: default; }
 .lyrics-action.busy { opacity: .5; cursor: progress; }
 /* 歌名与艺人同 music.apple.com 的 amp-lcd-metadata：都是 17px 粗体（title-2-emphasized），艺人为 systemSecondary-onDark；手机上艺人不加粗（title-2） */
-.lyrics-title { margin: 0; font-size: 17px; line-height: 1.2941176471; font-weight: 700; overflow-wrap: anywhere; }
-.lyrics-artist { margin: 0; color: rgba(255, 255, 255, .55); font-size: 17px; line-height: 1.2941176471; font-weight: 700; overflow-wrap: anywhere; }
+.lyrics-title { margin: 0; font-size: 17px; line-height: 1.2941176471; font-weight: 700; }
+.lyrics-artist { margin: 0; color: rgba(255, 255, 255, .55); font-size: 17px; line-height: 1.2941176471; font-weight: 700; }
+/* 各占一行，过长时滚动（player.js 的 Marquee）：行高 25px，静止时右侧 15px 渐隐，滚动时两侧 30px 渐隐（手机上 24px、32px、64px） */
+.lyrics-meta .marquee-line__mask { --marquee-fade: 30px; height: 25px; line-height: 25px; }
+.lyrics-artist:has(.marquee-line__chunk:first-child .marquee-line__text:empty) { display: none; }
+.lyrics-meta .marquee-line.active.is-animating .marquee-line__mask {
+  -webkit-mask: linear-gradient(90deg, transparent 0, #000 var(--lcd-fade-length-start, var(--marquee-fade)), #000 calc(100% - var(--marquee-fade)), transparent);
+  mask: linear-gradient(90deg, transparent 0, #000 var(--lcd-fade-length-start, var(--marquee-fade)), #000 calc(100% - var(--marquee-fade)), transparent);
+}
 .lyrics-artist a { color: inherit; text-decoration: none; }
 .lyrics-artist a:hover { color: #fff; text-decoration: underline; }
 /*
@@ -1586,8 +1593,11 @@ body.lyrics-open { overflow: hidden; }
   .lyrics-art { flex: none; width: 60px; border-radius: 5px; box-shadow: none; }
   .lyrics-head { flex: 1; width: auto; }
   .lyrics-actions { flex: 0 0 72px; padding: 0; }
-  .lyrics-title, .lyrics-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lyrics-artist { font-weight: 400; }
+  .lyrics-meta .marquee-line__mask { --marquee-fade: 64px; height: 24px; line-height: 24px; }
+  .lyrics-meta .marquee-line.active:not(.is-animating) .marquee-line__mask {
+    -webkit-mask: linear-gradient(270deg, transparent, #000 32px); mask: linear-gradient(270deg, transparent, #000 32px);
+  }
   /* 歌词翻译按钮叠在歌词区左下角（距底 20px） */
   .lyrics-translation-menu { position: relative; top: auto; inset-inline-end: auto; align-self: flex-start; margin: -48px 0 20px; }
   .lyrics-translation-button { margin: 0; }

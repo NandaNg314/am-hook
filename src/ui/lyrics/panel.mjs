@@ -123,6 +123,8 @@ function saveShown(shown) {
 export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onLangChange, navigate, onShow }) {
   const $ = (selector) => root.querySelector(selector);
   const follow = $('.lyrics-follow');
+  const titleMarquee = new globalThis.AmHook.Marquee($('.lyrics-title'));
+  const artistMarquee = new globalThis.AmHook.Marquee($('.lyrics-artist'));
   // 翻译 / 发音：同 music.apple.com，一个「歌词翻译」按钮弹出菜单切换；开关在切歌后保留
   const translationMenu = $('.lyrics-translation-menu');
   const translationButton = $('.lyrics-translation-button');
@@ -221,9 +223,10 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     const art = $('.lyrics-art');
     if (meta.artwork) { if (art.getAttribute('src') !== meta.artwork) art.src = meta.artwork; } else art.removeAttribute('src');
     art.hidden = !meta.artwork;
-    $('.lyrics-title').textContent = meta.title || t('player.unknownTitle');
+    // 歌名与艺人各占一行，过长时滚动（同 music.apple.com 的 amp-lcd-metadata，见 player.js 的 Marquee）
+    titleMarquee.set([document.createTextNode(meta.title || t('player.unknownTitle'))]);
     // 艺人名链接到艺人页（见 player.js 的 artistNodes）
-    $('.lyrics-artist').replaceChildren(...globalThis.AmHook.artistNodes(meta.artist || '', meta.artists));
+    artistMarquee.set(globalThis.AmHook.artistNodes(meta.artist || '', meta.artists));
   }
 
   function renderCredits() {

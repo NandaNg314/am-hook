@@ -179,7 +179,7 @@
   const MARQUEE_DELAY = 3000;
 
   /**
-   * 播放条的滚动字幕，照 music.apple.com 播放条（LCD）的 marquee 组件实现：
+   * 播放条（以及全屏播放界面标题行，见 lyrics/panel.mjs）的滚动字幕，照 music.apple.com 播放条（LCD）的 marquee 组件实现：
    *   放得下时静止；放不下时右侧渐隐，换歌 3 秒后滚动一遍（约 20px/s，副本首尾相接），滚完回到开头；
    *   鼠标移入时暂停（方便点击移动中的链接），移出后继续，已停下时再滚一遍。
    *   滚动时两侧渐隐，原文完全移出后去掉左侧渐隐（is-near-end）。
@@ -2007,7 +2007,7 @@
     }
   }
 
-  const api = { AmPlayer, artistNodes, qualityBadge, qualityIcon, segmentAt, formatTime, detectMode, detectModes, mimeFor };
+  const api = { AmPlayer, Marquee, artistNodes, qualityBadge, qualityIcon, segmentAt, formatTime, detectMode, detectModes, mimeFor };
   if (typeof module !== 'undefined' && module.exports) module.exports = { ...api, MseEngine };
   else global.AmHook = api;
 })(typeof window !== 'undefined' ? window : globalThis);

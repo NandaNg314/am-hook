@@ -107,7 +107,25 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         const activeLines = () => page.evaluate(sel => [...document.querySelectorAll(sel)]
           .filter(el => [el, ...el.querySelectorAll('*')].some(n => [...n.classList].some(c => c.endsWith('_active'))))
           .map(el => el.querySelector('[class*="_lyricMainLine"]').textContent.trim()), lineSel);
-        assert.equal(await page.locator('.lyrics-title').textContent(), 'Lyric song');
+        assert.equal(await page.locator('.lyrics-title .marquee-line__text').first().textContent(), 'Lyric song');
+        assert(await page.locator('.lyrics-title .marquee-line.inactive').count(), 'a short title does not scroll');
+        // 歌名过长时保持一行并滚动（同播放条的滚动字幕），不换行
+        const titleHeight = (await page.locator('.lyrics-title').boundingBox()).height;
+        await page.evaluate(() => {
+          const text = document.querySelector('.lyrics-title .marquee-line__text');
+          text.textContent = 'A very long song title that cannot possibly fit on a single line of the full-screen player';
+          // 标题行宽度变化时重新判断是否放得下（ResizeObserver）
+          const head = document.querySelector('.lyrics-head');
+          head.style.maxWidth = `${head.getBoundingClientRect().width - 1}px`;
+        });
+        await page.locator('.lyrics-title .marquee-line.active').waitFor({ timeout: 2000 });
+        assert(Math.abs((await page.locator('.lyrics-title').boundingBox()).height - titleHeight) < 1, 'a long title stays on one line');
+        await page.screenshot({ path: `target/ui-lyrics-long-title-${width}.png` });
+        await page.evaluate(() => {
+          document.querySelector('.lyrics-title .marquee-line__text').textContent = 'Lyric song';
+          document.querySelector('.lyrics-head').style.maxWidth = '';
+        });
+        await page.locator('.lyrics-title .marquee-line.inactive').waitFor({ timeout: 2000 });
         // 翻译菜单（同 music.apple.com）：点按钮弹出，歌曲没有的一项置灰，Esc 只关闭菜单
         const openMenu = async () => {
           await page.locator('.lyrics-translation-button').click();
