@@ -7,6 +7,7 @@ pub mod proxy;
 pub mod source;
 pub mod state;
 pub mod ui;
+pub mod updater;
 pub mod wrapper;
 
 use std::sync::Arc;

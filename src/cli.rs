@@ -66,6 +66,14 @@ pub struct Cli {
     /// (identical concurrent requests are still merged)
     #[arg(long, default_value_t = 32)]
     pub amp_cache_mb: usize,
+
+    /// Check for updates on startup
+    #[arg(long)]
+    pub check_update: bool,
+
+    /// Automatically download and install updates if available
+    #[arg(long)]
+    pub auto_update: bool,
 }
 
 impl Cli {

@@ -5,13 +5,34 @@ use tracing::info;
 
 use am_hook::cli::Cli;
 use am_hook::state::AppState;
-use am_hook::{amp, log, monitor, router};
+use am_hook::{amp, log, monitor, router, updater};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::init();
 
     let cli = Cli::parse();
+
+    // 检查更新
+    if cli.auto_update {
+        info!("Checking for updates and auto-updating if available...");
+        updater::auto_update().await;
+    } else if cli.check_update {
+        info!("Checking for updates...");
+        match updater::check_update().await {
+            Ok(Some(version)) => {
+                info!("New version available: {}", version);
+                info!("Run with --auto-update to automatically install updates");
+            }
+            Ok(None) => {
+                info!("Already running the latest version");
+            }
+            Err(e) => {
+                info!("Failed to check for updates: {}", e);
+            }
+        }
+    }
+
     let listen_addr = cli.resolve_listen_addr()?;
     let config = cli.config()?;
     let state = Arc::new(AppState::with_config(config.clone(), cli.lru_cache_mb));
