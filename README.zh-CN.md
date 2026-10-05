@@ -227,7 +227,15 @@ cargo build --release
 cargo test --workspace
 ```
 
-单元测试覆盖浏览器媒体核心（PlayReady license 解密、CENC/CBCS、字幕修复、defrag）、URL 解析、m3u8 改写、MP4 box 修补（含 wasm 原地解密路径与并行路径结果一致）、Range 解析、缓存去重和 MV 接口。端到端测试连接真实 CDN 与 wrapper-lite（默认 `http://127.0.0.1:12340`，可用环境变量 `AM_HOOK_WRAPPER` 覆盖），验证解密后的分片、跨分片 Range，以及未开启 `--hook` 时代理请求被拒绝。
+单元测试覆盖浏览器媒体核心（PlayReady license 解密、CENC/CBCS、字幕修复、defrag）、URL 解析、m3u8 改写、MP4 box 修补（含 wasm 原地解密路径与并行路径结果一致）、Range 解析、缓存去重和 MV 接口。离线集成测试还检查白名单，以及未开启 `--hook` 时代理请求被拒绝。
+
+需要真实 Apple CDN 或 wrapper-lite 的测试默认忽略，不在 GitHub Actions 中运行。请在本地能访问 Apple CDN 且 wrapper-lite 已启动时运行（默认 `http://127.0.0.1:12340`，可用环境变量 `AM_HOOK_WRAPPER` 覆盖）：
+
+```sh
+cargo test --test e2e_test -- --ignored
+```
+
+这些测试验证播放列表、解密后的分片、跨分片 Range 和歌词。
 
 浏览器端测试是普通的 Node 脚本：
 

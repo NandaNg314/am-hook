@@ -227,7 +227,15 @@ The binary is written to `target/release/am-hook` (`am-hook.exe` on Windows). Al
 cargo test --workspace
 ```
 
-Unit tests cover the browser media core (PlayReady license decryption, CENC/CBCS, caption repair, defragmentation), URL parsing, m3u8 rewriting, MP4 box patching (including that the in-place wasm path matches the parallel path), range parsing, cache deduplication and the MV endpoints. End-to-end tests run against the live CDN and wrapper-lite (default `http://127.0.0.1:12340`, override with `AM_HOOK_WRAPPER`) and verify decrypted fragments, cross-fragment ranges, and that the proxy is refused without `--hook`.
+Unit tests cover the browser media core (PlayReady license decryption, CENC/CBCS, caption repair, defragmentation), URL parsing, m3u8 rewriting, MP4 box patching (including that the in-place wasm path matches the parallel path), range parsing, cache deduplication and the MV endpoints. Offline integration tests also check the whitelist and that the proxy is refused without `--hook`.
+
+Tests that require the live Apple CDN or wrapper-lite are ignored by default and do not run in GitHub Actions. Run them locally with Apple CDN access and wrapper-lite available (default `http://127.0.0.1:12340`, override with `AM_HOOK_WRAPPER`):
+
+```sh
+cargo test --test e2e_test -- --ignored
+```
+
+These tests verify playlists, decrypted fragments, cross-fragment ranges and lyrics.
 
 Browser-side tests are plain Node scripts:
 

@@ -1,4 +1,5 @@
-//! 端到端测试：需要能访问 Apple CDN 与 wrapper-lite（默认 http://127.0.0.1:12340，可用 AM_HOOK_WRAPPER 覆盖）
+//! 在线端到端测试默认忽略：cargo test --test e2e_test -- --ignored
+//! 需要能访问 Apple CDN 与 wrapper-lite（默认 http://127.0.0.1:12340，可用 AM_HOOK_WRAPPER 覆盖）
 
 use std::sync::Arc;
 
@@ -63,6 +64,7 @@ async fn test_hook_disabled_rejects_proxy() {
 }
 
 #[tokio::test]
+#[ignore = "requires live Apple CDN access; run locally with --ignored"]
 async fn test_master_m3u8_e2e() {
     let state = new_state();
     let resp = get(&state, "P1263211745_default.m3u8", None).await;
@@ -72,6 +74,7 @@ async fn test_master_m3u8_e2e() {
 }
 
 #[tokio::test]
+#[ignore = "requires live Apple CDN and wrapper-lite; run locally with --ignored"]
 async fn test_media_m3u8_and_file_e2e() {
     let state = new_state();
 
@@ -133,6 +136,7 @@ async fn test_media_m3u8_and_file_e2e() {
 }
 
 #[tokio::test]
+#[ignore = "requires live Apple CDN and wrapper-lite; run locally with --ignored"]
 async fn test_media_file_without_m3u8_first() {
     // 直接请求 media file（IDM 场景），轨道由 m3u8 自动补齐；并发请求共享同一轨道
     let state = new_state();
@@ -144,6 +148,7 @@ async fn test_media_file_without_m3u8_first() {
 }
 
 #[tokio::test]
+#[ignore = "requires live wrapper-lite; run locally with --ignored"]
 async fn test_lyrics_e2e() {
     // wrapper-lite /lyrics 的 TTML 原样返回；没有歌词的歌曲为 404，非法 ID 为 400
     use am_hook::ui::{lyrics_handler, LyricsQuery};

@@ -47,5 +47,5 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
-      - name: Run tests
+      - name: Run offline tests
         run: cargo test --verbose
