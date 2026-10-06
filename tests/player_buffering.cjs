@@ -87,3 +87,43 @@ test('seeking to the tail still signals EOF to flush the final samples', async (
   assert.equal(mse.pendingSegments.size, 0);
   assert.equal(ended, true); // unvisited segments before the seek are irrelevant
 });
+
+test('high FLAC bitrate shrinks the read-ahead window to fit the quota', () => {
+  const mse = engine();
+  mse.appendedSegments.add(1);
+  assert.equal(mse.target().index, 2); // 14s window reaches the segment at 29.95s
+  mse.flacByteRate = 576000; // 96 kHz / 24-bit stereo, nearly verbatim
+  assert.equal(mse.flacAhead(mse.playlist.segments[1]), 4);
+  assert.equal(mse.target(), null);
+  mse.flacByteRate = 100000;
+  assert.equal(mse.flacAhead(mse.playlist.segments[1]), 14);
+});
+
+test('FLAC appends evict played audio before the browser deletes future audio', async () => {
+  const mse = engine();
+  mse.sb.updating = false;
+  const calls = [];
+  mse.sb.remove = (start, end) => { calls.push(['remove', start, end]); };
+  mse.remove = async (start, end) => { mse.sb.remove(start, end); };
+  mse.append = async () => { calls.push(['append']); };
+  mse.fetchRange = async () => [new ArrayBuffer(1)];
+  mse.audio.currentTime = 16.5;
+  mse.appendedSegments.add(1);
+  await mse.pump(0);
+  assert.deepEqual(calls[0], ['remove', 0, 14.5]);
+  assert.deepEqual(calls[1], ['append']);
+  assert.ok(mse.flacByteRate > 0);
+});
+
+test('stall at a hole in appended audio re-buffers even with work ahead', () => {
+  const mse = engine();
+  mse.playlist.duration = 45;
+  mse.appendedSegments.add(1); // recorded as appended, but quota GC removed 16s..
+  mse.sb.buffered = { length: 1, start: () => 2.5, end: () => 16 };
+  let interrupted = false;
+  mse.interrupt = () => { interrupted = true; };
+  mse.pump = () => assert.fail('pumping ahead cannot fill the hole');
+  mse.watchStall(0);
+  clearTimeout(mse.stallTimer);
+  assert.equal(interrupted, true);
+});

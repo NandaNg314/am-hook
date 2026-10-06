@@ -17,6 +17,13 @@
   // Keep this window small enough that the current and chained next track do
   // not fill the browser's SourceBuffer quota before eviction can run.
   const FLAC_AHEAD_SECONDS = 14;
+  // Chrome's audio SourceBuffer quota is about 12 MB. When the played part
+  // cannot free enough, its garbage collector deletes from the buffer's end,
+  // leaving a hole in audio already recorded as appended. 96 kHz / 24-bit FLAC
+  // reaches ~576 KB/s, so limit the window by measured bytes, not only seconds.
+  const FLAC_BUFFER_BYTES = 8 * 1024 * 1024;
+  const FLAC_MIN_AHEAD_SECONDS = 4;
+  const FLAC_BEHIND_SECONDS = 2;
   const BEHIND_SECONDS = 30;
 
   /** 服务端默认 media m3u8 是每段独立 URL 的通用写法；Safari 原生 HLS 用原始 EXT-X-MAP + BYTERANGE 写法 */
@@ -567,6 +574,7 @@
       this.generation = 0;
       this.base = 0;
       this.quotaWaitUntil = 0;
+      this.flacByteRate = 0;
       this.next = null;
       this.nextSerial = 0;
       this.trackSerial = 0;
@@ -683,10 +691,15 @@
       this.stallTimer = setTimeout(() => this.watchStall(gen), 1000);
       if (this.busy) return; // 正在取数据，取完 pump 会自行继续
       this.quotaWaitUntil = 0;
+      // 当前曲目结尾处（等下一首）不算卡住
+      const atEnd = a.currentTime >= this.base + this.playlist.duration - 0.5;
+      // 播放位置没有缓冲：已记为追加的数据被浏览器按配额淘汰，记录不可信，从播放位置重新缓冲。
+      // 不能先看 target()：窗口后面还有分段待追加时只会继续往前追加，空洞永远补不上
+      if (!atEnd && this.bufferedAhead() < 0.3) { this.interrupt(gen); return; }
       const target = this.target();
       if (target && !target.tail) { this.pump(gen); return; }
-      // 认为都已就绪却没有缓冲：记录不可信，从播放位置重新缓冲。当前曲目结尾处（等下一首）不算
-      if (a.currentTime < this.base + this.playlist.duration - 0.5) this.interrupt(gen);
+      // 认为都已就绪却没有缓冲：同上，从播放位置重新缓冲
+      if (!atEnd) this.interrupt(gen);
     }
 
     /**
@@ -819,10 +832,20 @@
       return this.base + duration;
     }
 
-    async evict(gen) {
-      const cut = this.audio.currentTime - (this.transcoder ? 2 : BEHIND_SECONDS);
+    /** 移除播放位置之前的缓冲；只有 slack 秒以内的已播数据时不单独发起 remove */
+    async evict(gen, slack = 0) {
+      const cut = this.audio.currentTime - (this.transcoder ? FLAC_BEHIND_SECONDS : BEHIND_SECONDS);
       if (cut <= 1 || this.sb.updating) return;
+      const b = this.sb.buffered;
+      if (!b.length || b.start(0) >= cut - slack) return;
       await this.remove(0, cut, gen);
+    }
+
+    /** FLAC 缓冲窗口（秒）：按实测码率让已播部分、窗口与窗口末尾的整段合计不超过 FLAC_BUFFER_BYTES */
+    flacAhead(segment) {
+      if (!this.flacByteRate) return FLAC_AHEAD_SECONDS;
+      const seconds = FLAC_BUFFER_BYTES / this.flacByteRate - FLAC_BEHIND_SECONDS - 1 - (segment ? segment.duration : 0);
+      return Math.min(FLAC_AHEAD_SECONDS, Math.max(FLAC_MIN_AHEAD_SECONDS, seconds));
     }
 
     ready(i, track = this) {
@@ -837,9 +860,9 @@
     target() {
       const now = this.audio.currentTime;
       const flacQueue = this.transcoder || (this.next && this.next.transcoder);
-      const ahead = flacQueue ? FLAC_AHEAD_SECONDS : AHEAD_SECONDS;
       const { segments } = this.playlist;
       const startIndex = segmentAt(segments, now - this.base);
+      const ahead = flacQueue ? this.flacAhead(segments[startIndex]) : AHEAD_SECONDS;
       for (let i = startIndex; i < segments.length; i++) {
         if (this.base + segments[i].time > now + ahead) return null;
         if (!this.ready(i)) return { track: this, index: i };
@@ -929,8 +952,17 @@
             queue = await this.fetchRange(segments[target], gen, signal, track);
             if (stale()) throw new DOMException('stale seek', 'AbortError');
             track.pendingSegments.set(target, queue);
+            // 取峰值：码率高的段落也不能让窗口超出配额
+            const seconds = segments[target].duration;
+            if (seconds > 0) {
+              const rate = queue.reduce((sum, buf) => sum + buf.byteLength, 0) / seconds;
+              this.flacByteRate = Math.max(this.flacByteRate, rate);
+            }
           }
           while (queue.length) {
+            if (stale()) throw new DOMException('stale seek', 'AbortError');
+            // 先主动淘汰已播部分：等到 QuotaExceededError 时，浏览器已经从缓冲末尾删过未播的数据
+            await this.evict(gen, 1);
             if (stale()) throw new DOMException('stale seek', 'AbortError');
             try {
               await this.append(queue[0], gen);
@@ -1012,6 +1044,7 @@
       this.next = this.initBuf = this.initId = this.discardFrom = null;
       this.base = 0;
       this.quotaWaitUntil = 0;
+      this.flacByteRate = 0;
       this.stallLastTime = null;
       this.busy = false;
       this.failed = false;
