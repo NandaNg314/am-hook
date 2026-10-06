@@ -92,11 +92,38 @@ jobs:
         with:
           path: artifacts
 
+      - name: Extract release notes from changelogs
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          section() {
+            awk -v tag="$tag" '
+              /^## / { if (found) exit; if ($2 == tag) { found = 1; next } }
+              found { print }
+            ' "$1"
+          }
+          zh="$(section CHANGELOG.md)"
+          en="$(section CHANGELOG.en.md)"
+          download="$(awk '
+            /^### / { if (found) exit; if (/Download/) found = 1 }
+            found { sub(/^### /, "## "); print }
+          ' .github/RELEASE_TEMPLATE.md)"
+          if [ -z "$zh" ] && [ -z "$en" ]; then
+            echo "::warning::No changelog section found for $tag"
+          fi
+          {
+            if [ -n "$zh" ]; then printf '## 更新内容\n%s\n\n' "$zh"; fi
+            if [ -n "$en" ]; then printf '## What'"'"'s Changed\n%s\n\n' "$en"; fi
+            if [ -n "$download" ]; then printf '%s\n\n' "$download"; fi
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           draft: false
           prerelease: false
+          body_path: release-notes.md
           generate_release_notes: true
           files: |
             artifacts/**/*
