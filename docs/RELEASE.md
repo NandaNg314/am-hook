@@ -98,6 +98,6 @@ Unix 系统会自动完成更新：
 
 - 在 Ubuntu、Windows、macOS 上运行 `cargo check`
 - 运行 `cargo build`
-- 运行 `cargo test`
+- 运行 `cargo test --workspace`（含 `crates/` 下各 crate 的单元测试）
 
-这确保代码在所有平台上都能正常编译。
+需要真实 Apple CDN 或 wrapper-lite 的端到端测试默认忽略，不在 CI 中运行，发布前请在本地执行 `cargo test --test e2e_test -- --ignored`。
