@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v0.2.1 (2026-10-06)
+
+### Bug Fixes
+- 🐛 Compare versions numerically; v0.10.0 and later were treated as older releases
+- 🐛 Check for updates in the background with timeouts, so an unreachable GitHub no longer delays startup
+- 🐛 Report a clear HTTP error on non-2xx responses such as GitHub API rate limiting
+- 🐛 `--auto-update` on an unsupported platform now reports an error instead of crashing
+- 🐛 On Linux/macOS the executable is replaced atomically; it stays intact if any step fails
+- 🐛 The Windows manual update steps name the actual exe file
+
+### Other
+- CI runs tests for the whole workspace; end-to-end tests that need the live CDN / wrapper-lite are ignored by default
+- Upgraded GitHub Actions to current versions (Node.js 24)
+
 ## v0.2.0 (2026-10-05)
 
 ### New Features
