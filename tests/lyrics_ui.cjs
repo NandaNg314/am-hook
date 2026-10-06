@@ -19,6 +19,16 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
     l.words.map((w, i) => `<span begin="00:${String(l.begin + i).padStart(2, '0')}.000" end="00:${String(l.begin + i + 1).padStart(2, '0')}.000">${w.trim()}</span>${w.endsWith(' ') ? ' ' : ''}`).join('')
   }</p>`).join('')
 }</div></body></tt>`;
+// AMLL TTML DB 的写法：翻译与音译写在行内（ttm:role），和声里也有行内翻译，作者在 amll:meta
+const pad = n => String(n).padStart(2, '0');
+const amllLines = [['L1', 1, 4, 'Amll first', '第一行'], ['L2', 5, 8, 'Amll second', '第二行'], ['L3', 9, 12, 'Amll third', '第三行']];
+const amllTtml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:amll="http://www.example.com/ns/amll" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xml:lang="en"><head><metadata><ttm:agent type="person" xml:id="v1"/><amll:meta key="appleMusicId" value="123456789"/><amll:meta key="ttmlAuthorGithubLogin" value="lyricist"/></metadata></head><body dur="00:14.000"><div xmlns="" begin="00:01.000" end="00:12.000">${
+  amllLines.map(([key, begin, end, text, tr]) => `<p begin="00:${pad(begin)}.000" end="00:${pad(end)}.000" ttm:agent="v1" itunes:key="${key}">${
+    text.split(' ').map((w, i) => `<span begin="00:${pad(begin + i)}.000" end="00:${pad(begin + i + 1)}.000">${w}</span>`).join(' ')
+  }<span ttm:role="x-translation" xml:lang="zh-CN">${tr}</span><span ttm:role="x-roman">${text.toLowerCase()}</span>${
+    key === 'L2' ? '<span ttm:role="x-bg" begin="00:07.000" end="00:08.000"><span begin="00:07.000" end="00:08.000">(echo)</span><span ttm:role="x-translation" xml:lang="zh-CN">回声</span></span>' : ''
+  }</p>`).join('')
+}</div></body></tt>`;
 
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -29,8 +39,17 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         const context = await browser.newContext({ viewport: { width, height: 844 } });
         await context.addInitScript(() => localStorage.setItem('am-hook:lang', 'zh'));
         const lyricRequests = [];
+        const amllRequests = [];
+        let amllHasSong = true;
         await context.route('**/*', async route => {
           const url = new URL(route.request().url());
+          if (url.hostname === 'api.amll.dev') {
+            amllRequests.push(url.pathname + url.search);
+            const headers = { 'access-control-allow-origin': '*' };
+            return amllHasSong
+              ? route.fulfill({ headers, json: { status: 200, data: { id: 1, format: 'ttml', appleMusicIds: ['123456789'], authorUsernames: ['lyricist'], lyrics: amllTtml } } })
+              : route.fulfill({ status: 404, headers, json: { status: 404, error: 'Not Found', message: 'No lyrics found for the provided query.' } });
+          }
           // 歌曲信息经 /amp 代理取自 amp-api 的 songs 资源；地区语言信息取不到时页面退回默认写法
           if (/^\/amp\/v1\/catalog\/[a-z]{2}\/songs\//.test(url.pathname)) {
             return route.fulfill({ json: { data: [{ id: url.pathname.split('/').pop(), type: 'songs', attributes: { name: 'Lyric song', artistName: 'Artist' } }] } });
@@ -158,6 +177,80 @@ const ttml = `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.a
         await page.evaluate(() => AmI18n.toggle()); // the overlay covers the page's language button
         assert.equal(await page.locator('.credit-names').textContent(), 'Writer A, Writer B');
         assert.equal(await page.locator('.lyrics-close').getAttribute('aria-label'), 'Close lyrics');
+
+        // 歌词选项：字号与字重在菜单里连续调整（菜单不关闭），保存在浏览器中
+        const lyricStyle = () => page.locator('.amll-lyric-player').evaluate(el => {
+          const style = getComputedStyle(el);
+          return { size: parseFloat(style.fontSize), weight: style.fontWeight };
+        });
+        const prefs = () => page.evaluate(() => JSON.parse(localStorage.getItem('am-hook:lyrics-prefs') || 'null'));
+        const base = await lyricStyle();
+        assert.equal(base.weight, '600');
+        await openMenu();
+        await page.locator('[data-action="fontLarger"]').click();
+        await page.locator('[data-action="fontLarger"]').click();
+        await page.locator('[data-action="weightBolder"]').click();
+        assert(await page.locator('.lyrics-menu').isVisible(), 'the menu stays open while adjusting');
+        assert.deepEqual(await page.locator('.lyrics-menu-value').allTextContents(), ['120%', 'Bold']);
+        const larger = await lyricStyle();
+        assert(Math.abs(larger.size / base.size - 1.2) < 0.01, `font size scales: ${base.size} -> ${larger.size}`);
+        assert.equal(larger.weight, '700');
+        assert.deepEqual(await prefs(), { scale: 1.2, weight: 700, source: 'apple' });
+        await page.locator(lineSel).filter({ hasText: 'Third line' }).waitFor({ state: 'visible', timeout: 2000 });
+        await page.screenshot({ path: `target/ui-lyrics-options-${width}.png` });
+        await page.locator('[data-action="weightBolder"]').click();
+        assert(await page.locator('[data-action="weightBolder"]').isDisabled(), 'the heaviest weight disables Bolder');
+        await page.locator('[data-action="fontSmaller"]').click();
+        await page.locator('[data-action="fontSmaller"]').click();
+        await page.locator('[data-action="weightLighter"]').click();
+        await page.locator('[data-action="weightLighter"]').click();
+        assert.deepEqual(await lyricStyle(), base, 'back to the default size and weight');
+
+        // 下载正在显示的 TTML 原文
+        const [appleDownload] = await Promise.all([page.waitForEvent('download'), page.locator('[data-action="download"]').click()]);
+        assert.equal(appleDownload.suggestedFilename(), 'Lyric song.ttml');
+        assert.equal(fs.readFileSync(await appleDownload.path(), 'utf8'), ttml);
+        assert(await page.locator('.lyrics-menu').isHidden(), 'downloading closes the menu');
+
+        // 歌词来源：默认不请求 AMLL 歌词库；未收录时提示并改用 Apple Music 歌词，菜单里说明原因
+        assert.deepEqual(amllRequests, [], 'the AMLL TTML DB is only contacted when chosen');
+        await openMenu();
+        assert.equal(await page.locator('[data-action="source"][aria-checked="true"]').getAttribute('data-value'), 'apple');
+        amllHasSong = false;
+        await page.locator('[data-action="source"][data-value="amll"]').click();
+        await page.locator('#toast:not([hidden])').filter({ hasText: 'AMLL' }).waitFor();
+        assert.equal(await page.locator('#toast').textContent(), await page.evaluate(() => AmI18n.t('lyrics.amllMissing')));
+        await openMenu();
+        assert.equal(await page.locator('.lyrics-menu-note').textContent(), await page.evaluate(() => AmI18n.t('lyrics.amllMissing')));
+        await page.locator(lineSel).filter({ hasText: 'Second line' }).waitFor({ state: 'visible', timeout: 2000 }); // Apple Music lyrics stay
+        await page.locator('[data-action="source"][data-value="apple"]').click();
+        assert.equal((await prefs()).source, 'apple');
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('lyrics-translation-button')), true, 'focus returns to the options button');
+        // 收录时按 Apple Music 歌曲 ID 取歌词，行内翻译与和声照常显示
+        amllHasSong = true;
+        amllRequests.length = 0;
+        await openMenu();
+        await page.locator('[data-action="source"][data-value="amll"]').click();
+        await page.locator(lineSel).filter({ hasText: 'Amll second' }).first().waitFor({ state: 'visible', timeout: 3000 });
+        assert.deepEqual(amllRequests, ['/v1/lyrics/get?appleMusicId=123456789']);
+        const mainLines = await page.evaluate(sel => [...document.querySelectorAll(sel)].map(el => el.querySelector('[class*="_lyricMainLine"]')?.textContent.trim()), lineSel);
+        assert.deepEqual(mainLines, ['Amll first', 'Amll second', 'Amll third']);
+        const playerText = await page.locator('.amll-lyric-player').textContent();
+        assert(playerText.includes('echo') && !playerText.includes('(echo)') && playerText.includes('回声'), 'background vocal with its translation');
+        assert(mainLines.every(text => !/第|amll/.test(text)), `inline translations stay out of the words: ${mainLines}`);
+        await page.locator(lineSel).filter({ hasText: '第二行' }).first().waitFor({ state: 'visible', timeout: 2000 });
+        assert((await page.locator('.lyrics-credits').textContent()).includes('@lyricist'), 'credits the AMLL TTML author');
+        assert.equal((await prefs()).source, 'amll');
+        await openMenu();
+        const [amllDownload] = await Promise.all([page.waitForEvent('download'), page.locator('[data-action="download"]').click()]);
+        assert.equal(fs.readFileSync(await amllDownload.path(), 'utf8'), amllTtml, 'downloads the AMLL TTML');
+        await page.screenshot({ path: `target/ui-lyrics-amll-${width}.png` });
+        // 换回 Apple Music：用已取到的歌词，不再请求
+        await openMenu();
+        await page.locator('[data-action="source"][data-value="apple"]').click();
+        await page.locator(lineSel).filter({ hasText: 'Second line' }).waitFor({ state: 'visible', timeout: 3000 });
+        assert.equal((await prefs()).source, 'apple');
+        assert(!(await page.locator('.lyrics-credits').textContent()).includes('@lyricist'));
 
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `overflow at ${width}`);
         const panel = await page.locator('.lyric-panel').boundingBox();

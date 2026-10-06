@@ -1,4 +1,8 @@
-/** Parse the Apple lyric dialect. All times in the public model are milliseconds. */
+/**
+ * Parse the Apple lyric dialect, and the AMLL TTML DB dialect (https://github.com/amll-dev/amll-ttml-db), which writes
+ * translations and romanizations inline as <span ttm:role="x-translation|x-roman"> and credits authors in <amll:meta>.
+ * All times in the public model are milliseconds.
+ */
 export function parseTime(value = '0') {
   const parts = String(value).split(':');
   if (parts.length > 3 || parts.some(part => !/^\d+(?:\.\d+)?$/.test(part))) {
@@ -12,12 +16,17 @@ const META = 'http://www.w3.org/ns/ttml#metadata';
 const XML = 'http://www.w3.org/XML/1998/namespace';
 const children = (node, name) => [...(node?.children || [])].filter(child => child.localName === name);
 const child = (node, name) => children(node, name)[0];
-const cleanText = node => node?.textContent.trim().replace(/\s+/g, ' ') || '';
 const attribute = (node, ns, name, fallback = '') => node?.getAttributeNS(ns, name) || fallback;
-const isBackground = node => attribute(node, META, 'role') === 'x-bg';
+const role = node => attribute(node, META, 'role');
+const isBackground = node => role(node) === 'x-bg';
+const inline = (node, name) => children(node, 'span').find(span => role(span) === name);
+// Text of the node itself, without background vocals or inline translations
+const cleanText = node => [...(node?.childNodes || [])]
+  .filter(n => n.nodeType === 3 || (n.nodeType === 1 && !role(n)))
+  .map(n => n.textContent).join('').trim().replace(/\s+/g, ' ');
 
 function tokens(node) {
-  return children(node, 'span').filter(span => !isBackground(span)).map(span => ({
+  return children(node, 'span').filter(span => !role(span)).map(span => ({
     begin: parseTime(span.getAttribute('begin') || '0'),
     end: parseTime(span.getAttribute('end') || '0'),
     text: span.textContent || '',
@@ -36,6 +45,8 @@ function localization(metadata, collection, element) {
 }
 
 function readVoice(node, translation, pronunciation) {
+  translation ||= inline(node, 'x-translation');
+  pronunciation ||= inline(node, 'x-roman');
   return {
     text: cleanText(node), tokens: tokens(node),
     translation: translation?.textContent.trim() || '',
@@ -53,7 +64,9 @@ export function parseTTML(xml, Parser = globalThis.DOMParser) {
   const root = document.documentElement;
   const body = child(root, 'body');
   if (!body) throw new Error('TTML 缺少 body');
-  const metadata = child(child(child(root, 'head'), 'metadata'), 'iTunesMetadata');
+  const head = child(child(root, 'head'), 'metadata');
+  const metadata = child(head, 'iTunesMetadata');
+  const amllMeta = key => children(head, 'meta').filter(meta => meta.getAttribute('key') === key).map(meta => meta.getAttribute('value'));
   const translation = localization(metadata, 'translations', 'translation');
   const pronunciation = localization(metadata, 'transliterations', 'transliteration');
   const sections = children(body, 'div').map((section, sectionIndex) => ({
@@ -81,6 +94,7 @@ export function parseTTML(xml, Parser = globalThis.DOMParser) {
     duration: parseTime(body.getAttribute('dur') || '0'),
     sections, lines: sections.flatMap(section => section.lines),
     credits: children(child(metadata, 'songwriters'), 'songwriter').map(cleanText),
+    authors: amllMeta('ttmlAuthorGithubLogin'),
     translation: { language: translation.language, type: translation.type, automatic: translation.automatic },
     pronunciation: { language: pronunciation.language, automatic: pronunciation.automatic },
   };

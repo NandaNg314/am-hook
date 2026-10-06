@@ -3,7 +3,10 @@
  *
  *   歌词     GET /lyrics/<adamId>?language=<曲库语言>（服务端向 wrapper-lite /lyrics 获取的 TTML 原文），
  *            language 取歌曲所在地区的曲库语言（AmI18n.catalogLang：选定的语言，否则为地区默认语言），取不到时不传；首次打开歌词界面时才请求并缓存；没有歌词时隐藏按钮。
- *            ttml.mjs 解析 Apple TTML，toAmllLines() 转成 AMLL 的 LyricLine
+ *            歌词来源选 AMLL 歌词库时先由浏览器直接请求 AMLL TTML DB（https://amll.dev/reference/http-api/overview，允许跨域）的
+ *            GET /v1/lyrics/get?appleMusicId=<adamId>，未收录或请求失败时仍用上面的 Apple Music 歌词。
+ *            ttml.mjs 解析 TTML，toAmllLines() 转成 AMLL 的 LyricLine
+ *   选项     原来的「歌词翻译」按钮弹出的菜单：翻译 / 发音、字号、字重、歌词来源、下载当前显示的 TTML；除翻译 / 发音外都保存在浏览器中
  *   时间     每帧把 player.transport().currentTime 交给 DomLyricPlayer，点击歌词行跳转并继续播放
  *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景
  *
@@ -26,6 +29,10 @@ const MENU_ICONS = {
   showTranslation: '<svg width="16" height="16" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2" viewBox="0 0 133 133"><g fill-rule="nonzero"><path d="M45.928,39.077L86.723,39.077C88.495,39.077 89.739,37.958 89.739,36.341C89.739,34.724 88.444,33.594 86.723,33.594L45.928,33.594C44.218,33.594 42.974,34.724 42.974,36.341C42.974,37.958 44.166,39.077 45.928,39.077ZM58.696,54.689L64.254,54.689C67.361,54.689 69.32,52.69 69.32,49.583L69.371,32.875L78.698,26.305C79.828,25.569 80.295,24.449 80.295,23.402C80.295,21.732 79.019,20.219 76.863,20.219L54.156,20.219C52.239,20.219 50.85,21.483 50.85,23.173C50.85,24.893 52.187,26.064 54.156,26.064L76.739,26.064L76.739,21.867L65.538,29.618C63.785,30.81 63.267,32.158 63.267,34.356L63.319,48.843L58.696,48.843C56.769,48.843 55.442,50.025 55.442,51.746C55.442,53.456 56.79,54.689 58.696,54.689ZM45.94,23.567C47.609,23.567 48.698,22.334 48.698,20.521L48.698,16.318L83.859,16.318L83.859,20.521C83.859,22.344 84.968,23.567 86.595,23.567C88.264,23.567 89.384,22.334 89.384,20.521L89.384,13.571C89.384,11.965 88.109,10.886 86.388,10.886L46.251,10.886C44.437,10.886 43.193,11.965 43.193,13.571L43.193,20.521C43.193,22.334 44.282,23.567 45.94,23.567ZM64.575,13.977L70.182,11.925L67.803,5.255C67.181,3.669 65.482,2.902 63.906,3.462C62.341,4.021 61.574,5.721 62.123,7.359L64.575,13.977Z" class="lang-zh" transform="translate(-14.82 19.351) scale(1.2236)"/><path d="M50.179,51.898C51.951,51.898 53.184,51.038 53.961,48.769L57.507,38.396L74.958,38.396L78.545,48.769C79.271,51.028 80.514,51.898 82.297,51.898C84.483,51.898 85.913,50.53 85.913,48.51C85.913,47.784 85.747,47.049 85.364,46.003L71.682,9.117C70.75,6.599 68.854,5.304 66.181,5.304C63.559,5.304 61.767,6.599 60.783,9.117L47.091,46.003C46.759,47.049 46.593,47.784 46.593,48.499C46.593,50.541 48.023,51.898 50.179,51.898ZM59.466,32.499L65.953,13.628L66.502,13.628L72.988,32.499L59.466,32.499Z" class="lang-en" transform="translate(-14.82 19.351) scale(1.2236)"/></g></svg>',
   hideTranslation: '<svg width="16" height="16" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2" viewBox="0 0 133 133"><g fill-rule="nonzero"><path d="M63.055,74.43L63.097,86.115L57.441,86.115C55.083,86.115 53.459,87.562 53.459,89.668C53.459,91.76 55.108,93.269 57.441,93.269L64.241,93.269C68.043,93.269 70.44,90.823 70.44,87.021L70.456,81.813L63.055,74.43ZM56.065,67.457L41.818,67.457C39.725,67.457 38.203,68.84 38.203,70.818C38.203,72.797 39.662,74.166 41.818,74.166L62.79,74.166L56.065,67.457ZM87.718,67.457L93.881,73.613C94.841,73.035 95.425,72.044 95.425,70.818C95.425,68.84 93.84,67.457 91.734,67.457L87.718,67.457ZM71.332,51.091L80.081,59.83L81.915,58.538C83.298,57.638 83.869,56.267 83.869,54.986C83.869,52.943 82.308,51.091 79.67,51.091L71.332,51.091ZM63.233,39.671L59.899,39.671L66.553,46.318L88.23,46.318L88.23,51.461C88.23,53.691 89.587,55.188 91.578,55.188C93.62,55.188 94.99,53.679 94.99,51.461L94.99,42.957C94.99,40.992 93.43,39.671 91.324,39.671L63.233,39.671L71.041,39.671L68.584,32.781C67.823,30.841 65.744,29.902 63.815,30.587C61.901,31.271 60.962,33.352 61.634,35.356L63.233,39.671ZM41.832,55.188C42.422,55.188 42.952,55.062 43.408,54.83L38.471,49.905L38.471,51.461C38.471,53.679 39.804,55.188 41.832,55.188Z" class="lang-zh"/><path d="M50.819,62.224L43.241,82.64C42.834,83.92 42.631,84.82 42.631,85.695C42.631,88.193 44.381,89.854 47.019,89.854C49.187,89.854 50.696,88.801 51.647,86.025L55.986,73.333L61.955,73.333L50.819,62.224ZM59.382,39.155L59.994,37.507C61.198,34.426 63.391,32.841 66.599,32.841C69.87,32.841 72.19,34.426 73.33,37.507L82.51,62.256L68.944,48.706L66.992,43.027L66.32,43.027L65.538,45.303L59.382,39.155Z" class="lang-en"/></g></svg>',
   showPronunciation: '<svg width="17" height="16" viewBox="0 0 17 16"><path d="M3.95 15.45c.16.19.38.28.66.28.2 0 .4-.05.57-.16.17-.1.38-.26.62-.48l2.43-2.23h4.4a3.7 3.7 0 0 0 1.8-.4c.5-.28.88-.67 1.14-1.19.26-.5.4-1.13.4-1.86v-5.7c0-.72-.14-1.34-.4-1.85s-.64-.9-1.14-1.18a3.7 3.7 0 0 0-1.8-.41H3.37a3.7 3.7 0 0 0-1.82.4C1.06.96.7 1.36.43 1.87c-.26.5-.4 1.13-.4 1.86v5.7c0 .72.14 1.34.4 1.85.27.52.64.9 1.13 1.18.5.27 1.08.41 1.77.41h.38v1.8c0 .34.08.6.24.79Zm3.27-3.52L5 14.26v-2.11c0-.23-.05-.38-.14-.47-.1-.1-.24-.14-.44-.14h-.96c-.67 0-1.16-.17-1.48-.52-.32-.35-.48-.87-.48-1.56V3.81c0-.68.16-1.2.48-1.55.32-.34.81-.52 1.48-.52h9.1c.66 0 1.16.18 1.48.52.32.35.48.87.48 1.55v5.65c0 .7-.16 1.2-.48 1.56-.32.35-.82.52-1.48.52H8.16c-.22 0-.39.03-.52.08s-.27.15-.42.31Zm-4.29-6.5c0-.41.32-.74.7-.74h4.39c.39 0 .7.33.7.73 0 .4-.31.74-.7.74H3.64a.72.72 0 0 1-.7-.74Zm.7 1.46c-.38 0-.7.34-.7.74 0 .4.32.74.7.74h1.5c.38 0 .7-.33.7-.74 0-.4-.32-.74-.7-.74h-1.5Zm6.54-1.47c0-.4.32-.73.7-.73h1.5c.38 0 .7.33.7.73 0 .4-.32.74-.7.74h-1.5a.72.72 0 0 1-.7-.74ZM7.98 6.9c-.39 0-.7.34-.7.74 0 .4.31.74.7.74h2.21c.39 0 .7-.33.7-.74 0-.4-.31-.74-.7-.74H8Z"/></svg>',
+  check: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M6.3 13.2c-.3 0-.52-.12-.72-.36L2.3 8.9a.9.9 0 0 1-.22-.57c0-.45.33-.77.78-.77.27 0 .46.1.64.32l2.77 3.4 5.42-8.5c.19-.3.39-.42.69-.42.45 0 .77.31.77.75 0 .17-.06.35-.18.54L7.03 12.8c-.17.26-.41.4-.73.4Z"/></svg>',
+  download: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 10.9c-.2 0-.37-.08-.53-.23L4.4 7.7a.7.7 0 0 1-.22-.5c0-.4.3-.7.7-.7.2 0 .38.08.5.22l1.4 1.48.52.6-.05-1.27V1.75c0-.42.33-.75.75-.75s.76.33.76.75v5.78l-.05 1.27.52-.6 1.4-1.48a.68.68 0 0 1 .5-.22c.4 0 .7.3.7.7 0 .2-.07.36-.22.5l-3.07 2.97c-.16.15-.33.23-.53.23ZM3.3 15c-1.53 0-2.3-.76-2.3-2.28V10.4c0-.42.33-.75.75-.75s.75.33.75.75v2.3c0 .52.28.79.8.79h9.4c.52 0 .8-.27.8-.79v-2.3c0-.42.33-.75.75-.75s.75.33.75.75v2.32C15 14.24 14.23 15 12.7 15H3.3Z"/></svg>',
+  minus: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.75 8.75a.75.75 0 0 1 0-1.5h10.5a.75.75 0 0 1 0 1.5H2.75Z"/></svg>',
+  plus: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 14c-.42 0-.75-.33-.75-.75v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5a.75.75 0 0 1 1.5 0v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5c0 .42-.33.75-.75.75Z"/></svg>',
   hidePronunciation: '<svg width="16" height="16" viewBox="0 0 16 16" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2"><path d="m.93 2.9 1.19 1.19-.02.03c-.31.38-.47.92-.47 1.6v6.34c0 .77.2 1.35.57 1.74.38.39.96.58 1.74.58h1.14c.23 0 .4.05.51.15.1.1.16.28.16.53v2.37l2.63-2.6c.18-.19.35-.3.5-.36.15-.06.35-.09.6-.09h2.94l1.64 1.64H9.57l-2.84 2.51c-.28.25-.52.43-.73.55-.2.12-.42.18-.65.18-.34 0-.6-.1-.78-.32a1.3 1.3 0 0 1-.28-.88v-2.04h-.45c-.8 0-1.49-.16-2.06-.47a3.17 3.17 0 0 1-1.32-1.33 4.43 4.43 0 0 1-.46-2.1V5.67c0-.82.15-1.52.46-2.1.13-.25.28-.47.47-.67ZM1.04 0c.19 0 .34.07.48.2l16.72 16.7c.13.14.2.3.2.48s-.07.33-.2.46a.6.6 0 0 1-.47.2.64.64 0 0 1-.47-.2L.57 1.14A.64.64 0 0 1 .38.65C.38.47.45.32.58.2.7.07.85 0 1.03 0ZM14.7 1.77c.83 0 1.54.16 2.12.47.58.3 1.02.75 1.33 1.33.3.58.45 1.28.45 2.1v6.45c0 .82-.15 1.52-.45 2.1-.14.26-.3.49-.5.7l-1.19-1.2.05-.05c.3-.38.46-.92.46-1.61V5.72c0-.76-.2-1.34-.57-1.73-.38-.39-.96-.58-1.75-.58h-8.5L4.5 1.77h10.2ZM6.36 9.08a.83.83 0 1 1 0 1.66H4.71a.83.83 0 1 1 0-1.66h1.65Zm5.53 0c.46 0 .83.37.83.83v.07l-.9-.9h.07ZM4.4 6.38 6 7.97H4.7a.83.83 0 0 1-.3-1.6Zm9.7-.06a.83.83 0 1 1 0 1.66h-1.66a.83.83 0 1 1 0-1.66h1.66Zm-4.42 0a.83.83 0 0 1 .68 1.3l-1.3-1.3h.62Z" style="fill-rule:nonzero" transform="translate(.4 .14) scale(.81615)"/></svg>',
 };
 
@@ -111,6 +118,38 @@ function saveShown(shown) {
   try { if (shown) localStorage.removeItem(SHOWN_KEY); else localStorage.setItem(SHOWN_KEY, '1'); } catch { /* 只在本次会话生效 */ }
 }
 
+/** 歌词选项：字号（AMLL 默认字号的倍数）、字重与歌词来源，保存在浏览器中 */
+const PREFS_KEY = 'am-hook:lyrics-prefs';
+export const FONT_SCALES = [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5];
+export const FONT_WEIGHTS = [300, 400, 500, 600, 700, 800];
+const DEFAULT_PREFS = { scale: 1, weight: 600, source: 'apple' };
+function loadPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    return {
+      scale: FONT_SCALES.includes(saved.scale) ? saved.scale : DEFAULT_PREFS.scale,
+      weight: FONT_WEIGHTS.includes(saved.weight) ? saved.weight : DEFAULT_PREFS.weight,
+      source: saved.source === 'amll' ? 'amll' : DEFAULT_PREFS.source,
+    };
+  } catch { return { ...DEFAULT_PREFS }; }
+}
+function savePrefs(prefs) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* 只在本次会话生效 */ }
+}
+
+/** AMLL TTML DB（https://amll.dev/reference/http-api/native）：按 Apple Music 歌曲 ID 取 TTML，未收录时为 null */
+const AMLL_API = 'https://api.amll.dev';
+async function fetchAmll(adamId) {
+  const response = await fetch(`${AMLL_API}/v1/lyrics/get?appleMusicId=${encodeURIComponent(adamId)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`AMLL HTTP ${response.status}`);
+  const { data } = await response.json();
+  return data?.lyrics ? { text: data.lyrics, source: 'amll', authors: data.authorUsernames || [] } : null;
+}
+
+/** 文件名里不能用的字符换成 _ */
+const safeName = (name) => name.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').trim().slice(0, 120);
+
 /**
  * root：#lyrics-overlay；toggle：播放条上的歌词按钮（打开歌词；展开界面里切换是否显示歌词）；bar：播放条，
  * 点击其中非控件区域（封面、标题、空白处）展开界面（没有歌词时也能展开）；歌词界面打开时并入 .lyrics-controls。
@@ -125,7 +164,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   const follow = $('.lyrics-follow');
   const titleMarquee = new globalThis.AmHook.Marquee($('.lyrics-title'));
   const artistMarquee = new globalThis.AmHook.Marquee($('.lyrics-artist'));
-  // 翻译 / 发音：同 music.apple.com，一个「歌词翻译」按钮弹出菜单切换；开关在切歌后保留
+  // 翻译 / 发音：同 music.apple.com，一个「歌词翻译」按钮弹出菜单切换；开关在切歌后保留。
+  // 同一菜单里还有字号、字重、歌词来源与下载 TTML
   const translationMenu = $('.lyrics-translation-menu');
   const translationButton = $('.lyrics-translation-button');
   const menu = $('.lyrics-menu');
@@ -144,6 +184,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   }
   const shown = { translation: false, pronunciation: false };
   const has = { translation: false, pronunciation: false };
+  const prefs = loadPrefs();
   const view = new DomLyricPlayer();
   $('.lyric-panel').append(view.getElement());
   const credits = document.createElement('div');
@@ -175,7 +216,17 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   let adamId = null;
   let country = null;
   let song = null;
+  // 正在显示的歌词：TTML 原文（下载用）、来源（'apple' | 'amll'）与 AMLL 歌词库的作者
+  let lyricsText = '';
+  let lyricsSource = null;
+  let amllAuthors = [];
+  // 选了 AMLL 歌词库却显示 Apple Music 歌词的原因：'missing'（未收录）或 'failed'（请求失败）
+  let amllStatus = null;
   let request = null;
+  // 这首歌各来源取到的结果（见 loadLyrics）
+  let sources = {};
+  // 每次切歌或改歌词来源加一，较早的请求返回时据此忽略
+  let generation = 0;
   let unavailable = false;
   let open = false;
   let frame = 0;
@@ -247,6 +298,50 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
       note.textContent = t('lyrics.aiTranslation');
       credits.append(note);
     }
+    if (lyricsSource === 'amll') {
+      const note = document.createElement('div');
+      note.className = 'source-note';
+      note.textContent = amllAuthors.length
+        ? t('lyrics.amllCredit', { authors: amllAuthors.map((name) => `@${name}`).join(t('lyrics.creditsSeparator')) })
+        : t('lyrics.amllCreditAnon');
+      credits.append(note);
+    }
+  }
+
+  /** 字号与字重写在歌词界面的 CSS 变量上（见 app.css 的 .lyric-panel） */
+  function applyPrefs() {
+    root.style.setProperty('--lyrics-font-scale', String(prefs.scale));
+    root.style.setProperty('--lyrics-font-weight', String(prefs.weight));
+  }
+
+  /** 改了字号或字重后重新排版：AMLL 只在尺寸变化时读取字号，行高要按新字号重新计算 */
+  function relayout() {
+    view.onResize();
+    if (!lyricsVisible || !song) return;
+    view.rebuildLyricView(currentTime());
+    view.setCurrentTime(currentTime(), true);
+    view.resetScroll();
+  }
+
+  /** 选定的来源没有这首歌的歌词、改用另一来源时的说明 */
+  function sourceNote() {
+    if (!lyricsSource || lyricsSource === prefs.source) return '';
+    if (prefs.source === 'apple') return t('lyrics.appleMissing');
+    return t(amllStatus === 'failed' ? 'lyrics.amllFailed' : 'lyrics.amllMissing');
+  }
+
+  /** 下载正在显示的歌词（Apple Music 或 AMLL 歌词库的 TTML 原文），文件名为「艺人 - 歌名.ttml」 */
+  function downloadTTML() {
+    if (!lyricsText) return;
+    const meta = getMeta();
+    const name = safeName([meta.artist, meta.title].filter(Boolean).join(' - ')) || adamId;
+    const url = URL.createObjectURL(new Blob([lyricsText], { type: 'application/ttml+xml' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: `${name}.ttml` });
+    a.style.display = 'none';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   /** 背景使用页面已有的封面；取不到封面或浏览器不支持 WebGL 时保留纯色背景 */
@@ -352,38 +447,121 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     toggle.focus({ preventScroll: true });
   }
 
-  /** 歌曲有翻译或发音时才显示按钮；开启任一项时图标反转 */
+  /** 有歌词时显示按钮（菜单里还有翻译以外的选项）；开启翻译或发音时图标反转 */
   function syncOptions() {
-    translationMenu.hidden = !(has.translation || has.pronunciation);
+    translationMenu.hidden = !song;
     setInverted(shown.translation || shown.pronunciation);
     if (!menu.hidden) renderMenu();
   }
 
-  /** 菜单项同 music.apple.com：已开启的显示「隐藏…」，否则「显示…」，歌曲没有的一项置灰 */
-  function renderMenu() {
-    const items = [
-      ['translation', has.translation && shown.translation ? 'hideTranslation' : 'showTranslation'],
-      ['pronunciation', has.pronunciation && shown.pronunciation ? 'hidePronunciation' : 'showPronunciation'],
-    ].map(([name, action]) => {
-      const button = document.createElement('button');
+  const menuNode = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  };
+  const menuItem = (child, role = 'none', className = '') => {
+    const item = menuNode('li', className);
+    item.setAttribute('role', role);
+    if (child) item.append(child);
+    return item;
+  };
+
+  /** 一个菜单项：option 为翻译 / 发音开关，action 为其他操作；checked 不为 undefined 时是单选项 */
+  function menuButton({ label, icon, option, action, value, checked, disabled }) {
+    const button = menuNode('button');
+    button.type = 'button';
+    button.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemradio');
+    if (checked !== undefined) button.setAttribute('aria-checked', String(checked));
+    if (option) button.dataset.option = option;
+    if (action) button.dataset.action = action;
+    if (value) button.dataset.value = value;
+    button.disabled = !!disabled;
+    button.title = label;
+    const iconNode = menuNode('span', 'lyrics-menu-icon');
+    if (icon) iconNode.innerHTML = MENU_ICONS[icon];
+    button.append(menuNode('span', 'lyrics-menu-text', label), iconNode);
+    return button;
+  }
+
+  /** 字号 / 字重一行：名称、减小按钮、当前值、增大按钮；到头时对应按钮置灰 */
+  function stepper(label, value, [less, canLess], [more, canMore]) {
+    const row = menuNode('div', 'lyrics-menu-stepper');
+    const step = (action, enabled, icon) => {
+      const button = menuNode('button', 'lyrics-menu-step');
       button.type = 'button';
       button.setAttribute('role', 'menuitem');
-      button.dataset.option = name;
-      button.disabled = !has[name];
+      button.dataset.action = action;
+      button.disabled = !enabled;
       button.title = t(`lyrics.${action}`);
-      const text = document.createElement('span');
-      text.className = 'lyrics-menu-text';
-      text.textContent = button.title;
-      const icon = document.createElement('span');
-      icon.className = 'lyrics-menu-icon';
-      icon.innerHTML = MENU_ICONS[action];
-      button.append(text, icon);
-      const item = document.createElement('li');
-      item.setAttribute('role', 'none');
-      item.append(button);
-      return item;
-    });
+      button.setAttribute('aria-label', `${button.title} (${label}: ${value})`);
+      button.innerHTML = MENU_ICONS[icon];
+      return button;
+    };
+    row.append(menuNode('span', 'lyrics-menu-text', label), step(less, canLess, 'minus'), menuNode('span', 'lyrics-menu-value', value), step(more, canMore, 'plus'));
+    return row;
+  }
+
+  /**
+   * 菜单分四组：翻译 / 发音（同 music.apple.com：已开启的显示「隐藏…」，否则「显示…」，歌曲没有的一项置灰）、
+   * 字号与字重、歌词来源（单选，选定的来源没有这首歌时在下面说明）、下载 TTML
+   */
+  function renderMenu() {
+    const scale = FONT_SCALES.indexOf(prefs.scale);
+    const weight = FONT_WEIGHTS.indexOf(prefs.weight);
+    const note = sourceNote();
+    const separator = () => menuItem(null, 'separator', 'lyrics-menu-separator');
+    const items = [
+      ...[
+        ['translation', has.translation && shown.translation ? 'hideTranslation' : 'showTranslation'],
+        ['pronunciation', has.pronunciation && shown.pronunciation ? 'hidePronunciation' : 'showPronunciation'],
+      ].map(([name, action]) => menuItem(menuButton({ label: t(`lyrics.${action}`), icon: action, option: name, disabled: !has[name] }))),
+      separator(),
+      menuItem(stepper(t('lyrics.fontSize'), `${Math.round(prefs.scale * 100)}%`,
+        ['fontSmaller', scale > 0], ['fontLarger', scale < FONT_SCALES.length - 1])),
+      menuItem(stepper(t('lyrics.fontWeight'), t(`lyrics.weight${prefs.weight}`),
+        ['weightLighter', weight > 0], ['weightBolder', weight < FONT_WEIGHTS.length - 1])),
+      separator(),
+      menuItem(menuNode('span', '', t('lyrics.source')), 'presentation', 'lyrics-menu-heading'),
+      ...['apple', 'amll'].map((source) => menuItem(menuButton({
+        label: t(source === 'apple' ? 'lyrics.sourceApple' : 'lyrics.sourceAmll'),
+        icon: prefs.source === source ? 'check' : '', action: 'source', value: source, checked: prefs.source === source,
+      }))),
+      ...(note ? [menuItem(menuNode('span', '', note), 'presentation', 'lyrics-menu-note')] : []),
+      separator(),
+      menuItem(menuButton({ label: t('lyrics.download'), icon: 'download', action: 'download', disabled: !lyricsText })),
+    ];
     menu.replaceChildren(...items);
+  }
+
+  /** 字号 / 字重按钮：在可选值里前后移一档 */
+  const STEPS = {
+    fontSmaller: ['scale', FONT_SCALES, -1], fontLarger: ['scale', FONT_SCALES, 1],
+    weightLighter: ['weight', FONT_WEIGHTS, -1], weightBolder: ['weight', FONT_WEIGHTS, 1],
+  };
+  function step(action) {
+    const [key, values, delta] = STEPS[action];
+    const index = Math.max(0, Math.min(values.length - 1, values.indexOf(prefs[key]) + delta));
+    if (values[index] === prefs[key]) return;
+    prefs[key] = values[index];
+    savePrefs(prefs);
+    applyPrefs();
+    relayout();
+  }
+
+  /** 改歌词来源后重新取这首歌的歌词；结果不是选定的来源时提示原因 */
+  function setSource(source) {
+    if (source === prefs.source) return;
+    prefs.source = source;
+    savePrefs(prefs);
+    // 还没请求过的歌曲在打开时按新来源请求；正在加载的按新来源重新请求
+    if (!adamId || !request || lyricsSource === source) return;
+    const id = adamId;
+    request = null;
+    fetchLyrics().then(() => {
+      const note = id === adamId && sourceNote();
+      if (note) notify(note);
+    });
   }
 
   /**
@@ -418,30 +596,66 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (focusButton) translationButton.focus({ preventScroll: true });
   }
 
-  /** 首次打开时获取歌词；加载中的重复点击被忽略，失败后可重试 */
+  /**
+   * 按歌词来源取一首歌的歌词：{ song, text, source, authors, amllStatus }，没有歌词时只有 amllStatus。
+   * 选了 AMLL 歌词库时先查它，未收录、请求失败或解析不了时记下原因，改用 Apple Music 歌词。
+   */
+  async function loadLyrics(id) {
+    // 这首歌各来源的结果记在 sources 里，来回切换来源时不重复请求；AMLL 歌词库未收录时不记，下次选择时重新查
+    const cache = sources;
+    const remember = (source, fetcher) => (cache[source] ??= fetcher().then((result) => {
+      if (!result && source === 'amll') delete cache[source];
+      return result;
+    }, (error) => { delete cache[source]; throw error; }));
+    const parse = (result) => {
+      const parsed = result && parseTTML(result.text);
+      return parsed?.lines.length ? { ...result, song: parsed } : null;
+    };
+    let status = null;
+    if (prefs.source === 'amll') {
+      try {
+        const found = parse(await remember('amll', () => fetchAmll(id)));
+        if (found) return { ...found, amllStatus: status };
+        status = 'missing';
+      } catch (error) {
+        console.warn('[am-hook] AMLL 歌词库请求失败', error);
+        status = 'failed';
+      }
+    }
+    const apple = await remember('apple', async () => {
+      const language = await (async () => globalThis.AmI18n?.catalogLang(getMeta()?.country || country))().catch(() => undefined);
+      const response = await fetch(`/lyrics/${id}${language ? `?language=${encodeURIComponent(language)}` : ''}`);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return { text: await response.text(), source: 'apple' };
+    });
+    return { ...parse(apple), amllStatus: status };
+  }
+
+  /** 首次打开时获取歌词（改歌词来源后重新获取）；加载中的重复点击被忽略，失败后可重试 */
   function fetchLyrics() {
     if (!request) {
       const id = adamId;
+      const current = ++generation;
+      const stale = () => current !== generation; // 已切换到另一首歌或改了歌词来源
       toggle.setAttribute('aria-busy', 'true');
-      request = Promise.resolve(globalThis.AmI18n?.catalogLang(getMeta()?.country || country))
-        .catch(() => undefined)
-        .then((language) => fetch(`/lyrics/${id}${language ? `?language=${encodeURIComponent(language)}` : ''}`))
-        .then(async (response) => {
-          if (response.status === 404) return null;
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const parsed = parseTTML(await response.text());
-          return parsed.lines.length ? parsed : null;
-        })
-        .then((parsed) => {
-          if (id !== adamId) return; // 已切换到另一首歌
-          if (!parsed) {
+      request = loadLyrics(id)
+        .then((result) => {
+          if (stale()) return;
+          if (!result.song) {
+            // 改歌词来源后新来源没有歌词：保留正在显示的歌词（菜单里说明）
+            if (song) return;
             // 展开界面保持打开，只显示封面与播放控件
             unavailable = true;
             toggle.hidden = true;
             applyVisibility();
             return;
           }
-          song = parsed;
+          song = result.song;
+          lyricsText = result.text;
+          lyricsSource = result.source;
+          amllStatus = result.amllStatus;
+          amllAuthors = result.source === 'amll' ? (result.authors.length ? result.authors : song.authors) : [];
           view.getElement().lang = song.language;
           const voices = song.lines.flatMap((line) => [line, line.background]);
           has.translation = voices.some((voice) => voice.translation);
@@ -452,15 +666,18 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
             setLines();
             view.setCurrentTime(currentTime(), true);
             view.resetScroll();
+          } else {
+            // 改歌词来源时可能已有上一来源的歌词行，清掉后再次显示时按新歌词排版（见 applyVisibility）
+            view.setLyricLines([]);
           }
         })
         .catch((error) => {
-          if (id !== adamId) return;
+          if (stale()) return;
           request = null;
           console.warn('[am-hook] 歌词加载失败', error);
           notify(t('lyrics.failed'));
         })
-        .finally(() => { if (id === adamId) toggle.removeAttribute('aria-busy'); });
+        .finally(() => { if (!stale()) toggle.removeAttribute('aria-busy'); });
     }
     return request;
   }
@@ -472,7 +689,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     adamId = id;
     country = cc || null;
     song = null;
+    lyricsText = '';
+    lyricsSource = amllStatus = null;
+    amllAuthors = [];
     request = null;
+    sources = {};
+    generation++;
     unavailable = false;
     toggle.removeAttribute('aria-busy');
     credits.replaceChildren();
@@ -525,13 +747,29 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   });
   scrim.addEventListener('click', () => closeMenu());
   menu.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-option]');
+    const button = event.target.closest('button');
     if (!button || button.disabled) return;
-    const name = button.dataset.option;
-    shown[name] = !shown[name];
-    closeMenu(true);
-    syncOptions();
-    setLines();
+    const { option, action, value } = button.dataset;
+    if (option) {
+      shown[option] = !shown[option];
+      closeMenu(true);
+      syncOptions();
+      setLines();
+    } else if (action === 'source') {
+      closeMenu(true);
+      setSource(value);
+    } else if (action === 'download') {
+      closeMenu(true);
+      downloadTTML();
+    } else if (STEPS[action]) {
+      // 字号 / 字重：菜单保持打开，可以连续调整；焦点留在同一按钮（到头置灰时移到另一侧）
+      const focused = document.activeElement === button;
+      step(action);
+      renderMenu();
+      if (!focused) return;
+      const again = menu.querySelector(`[data-action="${action}"]`);
+      (again.disabled ? again.parentElement.querySelector('.lyrics-menu-step:not(:disabled)') : again)?.focus();
+    }
   });
   menu.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
@@ -554,6 +792,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (open) renderHeader();
     syncToggle();
   });
+  applyPrefs();
   syncToggle();
 
   return { setTrack, close: hide };
