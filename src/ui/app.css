@@ -1622,7 +1622,9 @@ body.lyrics-open { overflow: hidden; }
   /* 歌词翻译按钮叠在歌词区左下角（距底 20px） */
   .lyrics-translation-menu { position: relative; top: auto; inset-inline-end: auto; align-self: flex-start; margin: -48px 0 20px; }
   .lyrics-translation-button { margin: 0; }
-  .lyrics-overlay .lyric-panel { flex: 1; }
+  /* AMLL 的歌词行左右各有内边距（行高亮的留白），面板向两侧外扩同样的距离，让歌词文字与封面左缘对齐 */
+  .lyrics-overlay .lyric-panel { flex: 1; margin-inline: -20px; }
+  .lyrics-overlay .lyric-panel .amll-lyric-player { --lyric-line-padding-x: 20px; }
   /*
    * 播放控件（mobile 的 playback-controls）：7px 高的进度条、没有滑块；只有上一首 / 播放 / 下一首（50px / 68px / 50px，
    * 都是 systemPrimary-onDark），随机 / 重复在待播清单里；下面是歌词开关与待播清单开关（toggle-buttons：上边距 26px、圆角 7px）。
