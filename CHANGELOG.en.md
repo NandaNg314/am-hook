@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v0.2.2 (2026-10-06)
+
+### New Features
+- ✨ The lyrics translation button is now a lyrics options menu
+  - Adjust lyrics text size (70%–150%) and font weight (Light to Heavy)
+  - Switch the lyrics source between Apple Music and the [AMLL TTML DB](https://amll.dev/reference/http-api/overview): looked up by Apple Music song ID, falling back to Apple Music lyrics for songs it doesn't have; it is only contacted when chosen
+  - Download the TTML lyrics being shown
+  - Text size, font weight and lyrics source are saved in the browser
+- ✨ Read the AMLL TTML DB dialect (inline translations and romanizations, background vocal translations) and credit its lyric authors
+
+### Bug Fixes
+- 🐛 Clicking a song on the Favorite Songs page played the wrong track
+
 ## v0.2.1 (2026-10-06)
 
 ### Bug Fixes
