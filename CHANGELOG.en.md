@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.2.4 (2026-10-07)
+
+### New Features
+- ✨ On phones, the lyrics view hides the playback controls and the lyrics translation button during playback, and the lyrics extend to the bottom of the screen
+  - They hide after 3 seconds without touch or on an upward swipe, and come back on a downward swipe, a tap or when paused
+  - While they are hidden, tapping a lyric line only brings them back; tap again to jump to that line
+
+### Bug Fixes
+- 🐛 On phones, the left edge of the lyrics did not line up with the artwork above
+
 ## v0.2.3 (2026-10-06)
 
 ### Bug Fixes
