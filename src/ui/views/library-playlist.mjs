@@ -76,7 +76,8 @@ export function mount({ root, url, signal, player, navigate, toast, onLangChange
 
   /* ---------- 曲目 ---------- */
   function renderTracks(list) {
-    const songList = songs();
+    // 用同一份 list 计算序号：「喜爱的歌曲」每次 current() 都生成新的曲目对象，再取一次就对不上了
+    const songList = list.tracks.filter((item) => item.kind === 'song');
     rows = list.tracks.map((track, index) => {
       const songIndex = songList.indexOf(track);
       const onPlay = track.kind === 'song' ? () => playFrom(songIndex) : null;
