@@ -190,7 +190,11 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   const credits = document.createElement('div');
   credits.className = 'lyrics-credits';
   view.getBottomLineElement().append(credits);
+  // 按下时底部控件是否已隐藏（.controls-idle）：此时点歌词行只显示控件、不跳转，
+  // 控件显示后再点一下（即双击）才跳转；按下时就要记下，抬起时控件已被 wake() 显示
+  let pressedWhileIdle = false;
   view.addEventListener('line-click', (event) => {
+    if (pressedWhileIdle) return;
     // AMLL 会把行的开始时间提前最多 600ms 用于入场动画；跳转到第一个词的原始时间
     const line = event.line.getLine();
     seek(line.words[0]?.startTime ?? line.startTime);
@@ -236,6 +240,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   let artworkController = null;
   let lyricsShown = loadShown();
   let lyricsVisible = false;
+  // 手机上播放并显示歌词时，3 秒没有触摸就隐藏底部的播放控件与歌词翻译按钮（.controls-idle，见 app.css）
+  const compact = matchMedia('(max-width: 760px)');
+  let idleTimer = 0;
+  const panel = $('.lyric-panel');
+  const controls = $('.lyrics-controls');
+  let alignPosition = 0.35;
 
   function currentTime() {
     return player.current ? player.transport().currentTime * 1000 : 0;
@@ -256,6 +266,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (now !== playing) {
       playing = now;
       if (now) view.resume(); else view.pause();
+      wake();
     }
     // 隐藏歌词时只有背景在动，歌词视图不再排版
     if (lyricsVisible) {
@@ -267,6 +278,42 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     const suspended = lyricsVisible && !!view.scrollState?.isAutoAlignSuspended;
     if (follow.hidden === suspended) follow.hidden = !suspended;
     frame = requestAnimationFrame(tick);
+  }
+
+  /**
+   * 手机上显示歌词时控件叠在歌词区下部（见 app.css）：把控件高度写到 --lyrics-controls-h，
+   * 并让当前行对齐在控件以上区域的 35% 处（AMLL 默认按整个歌词区的 35%）
+   */
+  function syncControlsHeight() {
+    const overlaid = compact.matches && lyricsVisible;
+    const height = overlaid ? controls.offsetHeight : 0;
+    root.style.setProperty('--lyrics-controls-h', `${height}px`);
+    const total = panel.clientHeight;
+    const align = total ? 0.35 * Math.max(0, total - height) / total : 0.35;
+    if (align === alignPosition) return;
+    alignPosition = align;
+    view.setAlignPosition(align);
+    if (lyricsVisible) view.calcLayout('resize');
+  }
+
+  /** 能否隐藏底部控件：手机上、正在播放并显示歌词 */
+  function canSleep() {
+    return open && playing && lyricsVisible && compact.matches;
+  }
+
+  /** 显示底部控件；仍可隐藏时重新计时 */
+  function wake() {
+    clearTimeout(idleTimer);
+    root.classList.remove('controls-idle');
+    if (canSleep()) idleTimer = setTimeout(sleep, 3000);
+  }
+
+  function sleep() {
+    clearTimeout(idleTimer);
+    if (!canSleep()) return;
+    // 菜单或待播清单打开时保持显示
+    if (!menu.hidden || root.classList.contains('queue-open')) { wake(); return; }
+    root.classList.add('controls-idle');
   }
 
   function renderHeader() {
@@ -398,6 +445,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     if (!visible) { closeMenu(); follow.hidden = true; }
     backdrop?.setHasLyric(visible);
     syncToggle();
+    wake();
+    syncControlsHeight();
     if (!visible || !changed || !song) return;
     if (!view.getLyricLines().length) setLines();
     else view.rebuildLyricView(currentTime());
@@ -441,6 +490,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     document.body.classList.remove('lyrics-open');
     lyricsVisible = false;
     syncToggle();
+    wake();
     cancelAnimationFrame(frame);
     frame = 0;
     backdrop?.pause();
@@ -779,6 +829,39 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     buttons[(index + buttons.length) % buttons.length]?.focus();
   });
   follow.addEventListener('click', () => { view.resetScroll(); follow.hidden = true; });
+  // 手指上滑立即隐藏底部控件、下滑显示（一次滑动中换向时跟随最新方向），轻点也显示；
+  // 用 touch 事件而非 pointer 事件，浏览器接管滚动后仍能收到 touchmove
+  let touchY = null;
+  let swiped = false;
+  root.addEventListener('touchstart', (event) => {
+    touchY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    swiped = false;
+  }, { capture: true, passive: true });
+  root.addEventListener('touchmove', (event) => {
+    if (touchY === null || event.touches.length !== 1) return;
+    const y = event.touches[0].clientY;
+    if (Math.abs(y - touchY) < 12) return;
+    if (y < touchY) sleep(); else wake();
+    touchY = y;
+    swiped = true;
+  }, { capture: true, passive: true });
+  root.addEventListener('touchend', () => {
+    if (touchY !== null && !swiped) wake();
+    touchY = null;
+  }, { capture: true, passive: true });
+  root.addEventListener('touchcancel', () => { touchY = null; }, { capture: true, passive: true });
+  // 鼠标、触控笔点击或键盘焦点进入界面时显示
+  root.addEventListener('pointerdown', (event) => {
+    pressedWhileIdle = root.classList.contains('controls-idle');
+    // 触摸后 :hover 会停留在这一行，不跳转时不显示行的底框（见 app.css），下次按下时恢复
+    root.classList.toggle('lyrics-tap-muted', pressedWhileIdle);
+    if (event.pointerType !== 'touch') wake();
+  }, true);
+  root.addEventListener('focusin', wake);
+  compact.addEventListener('change', () => { wake(); syncControlsHeight(); });
+  const resizeObserver = new ResizeObserver(() => { if (open) syncControlsHeight(); });
+  resizeObserver.observe(controls);
+  resizeObserver.observe(panel);
   document.addEventListener('keydown', (event) => {
     // 已由其他菜单处理（如标题旁「更多」的菜单）
     if (!open || event.key !== 'Escape' || event.defaultPrevented) return;

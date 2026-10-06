@@ -1593,6 +1593,8 @@ body.lyrics-open { overflow: hidden; }
 .lyrics-overlay.lyrics-hidden .lyric-panel, .lyrics-overlay.lyrics-hidden .lyrics-translation-menu { display: none; }
 .lyrics-overlay.lyrics-hidden .lyrics-stage { grid-template-columns: min(100%, 50vh); justify-content: center; }
 .lyrics-overlay.lyrics-hidden :is(.lyrics-art, .lyrics-head, .lyrics-controls) { width: 100%; }
+/* 手机上歌词底部渐隐的位置，随底部控件显示 / 隐藏过渡（见下方 .controls-idle） */
+@property --lyrics-mask-inset { syntax: '<length>'; inherits: false; initial-value: 0px; }
 @media (max-width: 760px) {
   /*
    * 手机上同 music.apple.com 的播放界面（now-playing-structure）：左右留 32px，底部向上渐暗；
@@ -1619,12 +1621,31 @@ body.lyrics-open { overflow: hidden; }
   .lyrics-meta .marquee-line.active:not(.is-animating) .marquee-line__mask {
     -webkit-mask: linear-gradient(270deg, transparent, #000 32px); mask: linear-gradient(270deg, transparent, #000 32px);
   }
-  /* 歌词翻译按钮叠在歌词区左下角（距底 20px） */
-  .lyrics-translation-menu { position: relative; top: auto; inset-inline-end: auto; align-self: flex-start; margin: -48px 0 20px; }
+  /* 歌词翻译按钮叠在歌词区左下角（控件上方 20px；--lyrics-controls-h 为控件高度，见 panel.mjs） */
+  .lyrics-translation-menu {
+    position: absolute; top: auto; inset-inline: 32px auto;
+    bottom: calc(max(20px, env(safe-area-inset-bottom)) + var(--lyrics-controls-h, 0px) + 20px);
+  }
   .lyrics-translation-button { margin: 0; }
   /* AMLL 的歌词行左右各有内边距（行高亮的留白），面板向两侧外扩同样的距离，让歌词文字与封面左缘对齐 */
   .lyrics-overlay .lyric-panel { flex: 1; margin-inline: -20px; }
   .lyrics-overlay .lyric-panel .amll-lyric-player { --lyric-line-padding-x: 20px; }
+  /*
+   * 显示歌词时，歌词区一直延伸到底部，播放控件叠在它的下部；控件可见时歌词在控件上方渐隐，
+   * 播放时 3 秒没有触摸则控件淡出、渐隐移到底部（.controls-idle 见 panel.mjs），歌词区尺寸不变、不重新排版
+   */
+  .lyrics-overlay:not(.lyrics-hidden) .lyrics-controls { position: absolute; inset-inline: 32px; width: auto; bottom: max(20px, env(safe-area-inset-bottom)); }
+  .lyrics-overlay .lyric-panel {
+    --lyrics-mask-inset: var(--lyrics-controls-h, 0px);
+    mask-image: linear-gradient(180deg, transparent, #000 calc(12% - var(--lyrics-controls-h, 0px) * .12),
+      #000 calc(80% - var(--lyrics-mask-inset) * .8), transparent calc(100% - var(--lyrics-mask-inset)));
+    transition: --lyrics-mask-inset .3s ease;
+  }
+  .lyrics-overlay.controls-idle .lyric-panel { --lyrics-mask-inset: 0px; }
+  /* 控件隐藏时点歌词行只显示控件、不跳转，不显示 AMLL 行的悬停 / 按下底框（.lyrics-tap-muted 见 panel.mjs） */
+  .lyrics-overlay.lyrics-tap-muted .lyric-panel { --amll-lp-hover-bg-color: transparent; }
+  .lyrics-overlay :is(.lyrics-controls, .lyrics-translation-menu) { transition: opacity .3s ease, visibility .3s; }
+  .lyrics-overlay.controls-idle :is(.lyrics-controls, .lyrics-translation-menu) { opacity: 0; visibility: hidden; }
   /*
    * 播放控件（mobile 的 playback-controls）：7px 高的进度条、没有滑块；只有上一首 / 播放 / 下一首（50px / 68px / 50px，
    * 都是 systemPrimary-onDark），随机 / 重复在待播清单里；下面是歌词开关与待播清单开关（toggle-buttons：上边距 26px、圆角 7px）。
