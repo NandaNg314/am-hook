@@ -36,7 +36,7 @@ GitHub Actions 会自动编译以下平台的二进制文件：
 
 ### 检查更新
 
-启动时检查是否有新版本：
+启动时在后台检查是否有新版本（不阻塞服务启动，GitHub 不可达时只打印警告）：
 
 ```sh
 am-hook --check-update --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:12340
@@ -44,7 +44,7 @@ am-hook --check-update --listen 0.0.0.0:8888 --wrapper-url http://127.0.0.1:1234
 
 输出示例：
 ```
-New version available: v0.2.0 (current: 0.1.0)
+New version available: v0.2.1 (current: 0.2.0)
 Run with --auto-update to automatically install updates
 ```
 
@@ -64,17 +64,17 @@ Windows 无法替换正在运行的可执行文件，更新过程如下：
 2. 程序提示需要手动重启
 3. 手动操作：
    - 停止 am-hook
-   - 将 `am-hook.exe` 重命名为 `am-hook-backup.exe`
-   - 将 `am-hook-new.exe` 重命名为 `am-hook.exe`
+   - 将当前的 exe（如 `am-hook-windows-x86_64.exe`）重命名为备份名
+   - 将 `am-hook-new.exe` 重命名为原来的 exe 文件名
    - 重新启动 am-hook
 
 #### Linux/macOS 系统
 
 Unix 系统会自动完成更新：
 
-1. 当前版本自动备份为 `am-hook-backup`
-2. 新版本自动替换为 `am-hook`
-3. 提示重启程序即可
+1. 当前版本复制备份为同目录下的 `am-hook-backup`
+2. 新版本原子替换当前可执行文件（文件名不变）；替换失败时当前文件保持不变
+3. 正在运行的进程仍是旧版本，重启程序后生效
 
 ### 更新源
 

@@ -13,24 +13,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    // 检查更新
-    if cli.auto_update {
-        info!("Checking for updates and auto-updating if available...");
-        updater::auto_update().await;
-    } else if cli.check_update {
-        info!("Checking for updates...");
-        match updater::check_update().await {
-            Ok(Some(version)) => {
-                info!("New version available: {}", version);
-                info!("Run with --auto-update to automatically install updates");
-            }
-            Ok(None) => {
-                info!("Already running the latest version");
-            }
-            Err(e) => {
-                info!("Failed to check for updates: {}", e);
-            }
-        }
+    // 后台检查更新，GitHub 不可达时不拖慢启动
+    if cli.auto_update || cli.check_update {
+        tokio::spawn(updater::startup_check(cli.auto_update));
     }
 
     let listen_addr = cli.resolve_listen_addr()?;
