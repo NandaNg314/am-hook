@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v0.2.3 (2026-10-06)
+
+### Bug Fixes
+- 🐛 With ALAC-to-FLAC playback, high-bitrate tracks such as 24-bit/96 kHz stalled around 22 seconds until the progress bar was dragged
+  - The read-ahead window now follows the measured bitrate, and played audio is removed before appending, so the browser no longer drops unplayed audio to stay within its quota
+  - When playback stops with nothing buffered at the play position, it re-buffers from there automatically
+
 ## v0.2.2 (2026-10-06)
 
 ### New Features
