@@ -6,6 +6,12 @@
 // worker (OffscreenCanvas) or on the main thread as a fallback.
 const BLUR_RADIUS=90;
 const FRAME_INTERVAL=1000/15;
+// Portrait screens size the copies by the long side, so they are magnified by
+// height/width against the screen width, only a narrow strip shows and the
+// colors seem to drift slower. Rotation is sped up by that ratio raised to
+// PORTRAIT_SPEEDUP there (about 1.47x on a 390x844 phone; the full ratio felt
+// too fast); landscape keeps the original speed.
+const PORTRAIT_SPEEDUP=.5;
 const colorChannel=(value,luminance)=>{
   const saturated=luminance+(value-luminance)*2.75;
   const contrasted=.5+(saturated-.5)*1.9;
@@ -29,12 +35,14 @@ export class BackdropScene {
     this.timer=0;
     this.lastMotion=0;
     this.boxWidth=this.boxHeight=0;
+    this.speed=1;
   }
 
   resize(boxWidth,boxHeight) {
     if(!boxWidth||!boxHeight) return;
     this.boxWidth=boxWidth;
     this.boxHeight=boxHeight;
+    this.speed=boxHeight>boxWidth?(boxHeight/boxWidth)**PORTRAIT_SPEEDUP:1;
     // The scene is heavily blurred; a quarter-size buffer keeps its 15 fps
     // motion inexpensive without changing the visible color fields.
     this.scale=Math.max(1,Math.ceil(Math.max(boxWidth,boxHeight)/400));
@@ -110,7 +118,8 @@ export class BackdropScene {
     const now=performance.now();
     const delta=Math.min(100,now-this.lastMotion)/1000;
     this.lastMotion=now;
-    const rate=this.reducedMotion?[.03,.03,.03,.03]:[.09,-.24,-.18,.12];
+    // Reduced motion keeps its slow drift on every screen
+    const rate=this.reducedMotion?[.03,.03,.03,.03]:[.09,-.24,-.18,.12].map(value=>value*this.speed);
     this.angles.forEach((angle,index)=>this.angles[index]=angle+rate[index]*delta);
     this.draw(now);
     this.schedule();
@@ -131,10 +140,13 @@ export class BackdropScene {
     const {width,height}=this.canvas,offset=this.sourcePad;
     const [a,b,c,d]=this.angles;
     const msize = Math.max(width,height);
+    // The two small copies orbit by the long side too, matching their size, so
+    // they still travel on portrait screens instead of wobbling in place
+    const orbit=msize/4;
     this.drawSprite(image,offset+width/2,offset+height/2,msize*1.25,a,alpha);
     this.drawSprite(image,offset+width/2.5,offset+height/2.5,msize*.8,b,alpha);
-    this.drawSprite(image,offset+width/2+width/4*Math.cos(c*.75),offset+height/2+width/4*Math.sin(c*.75),msize*.5,-c,alpha);
-    this.drawSprite(image,offset+width/2+width*.1+width/4*Math.cos(d*.75),offset+height/2+width*.1+width/4*Math.sin(d*.75),msize*.25,-d,alpha);
+    this.drawSprite(image,offset+width/2+orbit*Math.cos(c*.75),offset+height/2+orbit*Math.sin(c*.75),msize*.5,-c,alpha);
+    this.drawSprite(image,offset+width/2+width*.1+orbit*Math.cos(d*.75),offset+height/2+width*.1+orbit*Math.sin(d*.75),msize*.25,-d,alpha);
   }
 
   twistPixels() {
