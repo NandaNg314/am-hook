@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v0.2.5 (2026-10-07)
+
+### New Features
+- ✨ The lyrics options menu switches the lyrics view's background between AMLL's flowing mesh gradient (default) and the classic background used before AMLL (rotating, twisted and blurred copies of the artwork, modeled on Apple Music Web)
+  - The choice is saved in the browser; without WebGL the classic background is used
+  - On portrait phone screens the classic background drifts a little faster, closer to how it looks on desktop
+
 ## v0.2.4 (2026-10-07)
 
 ### New Features
