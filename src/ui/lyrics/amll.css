@@ -299,8 +299,10 @@
     --lyric-line-padding-x: 20px;
   }
 
-  &:hover .FmKaba_lyricLine, &:hover .FmKaba_lyricLineWrapper {
-    filter: unset !important;
+  @media (hover: hover) {
+    &:hover .FmKaba_lyricLine, &:hover .FmKaba_lyricLineWrapper {
+      filter: unset !important;
+    }
   }
 
   &:not(.FmKaba_playing) .FmKaba_bgWrapper {
