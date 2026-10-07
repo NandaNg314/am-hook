@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.2.6 (2026-10-07)
+
+### Bug Fixes
+- 🐛 On phones, after tapping the lyrics view the lines above and below the current one stayed unblurred
+- 🐛 Visible color banding in the gradients of the classic lyrics background
+
 ## v0.2.5 (2026-10-07)
 
 ### New Features
