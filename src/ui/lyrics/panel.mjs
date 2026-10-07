@@ -214,6 +214,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
    * 流动背景不可用（不支持 WebGL）时改用经典背景，都不可用时为 null（保留纯色背景）
    */
   function createBackdrop() {
+    // 只有经典背景叠颗粒层（见 app.css .lyrics-grain）；AMLL 不可用时退回经典背景，也要加上
+    root.classList.remove('classic-backdrop');
     if (prefs.backdrop === 'amll') {
       try {
         if (MeshGradientRenderer.isSupported()) {
@@ -241,6 +243,7 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     }
     try {
       const classic = new ArtworkBackdrop(canvas);
+      root.classList.add('classic-backdrop');
       return {
         setImage: (blob) => classic.setFile(blob),
         resume: () => classic.resume(),

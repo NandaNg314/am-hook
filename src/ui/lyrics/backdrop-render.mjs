@@ -15,8 +15,13 @@ const PORTRAIT_SPEEDUP=.5;
 const colorChannel=(value,luminance)=>{
   const saturated=luminance+(value-luminance)*2.75;
   const contrasted=.5+(saturated-.5)*1.9;
-  return Math.round(Math.max(0,Math.min(1,contrasted*.7))*255);
+  return Math.max(0,Math.min(1,contrasted*.7));
 };
+// The scene sits on white, then under a 50% black and a 5% white layer:
+// (graded*alpha+1-alpha)*.5*.95+.05. Folding them into the grade keeps the
+// color in floating point until one final rounding; separate fills rounded
+// to 8 bits after every step and made the gradient steps uneven.
+const DIM=.5*.95,LIFT=.05;
 
 export class BackdropScene {
   /** canvas: the visible output; makeCanvas(): creates an offscreen work surface. */
@@ -159,6 +164,7 @@ export class BackdropScene {
     this.twistContext.putImageData(this.pixels,0,0);
   }
 
+  /** Blurs and grades the twisted layers straight into the visible canvas. */
   colorGrade() {
     const {width,height}=this.blurred;
     const context=this.blurContext;
@@ -170,13 +176,14 @@ export class BackdropScene {
     // Apple's color matrix combines saturation, contrast and brightness before
     // clamping. Separate CSS filters clip after each step and lose vivid colors.
     for(let i=0;i<data.length;i+=4){
-      const red=data[i]/255,green=data[i+1]/255,blue=data[i+2]/255;
-      const luminance=.2125*red+.7154*green+.0721*blue;
-      data[i]=colorChannel(red,luminance);
-      data[i+1]=colorChannel(green,luminance);
-      data[i+2]=colorChannel(blue,luminance);
+      const red=data[i]/255,green=data[i+1]/255,blue=data[i+2]/255,alpha=data[i+3]/255;
+      const luminance=.2125*red+.7154*green+.0721*blue,white=1-alpha;
+      data[i]=Math.round(((colorChannel(red,luminance)*alpha+white)*DIM+LIFT)*255);
+      data[i+1]=Math.round(((colorChannel(green,luminance)*alpha+white)*DIM+LIFT)*255);
+      data[i+2]=Math.round(((colorChannel(blue,luminance)*alpha+white)*DIM+LIFT)*255);
+      data[i+3]=255;
     }
-    context.putImageData(frame,0,0);
+    this.output.putImageData(frame,0,0);
   }
 
   draw(now) {
@@ -188,14 +195,5 @@ export class BackdropScene {
     if(fade===1&&this.previous){this.previous.close();this.previous=undefined;}
     this.twistPixels();
     this.colorGrade();
-    const context=this.output,{width,height}=this.canvas;
-    context.filter='none';
-    context.fillStyle='#fff';
-    context.fillRect(0,0,width,height);
-    context.drawImage(this.blurred,0,0);
-    context.fillStyle='rgba(0,0,0,.5)';
-    context.fillRect(0,0,width,height);
-    context.fillStyle='rgba(255,255,255,.05)';
-    context.fillRect(0,0,width,height);
   }
 }
