@@ -6,9 +6,10 @@
  *            歌词来源选 AMLL 歌词库时先由浏览器直接请求 AMLL TTML DB（https://amll.dev/reference/http-api/overview，允许跨域）的
  *            GET /v1/lyrics/get?appleMusicId=<adamId>，未收录或请求失败时仍用上面的 Apple Music 歌词。
  *            ttml.mjs 解析 TTML，toAmllLines() 转成 AMLL 的 LyricLine
- *   选项     原来的「歌词翻译」按钮弹出的菜单：翻译 / 发音、字号、字重、歌词来源、下载当前显示的 TTML；除翻译 / 发音外都保存在浏览器中
+ *   选项     原来的「歌词翻译」按钮弹出的菜单：翻译 / 发音、字号、字重、歌词来源、背景、下载当前显示的 TTML；除翻译 / 发音外都保存在浏览器中
  *   时间     每帧把 player.transport().currentTime 交给 DomLyricPlayer，点击歌词行跳转并继续播放
- *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景
+ *   背景     歌曲页已有的专辑封面，交给 AMLL 的 MeshGradientRenderer 生成流动背景（浏览器不支持 WebGL 时改用经典背景），
+ *            或在菜单里选经典背景：引入 AMLL 前的 ArtworkBackdrop（backdrop.mjs，仿 Apple Music 网页版的旋转封面）
  *
  * 歌词界面只在打开时运行动画循环；关闭后停止，背景保留最后一帧。
  *
@@ -17,6 +18,7 @@
  */
 import { parseTTML } from './ttml.mjs';
 import { DomLyricPlayer, BackgroundRender, MeshGradientRenderer } from './amll-core.mjs';
+import { ArtworkBackdrop } from './backdrop.mjs';
 
 const validTokens = (voice) => voice.tokens.filter((token) => token.begin !== 0 || token.end !== 0);
 const plainText = (voice) => validTokens(voice).map((t) => t.text + (t.spaceAfter ? ' ' : '')).join('').trim() || voice.text;
@@ -118,11 +120,12 @@ function saveShown(shown) {
   try { if (shown) localStorage.removeItem(SHOWN_KEY); else localStorage.setItem(SHOWN_KEY, '1'); } catch { /* 只在本次会话生效 */ }
 }
 
-/** 歌词选项：字号（AMLL 默认字号的倍数）、字重与歌词来源，保存在浏览器中 */
+/** 歌词选项：字号（AMLL 默认字号的倍数）、字重、歌词来源与背景（'amll' 流动背景 | 'classic' 经典背景），保存在浏览器中 */
 const PREFS_KEY = 'am-hook:lyrics-prefs';
 export const FONT_SCALES = [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5];
 export const FONT_WEIGHTS = [300, 400, 500, 600, 700, 800];
-const DEFAULT_PREFS = { scale: 1, weight: 600, source: 'apple' };
+export const BACKDROPS = ['amll', 'classic'];
+const DEFAULT_PREFS = { scale: 1, weight: 600, source: 'apple', backdrop: 'amll' };
 function loadPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
@@ -130,6 +133,7 @@ function loadPrefs() {
       scale: FONT_SCALES.includes(saved.scale) ? saved.scale : DEFAULT_PREFS.scale,
       weight: FONT_WEIGHTS.includes(saved.weight) ? saved.weight : DEFAULT_PREFS.weight,
       source: saved.source === 'amll' ? 'amll' : DEFAULT_PREFS.source,
+      backdrop: BACKDROPS.includes(saved.backdrop) ? saved.backdrop : DEFAULT_PREFS.backdrop,
     };
   } catch { return { ...DEFAULT_PREFS }; }
 }
@@ -200,20 +204,79 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     seek(line.words[0]?.startTime ?? line.startTime);
   });
 
-  const canvas = $('.lyrics-backdrop');
+  let canvas = $('.lyrics-backdrop');
   const motion = matchMedia('(prefers-reduced-motion: reduce)');
-  let backdrop = null;
-  try {
-    if (MeshGradientRenderer.isSupported()) {
-      backdrop = new BackgroundRender(new MeshGradientRenderer(canvas), canvas);
-      backdrop.setHasLyric(true);
-      backdrop.setStaticMode(motion.matches);
-      backdrop.pause();
-      motion.addEventListener('change', () => backdrop.setStaticMode(motion.matches));
+  motion.addEventListener('change', () => backdrop?.setStaticMode(motion.matches));
+  let backdrop = createBackdrop();
+
+  /**
+   * 按 prefs.backdrop 在 canvas 上创建背景，统一成 { setImage(blob) → 是否已显示, resume, pause, setHasLyric, setStaticMode, dispose }；
+   * 流动背景不可用（不支持 WebGL）时改用经典背景，都不可用时为 null（保留纯色背景）
+   */
+  function createBackdrop() {
+    if (prefs.backdrop === 'amll') {
+      try {
+        if (MeshGradientRenderer.isSupported()) {
+          const render = new BackgroundRender(new MeshGradientRenderer(canvas), canvas);
+          render.setHasLyric(true);
+          render.setStaticMode(motion.matches);
+          render.pause();
+          return {
+            async setImage(blob) {
+              const url = URL.createObjectURL(blob);
+              try { await render.setAlbum(url); } finally { URL.revokeObjectURL(url); }
+              return true;
+            },
+            resume: () => render.resume(),
+            pause: () => render.pause(),
+            setHasLyric: (has) => render.setHasLyric(has),
+            setStaticMode: (on) => render.setStaticMode(on),
+            // 会移除自己的画布
+            dispose: () => render.dispose(),
+          };
+        }
+      } catch (error) {
+        console.warn('[am-hook] AMLL 歌词背景不可用，改用经典背景', error);
+      }
     }
-  } catch (error) {
-    console.warn('[am-hook] 歌词背景不可用', error);
-    backdrop = null;
+    try {
+      const classic = new ArtworkBackdrop(canvas);
+      return {
+        setImage: (blob) => classic.setFile(blob),
+        resume: () => classic.resume(),
+        pause: () => classic.pause(),
+        // 经典背景不区分有无歌词，自己跟随「减少动态效果」
+        setHasLyric() {},
+        setStaticMode() {},
+        dispose: () => { classic.destroy(); classic.canvas.remove(); },
+      };
+    } catch (error) {
+      console.warn('[am-hook] 歌词背景不可用', error);
+      return null;
+    }
+  }
+
+  /** 切换背景：画布取过 WebGL 上下文或已交给 worker 后不能换绘制方式，换一块新画布重新创建；界面打开时立即载入封面 */
+  function setBackdrop(kind) {
+    if (kind === prefs.backdrop) return;
+    prefs.backdrop = kind;
+    savePrefs(prefs);
+    artworkController?.abort();
+    artworkController = null;
+    artworkSource = '';
+    root.classList.remove('has-backdrop');
+    const old = canvas;
+    // 新建而不是 cloneNode：AMLL 会在画布上写内联样式（如 z-index），不能带给经典背景
+    canvas = document.createElement('canvas');
+    canvas.className = old.className;
+    canvas.setAttribute('aria-hidden', 'true');
+    canvas.hidden = true;
+    old.after(canvas);
+    backdrop?.dispose();
+    old.remove();
+    backdrop = createBackdrop();
+    backdrop?.setHasLyric(lyricsVisible);
+    if (open) loadArtwork();
   }
 
   const barHome = document.createComment('player');
@@ -391,11 +454,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
-  /** 背景使用页面已有的封面；取不到封面或浏览器不支持 WebGL 时保留纯色背景 */
+  /** 背景使用页面已有的封面；取不到封面或背景不可用时保留纯色背景 */
   function loadArtwork() {
-    if (!backdrop) return;
+    const target = backdrop;
+    if (!target) return;
     const source = getMeta().artwork || '';
-    if (source === artworkSource) { backdrop.resume(); return; }
+    if (source === artworkSource) { target.resume(); return; }
     artworkSource = source;
     if (artworkController) artworkController.abort();
     artworkController = null;
@@ -409,12 +473,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
       })
       .then(async (blob) => {
         if (controller.signal.aborted) return;
-        const url = URL.createObjectURL(blob);
-        try { await backdrop.setAlbum(url); } finally { URL.revokeObjectURL(url); }
-        if (controller.signal.aborted) return;
+        // 切换背景时会中止这次加载（见 setBackdrop），中止后不再碰已销毁的背景
+        const shown = await target.setImage(blob);
+        if (!shown || controller.signal.aborted) return;
         canvas.hidden = false;
         root.classList.add('has-backdrop');
-        if (open) backdrop.resume(); else backdrop.pause();
+        if (open) target.resume(); else target.pause();
       })
       .catch((error) => { if (!controller.signal.aborted) console.warn('[am-hook] 歌词背景加载失败', error); });
   }
@@ -553,8 +617,8 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
   }
 
   /**
-   * 菜单分四组：翻译 / 发音（同 music.apple.com：已开启的显示「隐藏…」，否则「显示…」，歌曲没有的一项置灰）、
-   * 字号与字重、歌词来源（单选，选定的来源没有这首歌时在下面说明）、下载 TTML
+   * 菜单分五组：翻译 / 发音（同 music.apple.com：已开启的显示「隐藏…」，否则「显示…」，歌曲没有的一项置灰）、
+   * 字号与字重、歌词来源（单选，选定的来源没有这首歌时在下面说明）、背景（单选）、下载 TTML
    */
   function renderMenu() {
     const scale = FONT_SCALES.indexOf(prefs.scale);
@@ -578,6 +642,12 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
         icon: prefs.source === source ? 'check' : '', action: 'source', value: source, checked: prefs.source === source,
       }))),
       ...(note ? [menuItem(menuNode('span', '', note), 'presentation', 'lyrics-menu-note')] : []),
+      separator(),
+      menuItem(menuNode('span', '', t('lyrics.backdrop')), 'presentation', 'lyrics-menu-heading'),
+      ...BACKDROPS.map((kind) => menuItem(menuButton({
+        label: t(kind === 'amll' ? 'lyrics.backdropAmll' : 'lyrics.backdropClassic'),
+        icon: prefs.backdrop === kind ? 'check' : '', action: 'backdrop', value: kind, checked: prefs.backdrop === kind,
+      }))),
       separator(),
       menuItem(menuButton({ label: t('lyrics.download'), icon: 'download', action: 'download', disabled: !lyricsText })),
     ];
@@ -808,6 +878,9 @@ export function mountLyrics({ root, toggle, bar, player, getMeta, t, notify, onL
     } else if (action === 'source') {
       closeMenu(true);
       setSource(value);
+    } else if (action === 'backdrop') {
+      closeMenu(true);
+      setBackdrop(value);
     } else if (action === 'download') {
       closeMenu(true);
       downloadTTML();

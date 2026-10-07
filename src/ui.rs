@@ -252,7 +252,7 @@ pub async fn media_wasm_handler(headers: HeaderMap) -> Response<Body> {
     static_response(&headers, "application/wasm", include_bytes!("ui/media.wasm"))
 }
 
-/// 歌词界面（src/ui/lyrics/）：TTML 解析、接入播放器的 panel.mjs 与打包好的 AMLL（见 browser/amll）
+/// 歌词界面（src/ui/lyrics/）：TTML 解析、接入播放器的 panel.mjs、打包好的 AMLL（见 browser/amll）与原来的封面背景（backdrop*.mjs）
 pub async fn lyrics_asset_handler(
     headers: HeaderMap,
     axum::extract::Path(file): axum::extract::Path<String>,
@@ -263,6 +263,9 @@ pub async fn lyrics_asset_handler(
         "ttml.mjs" => (JS, include_bytes!("ui/lyrics/ttml.mjs")),
         "amll-core.mjs" => (JS, include_bytes!("ui/lyrics/amll-core.mjs")),
         "amll.css" => ("text/css; charset=utf-8", include_bytes!("ui/lyrics/amll.css")),
+        "backdrop.mjs" => (JS, include_bytes!("ui/lyrics/backdrop.mjs")),
+        "backdrop-render.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-render.mjs")),
+        "backdrop-worker.mjs" => (JS, include_bytes!("ui/lyrics/backdrop-worker.mjs")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)
