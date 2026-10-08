@@ -405,11 +405,26 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const next = data.data && data.data[0];
       if (!next || !next.attributes) throw new Error('empty response');
       if (token !== loadToken || signal.aborted) return;
+
+      // 智能日区/华语 Storefront 原生元数据嗅探 (杜绝欧美区罗马音音译与英文艺名)
+      const aName = (next.attributes && next.attributes.name) || '';
+      const isJapanese = (next.attributes.genreNames || []).some((g) => /j-pop|anime|japanese|アニメ/i.test(g)) ||
+        /[\u3040-\u309F\u30A0-\u30FF]/.test(aName);
+      if (isJapanese && country !== 'jp') {
+        try {
+          const jpData = await amp(`/v1/catalog/jp/artists/${artistId}`, { l: 'ja', ...ARTIST_PARAMS });
+          if (jpData?.data?.[0]?.attributes) {
+            next = jpData.data[0];
+          }
+        } catch {}
+      }
+
       artist = next;
       const topView = view('top-songs');
       topSongs = ((topView && topView.data) || []).filter((res) => res.type === 'songs' && res.attributes);
       render();
       showAlert('', '');
+      if ($('disco-btn')) $('disco-btn').disabled = false;
     } catch (err) {
       if (token !== loadToken || signal.aborted) return;
       showAlert('error', () => t('artist.failed', { msg: err.message }));
@@ -462,6 +477,290 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
   }
   player.onChange(syncRows);
+
+  /* ---------- 艺人全作品批量转存至 Gofile (密码保护 + 顺序防 OOM 机制) ---------- */
+  const discoBtn = $('disco-btn');
+  const discoModal = $('disco-modal');
+  const discoModalClose = $('disco-modal-close');
+  const discoModalCancel = $('disco-modal-cancel');
+  const discoModalConfirm = $('disco-modal-confirm');
+  const discoPasswordInput = $('disco-password');
+  const discoCard = $('disco-card');
+  const discoCancelBtn = $('disco-cancel-btn');
+  const discoStatusTitle = $('disco-status-title');
+  const discoStatusDetail = $('disco-status-detail');
+  const discoProgressFill = $('disco-progress-fill');
+
+  let discoAbortController = null;
+
+  discoBtn?.addEventListener('click', () => {
+    if (discoModal) {
+      if (discoPasswordInput) discoPasswordInput.value = '';
+      discoModal.showModal();
+    }
+  });
+
+  discoModalClose?.addEventListener('click', () => discoModal?.close());
+  discoModalCancel?.addEventListener('click', () => discoModal?.close());
+
+  discoCancelBtn?.addEventListener('click', () => {
+    if (discoAbortController) {
+      discoAbortController.abort();
+      toast('已请求取消全作品转存任务');
+    }
+  });
+
+  async function verifyPassword(pwd) {
+    if (!pwd) return false;
+    try {
+      const data = new TextEncoder().encode(pwd);
+      const hashBuf = await crypto.subtle.digest('SHA-256', data);
+      const hashHex = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      return hashHex === '43667160ecb19b31c474bfd7f02a6dc33afd31311d60956c8d190d7228bf6236';
+    } catch {
+      return false;
+    }
+  }
+
+  discoModalConfirm?.addEventListener('click', async () => {
+    const pwd = discoPasswordInput?.value?.trim() || '';
+    const pass = await verifyPassword(pwd);
+    if (!pass) {
+      toast('❌ 专属口令错误，仅限授权使用');
+      return;
+    }
+
+    discoModal?.close();
+
+    const quality = $('disco-quality-select')?.value || 'Lossless';
+    const embedLyrics = $('disco-embed-lyrics')?.checked ?? true;
+    const saveLyrics = $('disco-save-lyrics')?.checked ?? true;
+    const includeFull = $('disco-include-full')?.checked ?? true;
+    const includeLive = $('disco-include-live')?.checked ?? true;
+    const includeSingles = $('disco-include-singles')?.checked ?? true;
+    const includeCompilations = $('disco-include-compilations')?.checked ?? false;
+
+    runDiscographyTransfer({ quality, embedLyrics, saveLyrics, includeFull, includeLive, includeSingles, includeCompilations });
+  });
+
+  async function runDiscographyTransfer({ quality, embedLyrics, saveLyrics, includeFull, includeLive, includeSingles, includeCompilations }) {
+    if (!artist) return;
+    discoAbortController = new AbortController();
+    const sig = discoAbortController.signal;
+
+    const artistName = artist.attributes.name || '未知艺人';
+    if (discoCard) discoCard.hidden = false;
+    if (discoProgressFill) discoProgressFill.style.width = '0%';
+    if (discoStatusTitle) discoStatusTitle.textContent = `☁️ 正在极速转存《${artistName}》全作品至 Gofile...`;
+    if (discoStatusDetail) discoStatusDetail.textContent = '正在检索全量作品列表...';
+
+    // 1. 搜集用户勾选的各 Shelf 专辑
+    const targetViews = [];
+    if (includeFull) targetViews.push('full-albums');
+    if (includeLive) targetViews.push('live-albums');
+    if (includeSingles) targetViews.push('singles');
+    if (includeCompilations) targetViews.push('compilation-albums');
+
+    const albumMap = new Map();
+
+    for (const key of targetViews) {
+      if (sig.aborted) break;
+      const v = view(key);
+      const items = (v && v.data) || [];
+      for (const item of items) {
+        if (item.type === 'albums' && item.attributes) albumMap.set(item.id, item);
+      }
+      if (v && v.next) {
+        let moreUrl = v.next;
+        for (let p = 0; moreUrl && p < 10 && !sig.aborted; p++) {
+          try {
+            const pageData = await amp(moreUrl);
+            const pItems = pageData.data || [];
+            for (const item of pItems) {
+              if (item.type === 'albums' && item.attributes) albumMap.set(item.id, item);
+            }
+            moreUrl = pageData.next;
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+
+    const allAlbums = Array.from(albumMap.values());
+    if (!allAlbums.length) {
+      toast('未在所选分类中找到专辑作品');
+      if (discoCard) discoCard.hidden = true;
+      return;
+    }
+
+    toast(`🔍 共检索到 ${allAlbums.length} 张作品，已启动自动化极速转存！`);
+
+    let parentFolder = null;
+    let guestToken = null;
+    let successAlbumCount = 0;
+
+    const ALBUM_PARSE_PARAMS = {
+      platform: 'web',
+      extend: 'editorialArtwork,extendedAssetUrls',
+      'art[url]': 'f',
+      include: 'record-labels,artists',
+      'include[songs]': 'artists,composers,albums',
+      'fields[artists]': 'name,url',
+      'fields[record-labels]': 'name,url'
+    };
+
+    // 2. 依次按专辑安全顺序处理（杜绝 OOM，保证 VPS 运存峰值稳定在 1.5GB 极速运行）
+    for (let aIdx = 0; aIdx < allAlbums.length; aIdx++) {
+      if (sig.aborted) break;
+      const alb = allAlbums[aIdx];
+      const albAttr = alb.attributes || {};
+      const albTitle = albAttr.name || '未知专辑';
+      const albArtist = albAttr.artistName || artistName;
+
+      if (discoStatusDetail) {
+        discoStatusDetail.textContent = `[第 ${aIdx + 1}/${allAlbums.length} 张] 正在读取《${albTitle}》曲目...`;
+      }
+
+      let albTracks = [];
+      try {
+        const l = await AmI18n.catalogLang(country);
+        const albData = await amp(`/v1/catalog/${country}/albums/${alb.id}`, { l, ...ALBUM_PARSE_PARAMS });
+        const nextAlb = albData.data && albData.data[0];
+        const rel = nextAlb && nextAlb.relationships && nextAlb.relationships.tracks;
+        let list = (rel && rel.data) || [];
+        for (let more = rel && rel.next; more;) {
+          const page = await amp(more, { l, 'include[songs]': 'artists', 'fields[artists]': 'name,url' });
+          list = list.concat(page.data || []);
+          more = page.next;
+        }
+        albTracks = list.filter((t) => t.attributes);
+      } catch (err) {
+        console.warn(`[Disco] 读取专辑《${albTitle}》曲目失败:`, err.message);
+        continue;
+      }
+
+      if (!albTracks.length) continue;
+
+      const batchSessionId = `disco_${alb.id}_${Date.now()}`;
+      const zipFilename = `${albArtist} - ${albTitle} [${quality}].zip`;
+      const BATCH_CONCURRENCY = 3;
+      let albFinished = 0;
+      let nextTIdx = 0;
+
+      const processTrack = async (t, tIndex) => {
+        if (sig.aborted) return;
+        const tAttr = t.attributes || {};
+        try {
+          const coverUrl = artUrl(tAttr.artwork || albAttr.artwork, 1400);
+          const resp = await fetch('/api/cloud-transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              adamId: t.id,
+              quality,
+              folderId: parentFolder,
+              token: guestToken,
+              batchId: batchSessionId,
+              isLastTrack: false,
+              zipFilename,
+              meta: {
+                title: tAttr.name,
+                artist: tAttr.artistName || albArtist,
+                album: albTitle,
+                albumArtist: albArtist,
+                date: tAttr.releaseDate || albAttr.releaseDate,
+                genre: (tAttr.genreNames && tAttr.genreNames[0]) || (albAttr.genreNames && albAttr.genreNames[0]) || '',
+                composer: tAttr.composerName || '',
+                copyright: albAttr.copyright || '',
+                trackNumber: tAttr.trackNumber || (tIndex + 1),
+                totalTracks: albTracks.length,
+                discNumber: tAttr.discNumber || 1,
+                totalDiscs: 1,
+                coverUrl
+              },
+              embedLyrics,
+              saveLyricsFile: saveLyrics,
+              lyricsFormat: 'lrc'
+            }),
+            signal: sig
+          });
+          const resJson = await resp.json();
+          if (resJson.status === 'ok' && resJson.data) {
+            if (resJson.data.folderId && !parentFolder) parentFolder = resJson.data.folderId;
+            if (resJson.data.guestToken && !guestToken) guestToken = resJson.data.guestToken;
+          }
+        } catch (err) {
+          if (!sig.aborted) console.warn(`[Disco] 曲目《${tAttr.name}》转存异常:`, err.message);
+        } finally {
+          albFinished++;
+          if (discoStatusDetail) {
+            discoStatusDetail.textContent = `[第 ${aIdx + 1}/${allAlbums.length} 张] 《${albTitle}》已就绪 (${albFinished}/${albTracks.length} 首)...`;
+          }
+        }
+      };
+
+      const worker = async () => {
+        while (nextTIdx < albTracks.length && !sig.aborted) {
+          const cur = nextTIdx++;
+          await processTrack(albTracks[cur], cur);
+        }
+      };
+
+      const workerCount = Math.min(BATCH_CONCURRENCY, albTracks.length);
+      const workerPromises = [];
+      for (let w = 0; w < workerCount; w++) workerPromises.push(worker());
+      await Promise.all(workerPromises);
+
+      if (sig.aborted) break;
+
+      // 3. 当前专辑完成：一键打包为 ZIP 并上传 Gofile
+      if (discoStatusDetail) {
+        discoStatusDetail.textContent = `[第 ${aIdx + 1}/${allAlbums.length} 张] 正在封装《${albTitle}》ZIP 并直传 Gofile...`;
+      }
+      try {
+        const finResp = await fetch('/api/cloud-transfer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            finalizeBatch: true,
+            batchId: batchSessionId,
+            zipFilename,
+            quality,
+            folderId: parentFolder,
+            token: guestToken,
+            meta: { album: albTitle, artist: albArtist }
+          }),
+          signal: sig
+        });
+        const finJson = await finResp.json();
+        if (finJson.status === 'ok' && finJson.data) {
+          if (finJson.data.folderId && !parentFolder) parentFolder = finJson.data.folderId;
+          if (finJson.data.guestToken && !guestToken) guestToken = finJson.data.guestToken;
+          successAlbumCount++;
+        }
+      } catch (err) {
+        if (!sig.aborted) console.warn(`[Disco] 专辑《${albTitle}》ZIP 打包异常:`, err.message);
+      }
+
+      const overallPct = Math.round(((aIdx + 1) / allAlbums.length) * 100);
+      if (discoProgressFill) discoProgressFill.style.width = `${overallPct}%`;
+    }
+
+    if (discoProgressFill) discoProgressFill.style.width = '100%';
+    setTimeout(() => { if (discoCard) discoCard.hidden = true; }, 3000);
+
+    if (sig.aborted) {
+      toast('已取消全作品转存任务');
+      return;
+    }
+
+    const shareUrl = parentFolder ? `https://gofile.io/d/${parentFolder}` : '';
+    toast(`🎉 《${artistName}》全量作品转存完成！共 ${successAlbumCount}/${allAlbums.length} 张专辑`);
+    if (shareUrl) {
+      prompt('🎉 全部专辑已转存至同一 Gofile 文件夹，请复制下载直链：', shareUrl);
+    }
+  }
 
   // 切换语言：简介、货架标题等由 amp-api 按语言返回，重新获取
   onLangChange(() => {

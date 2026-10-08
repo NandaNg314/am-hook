@@ -318,6 +318,25 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         more = page.next;
       }
       if (token !== loadToken || signal.aborted) return;
+
+      // 智能日区/华语 Storefront 原生元数据嗅探 (杜绝欧美区罗马音音译与英文艺名)
+      const attr = next.attributes || {};
+      const genreNames = attr.genreNames || [];
+      const isJapanese = genreNames.some((g) => /j-pop|anime|japanese|アニメ/i.test(g)) ||
+        /[\u3040-\u309F\u30A0-\u30FF]/.test(attr.name + (attr.artistName || ''));
+      if (isJapanese && country !== 'jp') {
+        try {
+          const jpData = await amp(`/v1/catalog/jp/albums/${albumId}`, { l: 'ja', ...ALBUM_PARAMS });
+          if (jpData?.data?.[0]?.attributes) {
+            next = jpData.data[0];
+            const jpRel = next.relationships && next.relationships.tracks;
+            if (jpRel?.data?.length) {
+              list = jpRel.data;
+            }
+          }
+        } catch {}
+      }
+
       album = next;
       tracks = list.filter((track) => track.attributes);
       render();

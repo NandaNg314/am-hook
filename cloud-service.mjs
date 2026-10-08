@@ -73,6 +73,199 @@ function toSimplifiedChinese(text) {
   return out;
 }
 
+// 常见港台/海外华语艺人英文艺名、拼音与别名全量映射表 (涵盖主流歌手，杜绝英文艺名)
+const CHINESE_ARTIST_ALIASES = {
+  // 张惠妹系列
+  'amei': '张惠妹',
+  'a-mei': '张惠妹',
+  'amit': '张惠妹',
+  'chang hui-mei': '张惠妹',
+  // 陈绮贞 / 陈奕迅 / 方大同
+  'cheer chen': '陈绮贞',
+  'chen chi-chen': '陈绮贞',
+  'eason chan': '陈奕迅',
+  'chan yik-shun': '陈奕迅',
+  'khalil fong': '方大同',
+  // 周杰伦 / 陶喆 / 王力宏 / 林俊杰
+  'jay chou': '周杰伦',
+  'chou chieh-lun': '周杰伦',
+  'david tao': '陶喆',
+  'tao che-sheng': '陶喆',
+  'wang leehom': '王力宏',
+  'leehom wang': '王力宏',
+  'jj lin': '林俊杰',
+  'wayne lin': '林俊杰',
+  // 王菲 / 邓紫棋 / 蔡依林 / 孙燕姿
+  'faye wong': '王菲',
+  'shirley wong': '王菲',
+  'g.e.m.': '邓紫棋',
+  'gem': '邓紫棋',
+  'g.e.m': '邓紫棋',
+  'gloria tang': '邓紫棋',
+  'jolin tsai': '蔡依林',
+  'tsai i-ling': '蔡依林',
+  'stefanie sun': '孙燕姿',
+  'sun yan-zi': '孙燕姿',
+  // 梁静茹 / 五月天 / 苏打绿 / 卢广仲 / 林宥嘉
+  'fish leong': '梁静茹',
+  'jasmine leong': '梁静茹',
+  'mayday': '五月天',
+  'sodagreen': '苏打绿',
+  'oaeen': '苏打绿',
+  'crowd lu': '卢广仲',
+  'lu kwang-chung': '卢广仲',
+  'yoga lin': '林宥嘉',
+  'lin yu-chia': '林宥嘉',
+  // S.H.E / 田馥甄 / 任家萱 / 陈嘉桦
+  's.h.e': 'S.H.E',
+  'she': 'S.H.E',
+  'hebe tien': '田馥甄',
+  'hebe': '田馥甄',
+  'selina ren': '任家萱',
+  'selina': '任家萱',
+  'ella chen': '陈嘉桦',
+  'ella': '陈嘉桦',
+  // 蔡健雅 / 戴佩妮 / 刘若英 / 莫文蔚
+  'tanya chua': '蔡健雅',
+  'penny tai': '戴佩妮',
+  'rene liu': '刘若英',
+  'karen mok': '莫文蔚',
+  // 杨丞琳 / 王心凌 / 周兴哲 / 萧敬腾 / 杨宗纬
+  'rainie yang': '杨丞琳',
+  'cyndi wang': '王心凌',
+  'eric chou': '周兴哲',
+  'jam hsiao': '萧敬腾',
+  'aska yang': '杨宗纬',
+  // 安溥 / 张悬 / 魏如萱 / 徐佳莹 / 艾怡良 / 王若琳 / 黄丽玲
+  'anpu': '安溥',
+  'deserts chang': '张悬',
+  'waa wei': '魏如萱',
+  'lala hsu': '徐佳莹',
+  'eve ai': '艾怡良',
+  'joanna wang': '王若琳',
+  'a-lin': '黄丽玲',
+  'alin': '黄丽玲',
+  'huang li-ling': '黄丽玲',
+  // 四大天王 & 乐坛巨星
+  'jacky cheung': '张学友',
+  'andy lau': '刘德华',
+  'aaron kwok': '郭富城',
+  'leon lai': '黎明',
+  'leslie cheung': '张国荣',
+  'anita mui': '梅艳芳',
+  'teresa teng': '邓丽君',
+  'beyond': 'Beyond',
+  'wakin chau': '周华健',
+  'emil chau': '周华健',
+  'emil wakin chau': '周华健',
+  'jonathan lee': '李宗盛',
+  'chyi chin': '齐秦',
+  'chyi yu': '齐豫',
+  'dave wang': '王杰',
+  'jeff chang': '张信哲',
+  'phil chang': '张宇',
+  'angus tung': '童安格',
+  'samuel tai': '邰正宵',
+  'steve chou': '周传雄',
+  'harlem yu': '庾澄庆',
+  'george lam': '林子祥',
+  'sally yeh': '叶倩文',
+  'sandy lam': '林忆莲',
+  'priscilla chan': '陈慧娴',
+  'vivian chow': '周慧敏',
+  'kelly chen': '陈慧琳',
+  'sammi cheng': '郑秀文',
+  'gigi leung': '梁咏琪',
+  'coco lee': '李玟',
+  // 香港中生代与新生代
+  'hins cheung': '张敬轩',
+  'joey yung': '容祖儿',
+  'leo ku': '古巨基',
+  'miriam yeung': '杨千嬅',
+  'hacken lee': '李克勤',
+  'edison chen': '陈冠希',
+  'shawn yue': '余文乐',
+  'pakho chau': '周柏豪',
+  'terence lam': '林家谦',
+  'keung to': '姜涛',
+  'anson lo': '卢瀚霆',
+  'mc cheung': '张天赋',
+  'gareth.t': '汤令山',
+  'jay fung': '冯允谦',
+  'aga': 'AGA 江海迦',
+  'gin lee': '李幸倪',
+  'jace chan': '陈凯咏',
+  'cloud wan': '云浩影',
+  'panther chan': '陈蕾',
+  'kaho hung': '洪嘉豪',
+  'jeffrey ngai': '魏浚笙',
+  'mike tsang': '曾比特',
+  'gigi yim': '炎明熹',
+  // 独立乐团与新潮乐队
+  'accusefive': '告五人',
+  'deca joins': 'deca joins',
+  'sunset rollercoaster': '落日飞车',
+  'omnipotent youth society': '万能青年旅店',
+  'new pants': '新裤子',
+  'second hand rose': '二手玫瑰',
+  'no party for cao dong': '草东没有派对',
+  'my little airport': 'my little airport',
+  // 内地主流唱作人与流行艺人
+  'yicheng shen': '沈以诚',
+  'joker xue': '薛之谦',
+  'vae xu': '许嵩',
+  'silence wang': '汪苏泷',
+  'ronghao li': '李荣浩',
+  'hua chenyu': '华晨宇',
+  'mao buyi': '毛不易',
+  'charlie zhou': '周深',
+  'tia ray': '袁娅维',
+  'lexie liu': '刘柏辛',
+  'jackson wang': '王嘉尔',
+  'lay zhang': '张艺兴',
+  'mc hotdog': '热狗',
+  'soft lipa': '蛋堡',
+  'higher brothers': '更高兄弟'
+};
+
+/**
+ * 规范化艺人名称：
+ * 1. 优先查阅港台英文艺名/官方别名映射表 (如 aMEI -> 张惠妹, Eason Chan -> 陈奕迅)
+ * 2. 支持合唱形式拆分处理 (如 "aMEI & Jay Chou" -> "张惠妹 & 周杰伦")
+ * 3. 繁体中文自动规范为简体 (日语平假名/片假名保持原貌)
+ */
+function normalizeArtistName(rawArtist) {
+  if (!rawArtist || typeof rawArtist !== 'string') return rawArtist;
+  const trimmed = rawArtist.trim();
+  const lower = trimmed.toLowerCase();
+
+  // 1. 直接命中别名映射
+  if (CHINESE_ARTIST_ALIASES[lower]) {
+    return CHINESE_ARTIST_ALIASES[lower];
+  }
+
+  // 2. 多艺人合唱形式拆分判定 (&, feat., ft., 逗号, 斜杠)
+  const splitRegex = /(\s*(?:,|&|\/|feat\.|ft\.)\s*)/i;
+  if (splitRegex.test(trimmed)) {
+    const parts = trimmed.split(splitRegex);
+    let matched = false;
+    const mapped = parts.map((part, idx) => {
+      if (idx % 2 === 0) {
+        const pLower = part.trim().toLowerCase();
+        if (CHINESE_ARTIST_ALIASES[pLower]) {
+          matched = true;
+          return CHINESE_ARTIST_ALIASES[pLower];
+        }
+        return toSimplifiedChinese(part);
+      }
+      return part;
+    }).join('');
+    if (matched) return mapped;
+  }
+
+  return toSimplifiedChinese(trimmed);
+}
+
 /**
  * 封装 ZIP 归档文件
  * 使用 python3 zipfile 进行封装：
@@ -540,12 +733,33 @@ async function processTransfer(body) {
   const tFetch = performance.now();
   console.log(`[Cloud-Transfer] 资源获取完成 (${((tFetch - t0) / 1000).toFixed(2)}s, 音频大小: ${(rawAudioBuf.length / (1024 * 1024)).toFixed(1)}MB)`);
 
-  // 繁体中文转简体中文 (智能保护英文及日文假名)
+  // 智能日区元数据嗅探：若为日语曲目且标题或艺人为罗马音，自动向日区 /amp/v1/catalog/jp/songs/${adamId}?l=ja 抓取正统日文名
+  const isLikelyJapanese = (meta.genre && /j-pop|anime|japanese|アニメ/i.test(meta.genre)) ||
+    Boolean(meta.isJapanese) ||
+    /[\u3040-\u309F\u30A0-\u30FF]/.test((meta.title || '') + (meta.artist || '') + (meta.album || ''));
+
+  if (adamId && isLikelyJapanese && (!meta.title || !/[\u3040-\u309F\u30A0-\u30FF]/.test(meta.title))) {
+    try {
+      const jpRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/jp/songs/${adamId}?l=ja`, { signal: AbortSignal.timeout(3000) });
+      if (jpRes.ok) {
+        const jData = await jpRes.json();
+        const jAttr = jData.data?.[0]?.attributes;
+        if (jAttr) {
+          if (jAttr.name) meta.title = jAttr.name;
+          if (jAttr.artistName) meta.artist = jAttr.artistName;
+          if (jAttr.albumName) meta.album = jAttr.albumName;
+          console.log(`[Cloud-Transfer] 成功从日区同步日文原名: ${meta.artist} - ${meta.title}`);
+        }
+      }
+    } catch {}
+  }
+
+  // 华语艺人英文名与官方别名规范化 + 繁简转换 (智能保护日文与英文曲名)
+  if (meta.artist) meta.artist = normalizeArtistName(meta.artist);
+  if (meta.albumArtist) meta.albumArtist = normalizeArtistName(meta.albumArtist || meta.artist);
+  if (meta.composer) meta.composer = normalizeArtistName(meta.composer);
   if (meta.title) meta.title = toSimplifiedChinese(meta.title);
-  if (meta.artist) meta.artist = toSimplifiedChinese(meta.artist);
   if (meta.album) meta.album = toSimplifiedChinese(meta.album);
-  if (meta.albumArtist) meta.albumArtist = toSimplifiedChinese(meta.albumArtist);
-  if (meta.composer) meta.composer = toSimplifiedChinese(meta.composer);
   if (lyricsData.hasLyrics) {
     if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
     if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
