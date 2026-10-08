@@ -1128,7 +1128,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     try {
       const res = await fetch(`/parse/song/${adamId}`, { signal });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.masterUrl || !Array.isArray(data.variants)) throw new Error(data.msg || t('song.parseFailedHttp', { status: res.status }));
+      if (!res.ok || !data.masterUrl || !Array.isArray(data.variants) || !data.variants.length) {
+        if (data.msg === 'failed to get m3u8' || data.msg?.includes('无资源') || data.msg?.includes('无版权') || res.status === 404 || res.status === 500) {
+          throw new Error('此歌曲在解析服务器账号所属区域（土区）无资源或未上架（可能为日区/美区独占版权），暂无法获取解密音轨');
+        }
+        throw new Error(data.msg || t('song.parseFailedHttp', { status: res.status }));
+      }
       const base = data.masterUrl.slice(0, data.masterUrl.lastIndexOf('/') + 1);
       hook = !!data.hook;
       variants = data.variants.map((v) => ({

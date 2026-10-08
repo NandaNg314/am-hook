@@ -643,10 +643,16 @@ async function processTransfer(body) {
   if (!audioHookUrl) {
     if (!adamId) throw new Error('缺少 adamId 或 hookFileUrl');
     const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: AbortSignal.timeout(10000) });
-    if (!parseRes.ok) throw new Error(`解析歌曲失败: HTTP ${parseRes.status}`);
+    if (!parseRes.ok) {
+      const parseErr = await parseRes.json().catch(() => ({}));
+      if (parseErr.msg === 'failed to get m3u8' || parseErr.msg?.includes('无资源') || parseErr.msg?.includes('无版权') || parseRes.status === 404 || parseRes.status === 500) {
+        throw new Error('此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
+      }
+      throw new Error(`解析歌曲失败: ${parseErr.msg || 'HTTP ' + parseRes.status}`);
+    }
     const parseData = await parseRes.json();
     const variants = parseData.variants || [];
-    if (!variants.length) throw new Error('未找到可用的音频流');
+    if (!variants.length) throw new Error('未找到可用的音频流（该地区可能无播放版权）');
 
     const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
 
