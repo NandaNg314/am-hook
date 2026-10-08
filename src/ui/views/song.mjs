@@ -219,8 +219,69 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         onProgress: (done) => { job.done = done; showDownload(id); },
         onDefrag: () => { job.defrag = true; showDownload(id); },
       });
-      saveResult(result, fileName);
-      toast(t('dl.done', { size: formatSize(result.size) }));
+
+      // 遵循命名规范：单曲 ${artist} - ${title}.alac，配套歌词 ${artist} - ${title}.lrc
+      const cleanArtist = safeName(meta.artist || 'Unknown Artist');
+      const cleanTitle = safeName(meta.title || adamId || 'Track');
+      const standardAlacName = `${cleanArtist} - ${cleanTitle}.alac`;
+      const standardLrcName = `${cleanArtist} - ${cleanTitle}.lrc`;
+      const standardZipName = `${cleanArtist} - ${cleanTitle}.zip`;
+
+      const isGofile = window.AmDeliveryOptions?.isGofileMode?.() || false;
+      const needLrc = window.AmDeliveryOptions?.shouldDownloadLrc?.() ?? true;
+
+      let lrcContent = '';
+      if (needLrc) {
+        try {
+          const lrcRes = await fetch(`/api/lyrics?trackId=${adamId}`);
+          if (lrcRes.ok) {
+            const lrcJson = await lrcRes.json();
+            if (lrcJson.lrc) lrcContent = lrcJson.lrc;
+          }
+        } catch {}
+      }
+
+      if (isGofile) {
+        toast('正在转存至 Gofile 并打包...');
+        const formData = new FormData();
+        const audioBlob = result.file || new Blob([result.data || '']);
+        formData.append('audio', audioBlob, standardAlacName);
+        if (lrcContent) {
+          formData.append('lyrics', new Blob([lrcContent], { type: 'text/plain;charset=utf-8' }), standardLrcName);
+        }
+        formData.append('zipName', standardZipName);
+
+        const uploadRes = await fetch('/api/gofile/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!uploadRes.ok) {
+          throw new Error(`Gofile 上传接口返回 HTTP ${uploadRes.status}`);
+        }
+
+        const uploadJson = await uploadRes.json();
+        if (uploadJson.ok && uploadJson.downloadPage) {
+          window.AmDeliveryOptions?.showGofileResult(uploadJson.zipFilename || standardZipName, uploadJson.downloadPage);
+          toast('转存完成，本地临时文件已自动清理，VPS 0 磁盘占用');
+        } else {
+          throw new Error(uploadJson.message || 'Gofile 转存失败');
+        }
+      } else {
+        // 本地保存模式
+        saveResult(result, standardAlacName);
+        if (needLrc && lrcContent) {
+          const lrcBlob = new Blob([lrcContent], { type: 'text/plain;charset=utf-8' });
+          const lrcUrl = URL.createObjectURL(lrcBlob);
+          const a = Object.assign(document.createElement('a'), { href: lrcUrl, download: standardLrcName });
+          a.style.display = 'none';
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(lrcUrl), 10000);
+        }
+        toast(t('dl.done', { size: formatSize(result.size) }));
+      }
     } catch (err) {
       const msg = (err && err.message) || String(err);
       if (err && err.name === 'AbortError') toast(t('dl.cancelled'));

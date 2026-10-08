@@ -7,12 +7,25 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23fb2c55'/%3E%3Cpath d='M9.5 16.5V7l7-1.5v9' fill='none' stroke='white' stroke-width='1.8'/%3E%3Ccircle cx='7.5' cy='16.5' r='2' fill='white'/%3E%3Ccircle cx='14.5' cy='14.5' r='2' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/app.css">
   <link rel="stylesheet" href="/assets/lyrics/amll.css">
+  <link rel="stylesheet" href="/assets/auth-and-options.css">
+  <script>
+    try {
+      if (!localStorage.getItem('am_auth_token')) {
+        document.documentElement.classList.add('needs-auth');
+      }
+    } catch (_) {}
+  </script>
 </head>
 <!--
   单页应用：与 music.apple.com 相同，服务端对所有站内页面地址都返回本页。
   导航、播放条、音频与歌词界面常驻；页面视图（/assets/views/）由前端路由（app.mjs）切换，跳转页面时播放不中断。
 -->
 <body>
+  <!-- 右上角锁定/退出会话按钮 -->
+  <button class="auth-lock-btn" id="auth-lock-btn" type="button" aria-label="锁定/退出会话" title="锁定/退出会话">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    <span>锁定</span>
+  </button>
   <!--
     导航（官网 .navigation）：≥484px 为左侧边栏（logo、返回、主页、新发现、排行榜、资料库与歌单，底部为主地区、曲库语言、界面语言与 wrapper-lite 状态）；
     <484px 为顶部固定的 52px 顶栏（返回 / logo / 菜单按钮），菜单按钮展开为整屏菜单，内容与侧边栏相同
@@ -236,6 +249,76 @@
     <p class="player-msg" hidden></p>
   </div>
 
+  <!-- Apple Music 官方风格 Web 原生密码鉴权遮罩弹窗 -->
+  <div class="auth-overlay" id="auth-overlay" hidden>
+    <div class="auth-card" id="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+      <div class="auth-header">
+        <div class="auth-logo-badge">
+          <svg viewBox="0 0 64 64" class="auth-logo" aria-hidden="true">
+            <defs>
+              <linearGradient id="appleMusicGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#fa2d48"/>
+                <stop offset="100%" stop-color="#e01e37"/>
+              </linearGradient>
+            </defs>
+            <rect width="64" height="64" rx="16" fill="url(#appleMusicGrad)"/>
+            <path d="M26 44V20.5l19-4.2V39" fill="none" stroke="white" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="21" cy="44" r="5.2" fill="white"/>
+            <circle cx="40" cy="39" r="5.2" fill="white"/>
+          </svg>
+        </div>
+        <h1 class="auth-title" id="auth-title">Apple Music</h1>
+        <p class="auth-subtitle">输入访问密码以解锁专属音乐服务</p>
+      </div>
+      <form class="auth-form" id="auth-form" autocomplete="off">
+        <div class="auth-input-wrapper">
+          <input type="password" id="auth-password" class="auth-input" placeholder="输入访问密码..." autocomplete="current-password" autofocus required>
+        </div>
+        <div class="auth-error-msg" id="auth-error-msg" hidden role="alert"></div>
+        <button type="submit" class="auth-btn" id="auth-submit">
+          <span class="auth-btn-text">解锁访问</span>
+        </button>
+      </form>
+      <div class="auth-footer-hint">Protected by Apple Music Hook High-Security Auth</div>
+    </div>
+  </div>
+
+  <!-- Gofile 结果展示卡片 / 弹窗 -->
+  <div class="gofile-modal-overlay" id="gofile-result-modal" hidden>
+    <div class="gofile-result-card" role="dialog" aria-modal="true" aria-labelledby="gofile-title">
+      <button class="gofile-modal-close" id="gofile-modal-close" type="button" aria-label="关闭">&times;</button>
+      <div class="gofile-card-header">
+        <div class="gofile-icon-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <h3 class="gofile-title" id="gofile-title">Gofile 云端转存完成</h3>
+        <p class="gofile-subtitle" id="gofile-zip-name">YOASOBI - 夜に駆ける.zip</p>
+      </div>
+      <div class="gofile-link-box">
+        <input type="text" id="gofile-url-input" readonly value="">
+      </div>
+      <div class="gofile-actions">
+        <button type="button" class="btn-apple-action btn-copy" id="gofile-copy-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>复制下载链接</span>
+        </button>
+        <a href="#" target="_blank" rel="noopener noreferrer" class="btn-apple-action btn-open" id="gofile-open-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></line></svg>
+          <span>直接打开</span>
+        </a>
+      </div>
+      <div class="gofile-clean-notice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#34c759" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span>本地临时文件与 zip 已自动清理，VPS 磁盘 0 占用</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/auth-client.js"></script>
   <script src="/assets/i18n.js"></script>
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>

@@ -1,0 +1,603 @@
+/*
+ * auth-and-options.css
+ * Apple Music 原生深色毛玻璃风格鉴权弹窗、交付选项卡片与 Gofile 结果展示卡片
+ */
+
+/* ==========================================================================
+   一、Apple Music 官方风格 Web 原生密码鉴权系统 UI
+   ========================================================================== */
+
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(30px) saturate(190%);
+  -webkit-backdrop-filter: blur(30px) saturate(190%);
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.35s;
+}
+
+.auth-overlay[hidden] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  display: none !important;
+}
+
+/* 防止页面初次加载时发生未鉴权内容闪烁 (FOUC) */
+html.needs-auth .auth-overlay {
+  display: flex !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px; /* 380px ~ 420px */
+  background: rgba(32, 32, 34, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+  padding: 32px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+  color: #ffffff;
+  transform: scale(1);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+}
+
+.auth-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.auth-logo-badge {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 16px;
+  filter: drop-shadow(0 8px 16px rgba(250, 45, 72, 0.35));
+}
+
+.auth-logo {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.auth-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #ffffff;
+  margin: 0 0 6px 0;
+}
+
+.auth-subtitle {
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.6);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.auth-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-input-wrapper {
+  width: 100%;
+  position: relative;
+}
+
+.auth-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 14px 16px;
+  font-size: 15px;
+  color: #ffffff;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  font-family: inherit;
+}
+
+.auth-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.auth-input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fa2d48;
+  box-shadow: 0 0 0 3px rgba(250, 45, 72, 0.35);
+}
+
+.auth-error-msg {
+  font-size: 13px;
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.12);
+  border: 1px solid rgba(255, 69, 58, 0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-top: -4px;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.auth-btn {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 20px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #fa2d48, #e01e37);
+  border: none;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(250, 45, 72, 0.4);
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.auth-btn:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 18px rgba(250, 45, 72, 0.5);
+}
+
+.auth-btn:active {
+  transform: scale(0.97);
+  filter: brightness(0.95);
+}
+
+.auth-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.auth-footer-hint {
+  margin-top: 20px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.2px;
+}
+
+/* iOS 原生弹簧微震动画 */
+@keyframes keyframeShake {
+  0%, 100% { transform: translateX(0); }
+  15%, 45%, 75% { transform: translateX(-8px); }
+  30%, 60%, 90% { transform: translateX(8px); }
+}
+
+.auth-card.shake {
+  animation: keyframeShake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+/* 顶部锁定/退出按钮 (右上角) */
+.auth-lock-btn {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(45, 45, 48, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.auth-lock-btn:hover {
+  background: rgba(60, 60, 65, 0.9);
+  color: #fa2d48;
+  border-color: rgba(250, 45, 72, 0.4);
+}
+
+.auth-lock-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ==========================================================================
+   二、Web 交付模式与图形化控制 (Options 卡片)
+   ========================================================================== */
+
+.delivery-options-card {
+  width: 100%;
+  max-width: 640px;
+  margin: 18px auto 0;
+  background: rgba(32, 32, 34, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 18px 22px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  color: #ffffff;
+  box-sizing: border-box;
+}
+
+.options-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.options-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(250, 45, 72, 0.15);
+  color: #fa2d48;
+}
+
+.options-badge svg {
+  width: 16px;
+  height: 16px;
+}
+
+.options-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.2px;
+}
+
+.options-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.options-group {
+  margin-bottom: 12px;
+}
+
+.options-group:last-child {
+  margin-bottom: 0;
+}
+
+.options-group-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 8px;
+}
+
+.options-radio-group,
+.options-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 苹果风格单选标签 */
+.apple-radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.apple-radio-label:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.apple-radio-label input[type="radio"] {
+  display: none;
+}
+
+.apple-radio-custom {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: border-color 0.2s ease;
+}
+
+.apple-radio-label input[type="radio"]:checked + .apple-radio-custom {
+  border-color: #fa2d48;
+}
+
+.apple-radio-label input[type="radio"]:checked + .apple-radio-custom::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fa2d48;
+}
+
+.radio-text,
+.checkbox-text {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.radio-text strong {
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.radio-text small {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* 苹果风格复选框标签 */
+.options-checkboxes .options-checkbox-group {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.apple-checkbox-label {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.apple-checkbox-label:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.apple-checkbox-label input[type="checkbox"] {
+  display: none;
+}
+
+.apple-checkbox-custom {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  position: relative;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.apple-checkbox-label input[type="checkbox"]:checked + .apple-checkbox-custom {
+  background: #fa2d48;
+  border-color: #fa2d48;
+}
+
+.apple-checkbox-label input[type="checkbox"]:checked + .apple-checkbox-custom::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 4px;
+  height: 9px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* ==========================================================================
+   三、Gofile 结果展示卡片 / 弹窗
+   ========================================================================== */
+
+.gofile-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99990;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(25px) saturate(180%);
+  -webkit-backdrop-filter: blur(25px) saturate(180%);
+  transition: opacity 0.3s ease;
+}
+
+.gofile-modal-overlay[hidden] {
+  display: none !important;
+}
+
+.gofile-result-card {
+  width: 100%;
+  max-width: 440px;
+  background: rgba(36, 36, 38, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+  padding: 28px 24px;
+  position: relative;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  color: #ffffff;
+}
+
+.gofile-modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.gofile-modal-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.gofile-icon-badge {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #34c759, #30b050);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 14px;
+  box-shadow: 0 6px 18px rgba(52, 199, 89, 0.35);
+}
+
+.gofile-icon-badge svg {
+  width: 26px;
+  height: 26px;
+}
+
+.gofile-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+}
+
+.gofile-subtitle {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  word-break: break-all;
+  margin: 0 0 16px 0;
+  font-family: monospace;
+}
+
+.gofile-link-box {
+  margin-bottom: 18px;
+}
+
+.gofile-link-box input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #64d2ff;
+  text-align: center;
+  outline: none;
+  font-family: monospace;
+}
+
+.gofile-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.btn-apple-action {
+  flex: 1;
+  padding: 11px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.btn-apple-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-copy {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.btn-copy:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.btn-open {
+  background: linear-gradient(135deg, #fa2d48, #e01e37);
+  color: #ffffff;
+}
+
+.btn-open:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 4px 14px rgba(250, 45, 72, 0.4);
+}
+
+.gofile-clean-notice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(52, 199, 89, 0.1);
+  border: 1px solid rgba(52, 199, 89, 0.2);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.gofile-clean-notice svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
