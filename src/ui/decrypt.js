@@ -17,7 +17,7 @@
   /** 媒体 Worker（media.wasm，crates/am-media），与 MV 共用，其中含移植自参考实现的 defrag */
   const MEDIA_WORKER_URL = '/assets/media-worker.js';
   const OPFS_DIR = 'am-hook-downloads';
-  const DOWNLOAD_CONCURRENCY = 4;
+  const DOWNLOAD_CONCURRENCY = 10;
   /** 每个下载持有的 Web Lock 名前缀（与 MV 的 am-hook-mv- 同一机制） */
   const LOCK_PREFIX = 'am-hook-song-';
   /** 浏览器不支持 Web Locks 时，只回收超过该时长未改动的临时文件 */
