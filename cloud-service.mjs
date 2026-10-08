@@ -316,11 +316,24 @@ function tagMp4(mp4Bytes, tags) {
     uOffset += size;
   }
 
-  const metaSize = 12 + fullNewIlst.length;
+  // 标准 iTunes Metadata Handler (33 字节，所有播放器与系统属性读取器均强制要求)
+  const hdlrBox = new Uint8Array([
+    0x00, 0x00, 0x00, 0x21, // size: 33
+    0x68, 0x64, 0x6c, 0x72, // 'hdlr'
+    0x00, 0x00, 0x00, 0x00, // version & flags
+    0x00, 0x00, 0x00, 0x00, // predefined
+    0x6d, 0x64, 0x69, 0x72, // handler type: 'mdir'
+    0x61, 0x70, 0x70, 0x6c, // handler subtype: 'appl'
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
+    0x00                     // name
+  ]);
+
+  const metaSize = 12 + hdlrBox.length + fullNewIlst.length;
   const metaBox = new Uint8Array(metaSize);
   new DataView(metaBox.buffer).setUint32(0, metaSize, false);
   metaBox.set(new TextEncoder().encode('meta'), 4);
-  metaBox.set(fullNewIlst, 12);
+  metaBox.set(hdlrBox, 12);
+  metaBox.set(fullNewIlst, 12 + hdlrBox.length);
 
   const udtaTotal = 8 + metaBox.length;
   const finalUdta = new Uint8Array(udtaTotal);
