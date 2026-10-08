@@ -1002,7 +1002,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     ];
     if (hook) {
       items.push(
-        { icon: ICON.server, label: t('menu.serverDownload'), hint: t('menu.serverDownloadHint'), href: v.hookFileUrl, download: fileName },
         '-',
         playerSection(v),
         '-',
