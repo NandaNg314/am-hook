@@ -510,27 +510,20 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
     const batchSessionId = isZip ? `album_${albumId || Date.now()}_${Date.now()}` : null;
     const zipFilename = `${artistName} - ${albumTitle} [${quality}].zip`;
+    const BATCH_CONCURRENCY = 3;
     let parentFolder = null;
     let guestToken = null;
     let finalDownloadPage = null;
     let successCount = 0;
+    let finishedCount = 0;
 
-    for (let i = 0; i < tracks.length; i++) {
-      if (batchSig.aborted) break;
-      const t = tracks[i];
+    const albAttr = (album && album.attributes) || {};
+
+    const processSingleTrack = async (t, index) => {
+      if (batchSig.aborted) return;
       const attr = t.attributes || {};
       const songTitle = attr.name || '未知曲目';
-      const pct = Math.floor((i / tracks.length) * 100);
-      if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
-      const isLast = (i === tracks.length - 1);
-      if (batchStatusDetail) {
-        batchStatusDetail.textContent = isZip && isLast
-          ? `(${i + 1}/${tracks.length}) 最后一首，正在生成 ZIP 压缩包并极速直传 Gofile...`
-          : `(${i + 1}/${tracks.length}) 正在准备《${songTitle}》...`;
-      }
-
       try {
-        const albAttr = (album && album.attributes) || {};
         const coverUrl = artUrl(attr.artwork || albAttr.artwork, 1400);
         const resp = await fetch('/api/cloud-transfer', {
           method: 'POST',
@@ -541,7 +534,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             folderId: parentFolder,
             token: guestToken,
             batchId: batchSessionId,
-            isLastTrack: isLast,
+            isLastTrack: false,
             zipFilename,
             meta: {
               title: attr.name,
@@ -552,7 +545,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               genre: (attr.genreNames && attr.genreNames[0]) || (albAttr.genreNames && albAttr.genreNames[0]) || '',
               composer: attr.composerName || '',
               copyright: albAttr.copyright || '',
-              trackNumber: attr.trackNumber || (i + 1),
+              trackNumber: attr.trackNumber || (index + 1),
               totalTracks: tracks.length,
               discNumber: attr.discNumber || 1,
               totalDiscs: 1,
@@ -567,16 +560,76 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         });
         const resJson = await resp.json();
         if (resJson.status === 'ok' && resJson.data) {
-          if (resJson.data.folderId) parentFolder = resJson.data.folderId;
-          if (resJson.data.guestToken) guestToken = resJson.data.guestToken;
+          if (resJson.data.folderId && !parentFolder) parentFolder = resJson.data.folderId;
+          if (resJson.data.guestToken && !guestToken) guestToken = resJson.data.guestToken;
           if (resJson.data.downloadPage) finalDownloadPage = resJson.data.downloadPage;
           successCount++;
         } else {
           console.warn(`[Batch] 曲目《${songTitle}》转存失败:`, resJson.error);
         }
       } catch (err) {
-        if (batchSig.aborted) break;
-        console.warn(`[Batch] 曲目《${songTitle}》转存异常:`, err.message);
+        if (!batchSig.aborted) console.warn(`[Batch] 曲目《${songTitle}》转存异常:`, err.message);
+      } finally {
+        finishedCount++;
+        const pct = Math.floor((finishedCount / tracks.length) * (isZip ? 90 : 100));
+        if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
+        if (batchStatusDetail) {
+          batchStatusDetail.textContent = `⚡ [3 线程并行加速] 已就绪 (${finishedCount}/${tracks.length}) 首曲目...`;
+        }
+      }
+    };
+
+    // 1. 若非单 ZIP 模式，首曲先单发以获取 folderId，以便后续并发曲目归集至同一网盘目录
+    let startIndex = 0;
+    if (!isZip && tracks.length > 0) {
+      if (batchStatusDetail) batchStatusDetail.textContent = `(1/${tracks.length}) 正在初始化网盘文件夹...`;
+      await processSingleTrack(tracks[0], 0);
+      startIndex = 1;
+    }
+
+    // 2. 启动 3 线程并发工作池并行拉取转存
+    let nextTrackIdx = startIndex;
+    const worker = async () => {
+      while (nextTrackIdx < tracks.length && !batchSig.aborted) {
+        const cur = nextTrackIdx++;
+        await processSingleTrack(tracks[cur], cur);
+      }
+    };
+
+    const workerCount = Math.min(BATCH_CONCURRENCY, tracks.length - startIndex);
+    const workerPromises = [];
+    for (let w = 0; w < workerCount; w++) {
+      workerPromises.push(worker());
+    }
+    await Promise.all(workerPromises);
+
+    // 3. 若为 ZIP 模式且全部曲目已就绪，触发最终一键极速打包与直传
+    if (isZip && !batchSig.aborted && successCount > 0) {
+      if (batchProgressFill) batchProgressFill.style.width = '92%';
+      if (batchStatusDetail) batchStatusDetail.textContent = `所有曲目已就绪，正在生成 ZIP 压缩包并极速直传 Gofile...`;
+      try {
+        const finResp = await fetch('/api/cloud-transfer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            finalizeBatch: true,
+            batchId: batchSessionId,
+            zipFilename,
+            quality,
+            folderId: parentFolder,
+            token: guestToken,
+            meta: { album: albumTitle }
+          }),
+          signal: batchSig
+        });
+        const finJson = await finResp.json();
+        if (finJson.status === 'ok' && finJson.data) {
+          if (finJson.data.downloadPage) finalDownloadPage = finJson.data.downloadPage;
+          if (finJson.data.folderId) parentFolder = finJson.data.folderId;
+          if (finJson.data.guestToken) guestToken = finJson.data.guestToken;
+        }
+      } catch (err) {
+        if (!batchSig.aborted) console.warn('[Batch] 全辑 ZIP 打包直传异常:', err.message);
       }
     }
 
