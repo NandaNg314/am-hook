@@ -530,7 +530,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       }
 
       try {
-        const coverUrl = artUrl(attr.artwork || album.attributes.artwork, 1400);
+        const albAttr = (album && album.attributes) || {};
+        const coverUrl = artUrl(attr.artwork || albAttr.artwork, 1400);
         const resp = await fetch('/api/cloud-transfer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -547,10 +548,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               artist: attr.artistName || artistName,
               album: albumTitle,
               albumArtist: artistName,
-              date: attr.releaseDate || album.attributes.releaseDate,
-              genre: (attr.genreNames && attr.genreNames[0]) || (album.attributes.genreNames && album.attributes.genreNames[0]) || '',
+              date: attr.releaseDate || albAttr.releaseDate,
+              genre: (attr.genreNames && attr.genreNames[0]) || (albAttr.genreNames && albAttr.genreNames[0]) || '',
               composer: attr.composerName || '',
-              copyright: album.attributes.copyright || '',
+              copyright: albAttr.copyright || '',
               trackNumber: attr.trackNumber || (i + 1),
               totalTracks: tracks.length,
               discNumber: attr.discNumber || 1,
