@@ -479,3 +479,68 @@ fn gateway_error(message: &str) -> Response<Body> {
 fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body> {
     log::note(internal_error(message), format!("{message}: {error}"))
 }
+
+/// Gofile 服务器列表代理（解决部分网络环境下直连 api.gofile.io 超时的问题）
+pub async fn gofile_servers_handler() -> Response<Body> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    match client.get("https://api.gofile.io/servers").send().await {
+        Ok(resp) => {
+            let bytes = resp.bytes().await.unwrap_or_default();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from(bytes))
+                .unwrap_or_else(|e| internal_error(&format!("failed to build response: {e}")))
+        }
+        Err(e) => gateway_error(&format!("Failed to reach Gofile servers: {e}")),
+    }
+}
+
+/// Gofile 上传文件流式代理（直接流式转发客户端的 multipart 请求体至指定的 Gofile 存储服务器，不落盘、不占内存）
+pub async fn gofile_upload_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response<Body> {
+    let server = match params.get("server") {
+        Some(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => s,
+        _ => return bad_request("Invalid or missing 'server' parameter"),
+    };
+
+    let target_url = format!("https://{server}.gofile.io/contents/uploadfile");
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("multipart/form-data");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_default();
+
+    let stream = body.into_data_stream();
+    let reqwest_body = reqwest::Body::wrap_stream(stream);
+
+    match client
+        .post(&target_url)
+        .header(CONTENT_TYPE, content_type)
+        .body(reqwest_body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            let resp_stream = resp.bytes_stream();
+            Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from_stream(resp_stream))
+                .unwrap_or_else(|e| internal_error(&format!("failed to build response: {e}")))
+        }
+        Err(e) => gateway_error(&format!("Failed to upload to Gofile: {e}")),
+    }
+}
+

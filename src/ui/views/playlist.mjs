@@ -320,6 +320,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       tracks = list.filter((track) => track.attributes);
       render();
       showAlert('', '');
+      if ($('batch-gofile-btn')) $('batch-gofile-btn').disabled = !tracks.length;
+      if ($('batch-dl-btn')) $('batch-dl-btn').disabled = !tracks.length;
     } catch (err) {
       if (token !== loadToken || signal.aborted) return;
       showAlert('error', () => t('playlist.failed', { msg: err.message }));
@@ -386,6 +388,320 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (playlist) render();
     if (playlistId) loadPlaylist();
   });
+
+  /* ---------- 批量转存至 Gofile 与批量本地下载 ---------- */
+  const batchGofileBtn = $('batch-gofile-btn');
+  const batchDlBtn = $('batch-dl-btn');
+  const batchModal = $('batch-modal');
+  const batchModalTitle = $('batch-modal-title');
+  const batchModalClose = $('batch-modal-close');
+  const batchModalCancel = $('batch-modal-cancel');
+  const batchModalConfirm = $('batch-modal-confirm');
+  const batchQualitySelect = $('batch-quality-select');
+  const batchLyricsFormat = $('batch-lyrics-format');
+  const batchEmbedLyrics = $('batch-embed-lyrics');
+  const batchSaveLyrics = $('batch-save-lyrics');
+
+  if (batchLyricsFormat && localStorage.getItem('am_lyrics_fmt')) {
+    batchLyricsFormat.value = localStorage.getItem('am_lyrics_fmt');
+  }
+  if (batchEmbedLyrics && localStorage.getItem('am_embed_lyr') !== null) {
+    batchEmbedLyrics.checked = localStorage.getItem('am_embed_lyr') === 'true';
+  }
+  if (batchSaveLyrics && localStorage.getItem('am_save_lyr') !== null) {
+    batchSaveLyrics.checked = localStorage.getItem('am_save_lyr') === 'true';
+  }
+
+  const batchCard = $('batch-card');
+  const batchStatusTitle = $('batch-status-title');
+  const batchProgressFill = $('batch-progress-fill');
+  const batchStatusDetail = $('batch-status-detail');
+  const batchCancelBtn = $('batch-cancel-btn');
+
+  const gofileDialog = $('gofile-dialog');
+  const gofileCloseBtn = $('gofile-dialog-close');
+  const gofileDoneBtn = $('gofile-done-btn');
+  const gofileCopyBtn = $('gofile-copy-btn');
+  const gofileLinkInput = $('gofile-link-input');
+  const gofileOpenLink = $('gofile-open-link');
+  const gofileSongInfo = $('gofile-song-info');
+
+  let currentBatchMode = null;
+  let batchAbortController = null;
+
+  batchCloseDialogs();
+  function batchCloseDialogs() {
+    gofileCloseBtn?.addEventListener('click', () => gofileDialog.close());
+    gofileDoneBtn?.addEventListener('click', () => gofileDialog.close());
+    gofileCopyBtn?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(gofileLinkInput.value);
+        gofileCopyBtn.textContent = '已复制!';
+        setTimeout(() => { if (gofileCopyBtn) gofileCopyBtn.textContent = '复制链接'; }, 2000);
+        toast('已复制 Gofile 分享链接');
+      } catch {
+        gofileLinkInput.select();
+        document.execCommand('copy');
+        toast('已复制链接');
+      }
+    });
+
+    batchModalClose?.addEventListener('click', () => batchModal.close());
+    batchModalCancel?.addEventListener('click', () => batchModal.close());
+    batchCancelBtn?.addEventListener('click', () => {
+      if (batchAbortController) {
+        batchAbortController.abort();
+        toast('已请求取消批量任务');
+      }
+    });
+  }
+
+  const batchZipPack = $('batch-zip-pack');
+  const batchZipPackContainer = $('batch-zip-pack-container');
+
+  batchGofileBtn?.addEventListener('click', () => {
+    currentBatchMode = 'gofile';
+    if (batchModalTitle) batchModalTitle.textContent = '☁️ 转存歌单至 Gofile (VPS 2000M 极速)';
+    if (batchZipPackContainer) batchZipPackContainer.hidden = false;
+    batchModal?.showModal();
+  });
+
+  batchDlBtn?.addEventListener('click', () => {
+    currentBatchMode = 'local';
+    if (batchModalTitle) batchModalTitle.textContent = '📥 批量下载歌单到本机';
+    if (batchZipPackContainer) batchZipPackContainer.hidden = true;
+    batchModal?.showModal();
+  });
+
+  batchModalConfirm?.addEventListener('click', () => {
+    batchModal?.close();
+    const q = batchQualitySelect ? batchQualitySelect.value : 'Lossless';
+    const lyricsFormat = batchLyricsFormat ? batchLyricsFormat.value : 'lrc';
+    const embedLyrics = batchEmbedLyrics ? batchEmbedLyrics.checked : true;
+    const saveLyricsFile = batchSaveLyrics ? batchSaveLyrics.checked : true;
+    const isZip = batchZipPack ? batchZipPack.checked : true;
+
+    localStorage.setItem('am_lyrics_fmt', lyricsFormat);
+    localStorage.setItem('am_embed_lyr', String(embedLyrics));
+    localStorage.setItem('am_save_lyr', String(saveLyricsFile));
+
+    if (currentBatchMode === 'gofile') {
+      runBatchGofile(q, embedLyrics, saveLyricsFile, lyricsFormat, isZip);
+    } else {
+      runBatchLocal(q, embedLyrics, saveLyricsFile, lyricsFormat);
+    }
+  });
+
+  async function runBatchGofile(quality, embedLyrics, saveLyricsFile, lyricsFormat, isZip = true) {
+    if (!tracks.length) return;
+    batchAbortController = new AbortController();
+    const batchSig = batchAbortController.signal;
+
+    const plName = (playlist && playlist.attributes && playlist.attributes.name) || 'Apple Music 歌单';
+    if (batchCard) batchCard.hidden = false;
+    if (batchStatusTitle) batchStatusTitle.textContent = isZip
+      ? `📦 正在极速打包压缩歌单《${plName}》为 .zip...`
+      : `☁️ 正在通过 VPS 极速转存《${plName}》至 Gofile...`;
+    if (batchProgressFill) batchProgressFill.style.width = '0%';
+    if (batchStatusDetail) batchStatusDetail.textContent = `准备开始 (共 ${tracks.length} 首歌曲)...`;
+
+    const batchSessionId = isZip ? `playlist_${playlistId || Date.now()}_${Date.now()}` : null;
+    const zipFilename = `${plName} [${quality}].zip`;
+    let parentFolder = null;
+    let guestToken = null;
+    let finalDownloadPage = null;
+    let successCount = 0;
+
+    for (let i = 0; i < tracks.length; i++) {
+      if (batchSig.aborted) break;
+      const t = tracks[i];
+      const attr = t.attributes || {};
+      const songTitle = attr.name || '未知曲目';
+      const pct = Math.floor((i / tracks.length) * 100);
+      if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
+      const isLast = (i === tracks.length - 1);
+      if (batchStatusDetail) {
+        batchStatusDetail.textContent = isZip && isLast
+          ? `(${i + 1}/${tracks.length}) 最后一首，正在生成 ZIP 压缩包并极速直传 Gofile...`
+          : `(${i + 1}/${tracks.length}) 正在准备《${songTitle}》...`;
+      }
+
+      try {
+        const coverUrl = artUrl(attr.artwork || (playlist && playlist.attributes && playlist.attributes.artwork), 1400);
+        const resp = await fetch('/api/cloud-transfer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adamId: t.id,
+            quality,
+            folderId: parentFolder,
+            token: guestToken,
+            batchId: batchSessionId,
+            isLastTrack: isLast,
+            zipFilename,
+            meta: {
+              title: attr.name,
+              artist: attr.artistName || '',
+              album: attr.albumName || plName,
+              albumArtist: attr.artistName || '',
+              date: attr.releaseDate || '',
+              genre: (attr.genreNames && attr.genreNames[0]) || '',
+              composer: attr.composerName || '',
+              copyright: '',
+              trackNumber: i + 1,
+              totalTracks: tracks.length,
+              discNumber: 1,
+              totalDiscs: 1,
+              coverUrl
+            },
+            embedLyrics,
+            saveLyricsFile,
+            lyricsFormat,
+            saveLrc: saveLyricsFile
+          }),
+          signal: batchSig
+        });
+        const resJson = await resp.json();
+        if (resJson.status === 'ok' && resJson.data) {
+          if (resJson.data.folderId) parentFolder = resJson.data.folderId;
+          if (resJson.data.guestToken) guestToken = resJson.data.guestToken;
+          if (resJson.data.downloadPage) finalDownloadPage = resJson.data.downloadPage;
+          successCount++;
+        } else {
+          console.warn(`[Batch] 歌单曲目《${songTitle}》转存失败:`, resJson.error);
+        }
+      } catch (err) {
+        if (batchSig.aborted) break;
+        console.warn(`[Batch] 歌单曲目《${songTitle}》转存异常:`, err.message);
+      }
+    }
+
+    if (batchProgressFill) batchProgressFill.style.width = '100%';
+    setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
+
+    if (batchSig.aborted) {
+      toast('已取消批量转存');
+      return;
+    }
+
+    const shareUrl = finalDownloadPage || (parentFolder ? `https://gofile.io/d/${parentFolder}` : '');
+    if (shareUrl) {
+      toast(isZip ? '🎉 歌单已成功压缩并转存至 Gofile！' : `🎉 歌单转存完成！共 ${successCount}/${tracks.length} 首曲目`);
+      if (gofileLinkInput) gofileLinkInput.value = shareUrl;
+      if (gofileOpenLink) gofileOpenLink.href = shareUrl;
+      if (gofileSongInfo) {
+        gofileSongInfo.textContent = isZip
+          ? `已成功将歌单《${plName}》打包压缩为单文件：${zipFilename} (${successCount} 首完整曲目${saveLyricsFile ? '与歌词' : ''})`
+          : `已成功将歌单《${plName}》(${successCount} 首歌曲) 归集至同一 Gofile 文件夹`;
+      }
+      if (gofileCopyBtn) gofileCopyBtn.textContent = '复制链接';
+      gofileDialog?.showModal();
+    } else {
+      toast('转存失败，未能创建网盘链接');
+    }
+  }
+
+  async function runBatchLocal(quality, embedLyrics, saveLyricsFile, lyricsFormat) {
+    if (!tracks.length) return;
+    batchAbortController = new AbortController();
+    const batchSig = batchAbortController.signal;
+
+    const plName = (playlist && playlist.attributes && playlist.attributes.name) || 'Apple Music 歌单';
+    if (batchCard) batchCard.hidden = false;
+    if (batchStatusTitle) batchStatusTitle.textContent = `📥 正在批量下载《${plName}》到本机...`;
+    if (batchProgressFill) batchProgressFill.style.width = '0%';
+
+    for (let i = 0; i < tracks.length; i++) {
+      if (batchSig.aborted) break;
+      const t = tracks[i];
+      const attr = t.attributes || {};
+      const songTitle = attr.name || '未知曲目';
+      const pct = Math.floor((i / tracks.length) * 100);
+      if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
+      if (batchStatusDetail) batchStatusDetail.textContent = `(${i + 1}/${tracks.length}) 正在下载《${songTitle}》...`;
+
+      try {
+        const parseRes = await fetch(`/parse/song/${t.id}`, { signal: batchSig });
+        const parseData = await parseRes.json();
+        const variants = parseData.variants || [];
+        if (!variants.length) continue;
+
+        let selected = variants.find(v => v.codecs === 'alac') || variants[0];
+        if (quality === 'Hi-Res') {
+          selected = variants.find(v => v.codecs === 'alac' && (v.sample_rate > 48000 || v.bit_depth > 16)) || selected;
+        } else if (quality === 'Atmos') {
+          selected = variants.find(v => v.codecs && v.codecs.includes('ec-3')) || selected;
+        } else if (quality === 'AAC') {
+          selected = variants.find(v => v.codecs && v.codecs.includes('mp4a')) || variants[0];
+        }
+
+        const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
+        const audioUrl = `${location.origin}/${base}${selected.file_uri}`;
+        const cleanArtist = (attr.artistName || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const cleanTitle = songTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
+
+        const a = document.createElement('a');
+        a.href = audioUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        // 可选下载独立外挂歌词文件（无歌词则跳过）
+        if (saveLyricsFile) {
+          try {
+            const lRes = await fetch(`/lyrics/${t.id}`, { signal: batchSig });
+            if (lRes.ok) {
+              const rawTtml = await lRes.text();
+              if (rawTtml && rawTtml.trim()) {
+                let content = '';
+                let ext = 'lrc';
+                if (lyricsFormat === 'ttml') {
+                  ext = 'ttml';
+                  content = rawTtml;
+                } else {
+                  ext = 'lrc';
+                  const pRegex = /<p[^>]*\bbegin=["']([^"']+)["'][^>]*>([\s\S]*?)<\/p>/gi;
+                  const lines = [];
+                  let m;
+                  while ((m = pRegex.exec(rawTtml)) !== null) {
+                    const sec = parseFloat(m[1].replace(/s$/i, '')) || 0;
+                    const min = Math.floor(sec / 60);
+                    const s = (sec % 60).toFixed(2);
+                    const timeTag = `[${String(min).padStart(2, '0')}:${s.padStart(5, '0')}]`;
+                    const text = m[2].replace(/<[^>]+>/g, '').trim();
+                    if (text) lines.push(`${timeTag} ${text}`);
+                  }
+                  content = lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim();
+                }
+                if (content && content.trim()) {
+                  const lBlob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                  const lUrl = URL.createObjectURL(lBlob);
+                  const la = document.createElement('a');
+                  la.href = lUrl;
+                  la.download = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.${ext}`;
+                  document.body.appendChild(la);
+                  la.click();
+                  la.remove();
+                  setTimeout(() => URL.revokeObjectURL(lUrl), 8000);
+                }
+              }
+            }
+          } catch {}
+        }
+
+        await new Promise(r => setTimeout(r, 1200));
+      } catch (err) {
+        if (batchSig.aborted) break;
+        console.warn(`[Batch DL] 下载《${songTitle}》失败:`, err.message);
+      }
+    }
+
+    if (batchProgressFill) batchProgressFill.style.width = '100%';
+    setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
+    toast(batchSig.aborted ? '已取消批量下载' : '🎉 歌单批量下载完成！');
+  }
 
   if (!playlistId) {
     showAlert('error', () => t('playlist.badId'));

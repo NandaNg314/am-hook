@@ -2016,3 +2016,205 @@ body.lyrics-open { overflow: hidden; }
   .nav-folder-toggle { flex-basis: 24px; width: 24px; height: 44px; margin-left: -6px; }
   .nav-folder-toggle svg { width: 14px; height: 14px; }
 }
+
+/* 批量选项弹窗 & Gofile 结果弹窗基础样式与高对比度适配 */
+.am-modal, .gofile-dialog {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+.am-modal::backdrop, .gofile-dialog::backdrop {
+  background: rgba(0, 0, 0, .45);
+  backdrop-filter: blur(4px);
+}
+.am-modal select, .gofile-dialog select, .variants-options select {
+  background-color: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.am-modal select option, .gofile-dialog select option, .variants-options select option {
+  background-color: var(--surface-2);
+  color: var(--text);
+}
+
+/* 主页下载交付偏好卡片 (Apple 原生自适应风格) */
+.delivery-options-card {
+  width: min(760px, 100%);
+  margin: 18px auto 0;
+  background: var(--surface-2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px 20px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  box-sizing: border-box;
+  text-align: left;
+}
+.options-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.options-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: rgba(250, 45, 72, 0.12);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.options-badge svg {
+  width: 15px;
+  height: 15px;
+}
+.options-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text);
+  letter-spacing: -0.2px;
+}
+.options-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+}
+.options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.options-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.options-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.options-radio-group,
+.options-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.apple-radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.apple-radio-label:hover {
+  border-color: var(--line-strong);
+}
+.apple-radio-label input[type="radio"] {
+  display: none;
+}
+.apple-radio-custom {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: border-color 0.15s ease;
+}
+.apple-radio-label input[type="radio"]:checked + .apple-radio-custom {
+  border-color: var(--accent);
+}
+.apple-radio-label input[type="radio"]:checked + .apple-radio-custom::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.radio-text,
+.checkbox-text {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.radio-text strong {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 13px;
+}
+.radio-text small {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.apple-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.apple-checkbox-label:hover {
+  border-color: var(--line-strong);
+}
+.apple-checkbox-label input[type="checkbox"] {
+  display: none;
+}
+.apple-checkbox-custom {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 2px solid var(--line-strong);
+  position: relative;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.apple-checkbox-label input[type="checkbox"]:checked + .apple-checkbox-custom {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.apple-checkbox-label input[type="checkbox"]:checked + .apple-checkbox-custom::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checkbox-text {
+  color: var(--text);
+  font-weight: 500;
+  font-size: 13px;
+}
+
