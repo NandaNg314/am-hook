@@ -395,7 +395,12 @@ pub async fn master_handler(
             .get("msg")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("wrapper-lite returned an error");
-        return internal_error(msg);
+        let friendly_msg = if msg == "failed to get m3u8" {
+            "当前歌曲在解析账号所属地区无资源或未上架（可能为日区/美区等特定区域独占版权）"
+        } else {
+            msg
+        };
+        return internal_error(friendly_msg);
     }
 
     let master_url = payload
