@@ -603,20 +603,31 @@ async function processTransfer(body) {
   if (batchId) {
     const sessionDir = `/tmp/am_sessions/${batchId}`;
     fs.mkdirSync(sessionDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, standardM4aName), taggedMp4Buf);
 
-    if (lyricsFilename && lyricsContent) {
-      fs.writeFileSync(path.join(sessionDir, lyricsFilename), lyricsContent, 'utf8');
-      console.log(`[Cloud-Transfer] 缓存歌词: ${lyricsFilename} 到 session: ${batchId}`);
+    let finalM4aName = standardM4aName;
+    let finalLyricsName = lyricsFilename;
+    if (fs.existsSync(path.join(sessionDir, finalM4aName))) {
+      const trackPrefix = meta.trackNumber ? `${String(meta.trackNumber).padStart(2, '0')}. ` : '';
+      finalM4aName = `${trackPrefix}${standardM4aName}`;
+      if (finalLyricsName) {
+        finalLyricsName = `${trackPrefix}${lyricsFilename}`;
+      }
+    }
+
+    fs.writeFileSync(path.join(sessionDir, finalM4aName), taggedMp4Buf);
+
+    if (finalLyricsName && lyricsContent) {
+      fs.writeFileSync(path.join(sessionDir, finalLyricsName), lyricsContent, 'utf8');
+      console.log(`[Cloud-Transfer] 缓存歌词: ${finalLyricsName} 到 session: ${batchId}`);
     }
 
     // 若非最后一首曲目，缓存后快速返回，不浪费上传时间
     if (!isLastTrack) {
       const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] ✔ 批处理就绪: ${standardM4aName} (耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+      console.log(`[Cloud-Transfer] ✔ 批处理就绪: ${finalM4aName} (耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
       return {
         queued: true,
-        fileName: standardM4aName,
+        fileName: finalM4aName,
         qualityName: chosenFormatName,
         elapsedMs: Math.round(tEnd - t0)
       };
@@ -818,6 +829,51 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ status: 'error', error: 'Not found' }));
 });
 
+/* ==================== 磁盘与临时会话自动清理 ==================== */
+
+function cleanupStaleSessions() {
+  try {
+    const sessionsRoot = '/tmp/am_sessions';
+    if (fs.existsSync(sessionsRoot)) {
+      const now = Date.now();
+      const maxAge = 2 * 60 * 60 * 1000; // 2 小时
+      const entries = fs.readdirSync(sessionsRoot);
+      for (const entry of entries) {
+        const entryPath = path.join(sessionsRoot, entry);
+        try {
+          const stat = fs.statSync(entryPath);
+          if (now - stat.mtimeMs > maxAge) {
+            fs.rmSync(entryPath, { recursive: true, force: true });
+            console.log(`[am-cloud] 自动清理过期临时会话目录: ${entry}`);
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  try {
+    const tmpDir = '/tmp';
+    const now = Date.now();
+    const maxAge = 2 * 60 * 60 * 1000;
+    const entries = fs.readdirSync(tmpDir);
+    for (const entry of entries) {
+      if ((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) {
+        const p = path.join(tmpDir, entry);
+        try {
+          const stat = fs.statSync(p);
+          if (now - stat.mtimeMs > maxAge) {
+            fs.rmSync(p, { force: true });
+            console.log(`[am-cloud] 自动清理过期临时 ZIP: ${entry}`);
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
+  cleanupStaleSessions();
+  setInterval(cleanupStaleSessions, 30 * 60 * 1000);
 });
+
