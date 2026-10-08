@@ -1,5 +1,5 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
-import { createActions, playable, targetOf, localPath } from './actions.mjs';
+import { createActions, playable, targetOf, localPath, normalizeArtistName, toSimplified } from './actions.mjs';
 import { createDetailHeader } from './detail-header.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
@@ -506,7 +506,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (batchStatusDetail) batchStatusDetail.textContent = `准备开始 (共 ${tracks.length} 首歌曲)...`;
 
     const batchSessionId = isZip ? `playlist_${playlistId || Date.now()}_${Date.now()}` : null;
-    const zipFilename = `${plName} [${quality}].zip`;
+    const zipFilename = `${toSimplified(plName)} [${quality}].zip`;
     const BATCH_CONCURRENCY = 3;
     let parentFolder = null;
     let guestToken = null;
@@ -689,8 +689,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
         const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
         const audioUrl = `${location.origin}/${base}${selected.file_uri}`;
-        const cleanArtist = (attr.artistName || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
-        const cleanTitle = songTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const normArtist = normalizeArtistName(attr.artistName || '');
+        const normTitle = toSimplified(songTitle);
+        const cleanArtist = normArtist.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const cleanTitle = normTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
         const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
 
         const a = document.createElement('a');
@@ -711,7 +713,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
                 let ext = 'lrc';
                 if (lyricsFormat === 'ttml') {
                   ext = 'ttml';
-                  content = rawTtml;
+                  content = toSimplified(rawTtml);
                 } else {
                   ext = 'lrc';
                   const pRegex = /<p[^>]*\bbegin=["']([^"']+)["'][^>]*>([\s\S]*?)<\/p>/gi;
@@ -725,7 +727,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
                     const text = m[2].replace(/<[^>]+>/g, '').trim();
                     if (text) lines.push(`${timeTag} ${text}`);
                   }
-                  content = lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim();
+                  content = toSimplified(lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim());
                 }
                 if (content && content.trim()) {
                   const lBlob = new Blob([content], { type: 'text/plain;charset=utf-8' });

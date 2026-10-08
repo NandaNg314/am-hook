@@ -1,5 +1,5 @@
 // 专辑页（/https://music.apple.com/{cc}/album/{slug}/{id}），由 app.mjs 挂载
-import { createActions, playable, targetOf } from './actions.mjs';
+import { createActions, playable, targetOf, normalizeArtistName, toSimplified } from './actions.mjs';
 import { createDetailHeader } from './detail-header.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
@@ -528,7 +528,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (batchStatusDetail) batchStatusDetail.textContent = `准备开始 (共 ${tracks.length} 首歌曲)...`;
 
     const batchSessionId = isZip ? `album_${albumId || Date.now()}_${Date.now()}` : null;
-    const zipFilename = `${artistName} - ${albumTitle} [${quality}].zip`;
+    const zipFilename = `${normalizeArtistName(artistName)} - ${toSimplified(albumTitle)} [${quality}].zip`;
     const BATCH_CONCURRENCY = 3;
     let parentFolder = null;
     let guestToken = null;
@@ -712,9 +712,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
         const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
         const audioUrl = `${location.origin}/${base}${selected.file_uri}`;
-        const cleanArtist = (attr.artistName || album.attributes.artistName || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
-        const cleanTitle = songTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
-        const fileName = `${cleanArtist} - ${cleanTitle}.m4a`;
+        const normArtist = normalizeArtistName(attr.artistName || album.attributes.artistName || '');
+        const normTitle = toSimplified(songTitle);
+        const cleanArtist = normArtist.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const cleanTitle = normTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
 
         const a = document.createElement('a');
         a.href = audioUrl;
@@ -734,7 +736,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
                 let ext = 'lrc';
                 if (lyricsFormat === 'ttml') {
                   ext = 'ttml';
-                  content = rawTtml;
+                  content = toSimplified(rawTtml);
                 } else {
                   ext = 'lrc';
                   const pRegex = /<p[^>]*\bbegin=["']([^"']+)["'][^>]*>([\s\S]*?)<\/p>/gi;
@@ -748,14 +750,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
                     const text = m[2].replace(/<[^>]+>/g, '').trim();
                     if (text) lines.push(`${timeTag} ${text}`);
                   }
-                  content = lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim();
+                  content = toSimplified(lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim());
                 }
                 if (content && content.trim()) {
                   const lBlob = new Blob([content], { type: 'text/plain;charset=utf-8' });
                   const lUrl = URL.createObjectURL(lBlob);
                   const la = document.createElement('a');
                   la.href = lUrl;
-                  la.download = `${cleanArtist} - ${cleanTitle}.${ext}`;
+                  la.download = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.${ext}`;
                   document.body.appendChild(la);
                   la.click();
                   la.remove();
