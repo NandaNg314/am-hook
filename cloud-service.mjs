@@ -382,8 +382,60 @@ async function processTransfer(body) {
     batchId,
     isLastTrack,
     zipFilename,
-    zip = false
+    zip = false,
+    finalizeBatch = false
   } = body;
+
+  // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
+  if (finalizeBatch && batchId) {
+    const sessionDir = `/tmp/am_sessions/${batchId}`;
+    if (!fs.existsSync(sessionDir)) {
+      throw new Error(`批处理会话不存在或已过期: ${batchId}`);
+    }
+    const finalZipName = sanitizeFilename(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip'));
+    const zipFilePath = `/tmp/${batchId}.zip`;
+    const files = fs.readdirSync(sessionDir);
+    console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
+    await packZipFolder(sessionDir, zipFilePath);
+
+    const zipBuf = fs.readFileSync(zipFilePath);
+    console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipBuf.length / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile...`);
+
+    const srv = await getGofileServer();
+    const form = new FormData();
+    form.append('file', new Blob([zipBuf], { type: 'application/zip' }), finalZipName);
+    if (folderId) form.append('folderId', folderId);
+    if (token) form.append('token', token);
+
+    const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(300000)
+    });
+    const upData = await upRes.json();
+    if (upData.status !== 'ok') {
+      throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
+    }
+
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.rmSync(zipFilePath, { force: true });
+    } catch {}
+
+    const tEnd = performance.now();
+    console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+    return {
+      downloadPage: upData.data?.downloadPage,
+      folderId: upData.data?.parentFolder || folderId,
+      guestToken: upData.data?.guestToken || token,
+      fileId: upData.data?.fileId,
+      fileName: finalZipName,
+      isZip: true,
+      totalFiles: files.length,
+      qualityName: quality,
+      elapsedMs: Math.round(tEnd - t0)
+    };
+  }
 
   const shouldSaveLyricsFile = saveLyricsFile !== undefined 
     ? Boolean(saveLyricsFile) 
