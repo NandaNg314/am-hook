@@ -81,63 +81,69 @@
 </div>
 
 <!-- 艺人全作品转存安全选项弹窗 -->
-<dialog class="batch-modal" id="disco-modal" style="border:none;border-radius:16px;background:var(--surface-1,#1c1c1e);color:var(--text,#fff);padding:0;max-width:440px;width:90vw;box-shadow:0 20px 40px rgba(0,0,0,0.6);border:1px solid var(--line,rgba(255,255,255,0.15));">
-  <div style="padding:20px 24px;border-bottom:1px solid var(--line,rgba(255,255,255,0.1));display:flex;align-items:center;justify-content:space-between;">
-    <h3 style="margin:0;font-size:17px;font-weight:600;">☁️ 转存全作品至 Gofile (极速云端)</h3>
-    <button id="disco-modal-close" type="button" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;">✕</button>
+<dialog class="batch-modal" id="disco-modal" style="border:1px solid rgba(255,255,255,0.18);border-radius:18px;background:#1c1c1e;color:#ffffff;padding:0;max-width:440px;width:min(92vw,440px);box-shadow:0 24px 60px rgba(0,0,0,0.6);backdrop-filter:blur(25px);outline:none;">
+  <div style="padding:22px 24px 16px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:space-between;">
+    <h3 style="margin:0;font-size:17px;font-weight:700;color:#ffffff;">☁️ 转存全作品至 Gofile (极速云端)</h3>
+    <button id="disco-modal-close" type="button" style="width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,0.08);border:none;color:#a1a1a6;cursor:pointer;display:grid;place-items:center;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
   </div>
   <div style="padding:20px 24px;display:flex;flex-direction:column;gap:16px;">
     <!-- 专属安全口令 -->
     <div style="display:flex;flex-direction:column;gap:6px;">
-      <label style="font-size:13px;font-weight:600;color:var(--muted);">🔒 专属安全口令 (防误触与带宽控制)</label>
-      <input type="password" id="disco-password" placeholder="请输入专属口令..." style="padding:8px 12px;border-radius:8px;background:var(--surface-2,rgba(255,255,255,0.06));border:1px solid var(--line,rgba(255,255,255,0.2));color:var(--text,#fff);font-size:14px;outline:none;" />
+      <label style="font-size:13px;font-weight:600;color:#a1a1a6;">🔒 专属安全口令 (防误触与带宽控制)</label>
+      <input type="password" id="disco-password" placeholder="请输入专属口令..." style="width:100%;box-sizing:border-box;padding:10px 14px;border-radius:10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#ffffff;font-size:14px;outline:none;" />
     </div>
 
-    <!-- 抓取范围 -->
-    <div style="display:flex;flex-direction:column;gap:8px;">
-      <label style="font-size:13px;font-weight:600;color:var(--muted);">📚 转存作品范围</label>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-include-full" checked /> 完整录音室专辑
+    <!-- 抓取范围卡片 -->
+    <div style="padding:14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:14px;display:flex;flex-direction:column;gap:12px;">
+      <span style="font-size:13px;font-weight:600;color:#a1a1a6;">📚 转存作品范围</span>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+          <input type="checkbox" id="disco-include-full" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;" />
+          <span style="font-size:13px;color:#ffffff;font-weight:500;">完整录音室专辑</span>
         </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-include-live" checked /> Live 现场专辑
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+          <input type="checkbox" id="disco-include-live" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;" />
+          <span style="font-size:13px;color:#ffffff;font-weight:500;">Live 现场专辑</span>
         </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-include-singles" checked /> 单曲与 EP
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+          <input type="checkbox" id="disco-include-singles" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;" />
+          <span style="font-size:13px;color:#ffffff;font-weight:500;">单曲与 EP</span>
         </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-include-compilations" /> 精选辑
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+          <input type="checkbox" id="disco-include-compilations" style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;" />
+          <span style="font-size:13px;color:#ffffff;font-weight:500;">精选辑</span>
         </label>
       </div>
     </div>
 
     <!-- 音质选项 -->
     <div style="display:flex;flex-direction:column;gap:6px;">
-      <label style="font-size:13px;font-weight:600;color:var(--muted);">🎵 目标音质</label>
-      <select id="disco-quality-select" style="padding:8px 12px;border-radius:8px;background:var(--surface-2,rgba(255,255,255,0.06));border:1px solid var(--line,rgba(255,255,255,0.2));color:var(--text,#fff);font-size:14px;outline:none;">
-        <option value="Lossless" selected>无损 (ALAC Lossless 16/24-bit · 最佳平衡)</option>
-        <option value="Hi-Res Lossless">高解析度无损 (Hi-Res Lossless 最高 192kHz)</option>
-        <option value="Dolby Atmos">杜比全景声 (Spatial Audio / E-AC-3 JOC)</option>
-        <option value="AAC">高品质 AAC (256 kbps · 体积轻巧)</option>
+      <label style="font-size:13px;font-weight:600;color:#a1a1a6;">🎵 目标音质</label>
+      <select id="disco-quality-select" style="width:100%;box-sizing:border-box;padding:10px 14px;border-radius:10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#ffffff;font-size:14px;outline:none;cursor:pointer;">
+        <option value="Lossless" selected style="background:#222;color:#fff;">Lossless 无损 ALAC (推荐，16/24-bit · 最佳平衡)</option>
+        <option value="Hi-Res Lossless" style="background:#222;color:#fff;">Hi-Res 高解析度无损 (最高 24-bit 96/192kHz)</option>
+        <option value="Dolby Atmos" style="background:#222;color:#fff;">杜比全景声 Dolby Atmos (空间音频 / EC-3)</option>
+        <option value="AAC" style="background:#222;color:#fff;">高品质 AAC 256kbps (体积小，兼容性广)</option>
       </select>
     </div>
 
     <!-- 歌词与格式设置 -->
-    <div style="display:flex;flex-direction:column;gap:8px;">
-      <label style="font-size:13px;font-weight:600;color:var(--muted);">📝 歌词选项</label>
-      <div style="display:flex;align-items:center;gap:16px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-embed-lyrics" checked /> 内嵌歌词
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-          <input type="checkbox" id="disco-save-lyrics" checked /> 独立 .lrc 歌词
-        </label>
-      </div>
+    <div style="padding:14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:14px;display:flex;flex-direction:column;gap:10px;">
+      <span style="font-size:13px;font-weight:600;color:#a1a1a6;">📝 歌词设置</span>
+      <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">内嵌歌词到音频文件 (写入 ©lyr 标签)</span>
+        <input type="checkbox" id="disco-embed-lyrics" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">保存独立外挂歌词文件 (.lrc)</span>
+        <input type="checkbox" id="disco-save-lyrics" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+      </label>
     </div>
   </div>
-  <div style="padding:16px 24px;border-top:1px solid var(--line,rgba(255,255,255,0.1));display:flex;justify-content:flex-end;gap:10px;">
-    <button id="disco-modal-cancel" type="button" style="padding:8px 16px;border-radius:8px;background:var(--surface-2,rgba(255,255,255,0.06));color:var(--text,#fff);border:1px solid var(--line);cursor:pointer;">取消</button>
-    <button id="disco-modal-confirm" type="button" style="padding:8px 20px;border-radius:8px;background:#fa2d48;color:#fff;border:none;font-weight:600;cursor:pointer;">开始一键极速转存</button>
+  <div style="padding:16px 24px 20px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:flex-end;gap:12px;">
+    <button id="disco-modal-cancel" type="button" style="padding:8px 18px;border-radius:20px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#ffffff;font-size:14px;cursor:pointer;">取消</button>
+    <button id="disco-modal-confirm" type="button" style="padding:8px 22px;border-radius:20px;border:none;background:#fa2d48;color:#ffffff;font-size:14px;font-weight:600;cursor:pointer;">开始一键极速转存</button>
   </div>
 </dialog>
