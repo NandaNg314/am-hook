@@ -2,7 +2,7 @@
  * middleware/auth.js
  * 
  * Apple Music 风格高安全性鉴权系统
- * 1. 默认密码 "wzjnb666"，支持环境变量 AUTH_PASSWORD 动态覆盖
+ * 1. 默认密码 "admin123"，支持环境变量 AUTH_PASSWORD 动态覆盖
  * 2. 采用 Node.js 原生 crypto.timingSafeEqual 结合 SHA-256 比对，防御时序侧信道攻击
  * 3. 针对 IP 限制尝试频次，连续 5 次输错锁定 15 分钟（返回 HTTP 429）
  * 4. HMAC-SHA256 会话 Token 签发与拦截中间件
@@ -11,7 +11,7 @@
 const crypto = require('node:crypto');
 
 // 密码配置
-const DEFAULT_PASSWORD = 'wzjnb666';
+const DEFAULT_PASSWORD = 'admin123';
 const getTargetPassword = () => process.env.AUTH_PASSWORD || DEFAULT_PASSWORD;
 
 // HMAC 密钥配置

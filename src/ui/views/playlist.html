@@ -26,8 +26,28 @@
         <button class="detail-circle-btn" id="shuffle" type="button" disabled data-i18n-attr="aria-label=album.shuffle,title=album.shuffle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
         </button>
+        <button class="btn btn-cloud-batch" id="batch-gofile-btn" type="button" disabled style="display:inline-flex;align-items:center;gap:6px;border-radius:24px;padding:8px 16px;background:rgba(250,45,72,0.15);color:#fa2d48;border:1px solid rgba(250,45,72,0.3);font-weight:600;font-size:14px;cursor:pointer;" title="使用 VPS 2000M 极速转存歌单所有歌曲至 Gofile 临时网盘 (打包同一文件夹)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+          <span>☁️ 转存歌单至 Gofile</span>
+        </button>
+        <button class="btn btn-batch-dl" id="batch-dl-btn" type="button" disabled style="display:inline-flex;align-items:center;gap:6px;border-radius:24px;padding:8px 16px;background:var(--surface-3,rgba(255,255,255,0.08));color:var(--text,#fff);border:1px solid var(--line,rgba(255,255,255,0.1));font-weight:600;font-size:14px;cursor:pointer;" title="批量下载歌单全部歌曲到本机">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>批量下载</span>
+        </button>
       </div>
     </section>
+
+    <!-- 批量进度卡片 -->
+    <div class="batch-progress-card" id="batch-card" hidden style="margin:16px 0;padding:16px 20px;border-radius:14px;background:var(--surface-2);border:1px solid var(--line);backdrop-filter:blur(20px);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <span id="batch-status-title" style="font-size:14px;font-weight:600;color:var(--text);">☁️ 正在转存歌单至 Gofile...</span>
+        <button id="batch-cancel-btn" type="button" style="border:1px solid var(--line);background:var(--surface-3);color:var(--muted);font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer;">取消</button>
+      </div>
+      <div style="width:100%;height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden;margin-bottom:8px;">
+        <div id="batch-progress-fill" style="width:0%;height:100%;background:linear-gradient(90deg,#fa2d48,#ff6b81);transition:width 0.3s ease;"></div>
+      </div>
+      <div id="batch-status-detail" style="font-size:12px;color:var(--muted);line-height:1.4;">准备中...</div>
+    </div>
 
     <div class="alert info" id="alert" hidden aria-live="polite"></div>
 
@@ -36,3 +56,115 @@
     <div id="shelves"></div>
   </main>
 </div>
+
+<!-- 批量选项模态框 -->
+<dialog id="batch-modal" class="am-modal" style="padding:0;border:1px solid var(--line);border-radius:18px;background:var(--surface,#1c1c1e);color:var(--text,#fff);box-shadow:0 24px 60px rgba(0,0,0,0.4);width:min(92vw,440px);backdrop-filter:blur(25px);outline:none;">
+  <div style="padding:24px 24px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h3 id="batch-modal-title" style="margin:0;font-size:17px;font-weight:700;color:var(--text);">批量处理设置</h3>
+      <button type="button" id="batch-modal-close" class="icon-btn" style="width:32px;height:32px;border-radius:50%;background:var(--surface-3);border:none;color:var(--muted);cursor:pointer;display:grid;place-items:center;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+
+    <div style="margin-bottom:18px;">
+      <label style="display:block;font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:600;">目标音频规格</label>
+      <select id="batch-quality-select" style="width:100%;padding:10px 14px;border-radius:10px;background:var(--surface-2);border:1px solid var(--line);color:var(--text);font-size:14px;outline:none;cursor:pointer;">
+        <option value="Lossless" selected>Lossless 无损 ALAC (推荐，16/24-bit 44.1/48kHz)</option>
+        <option value="Hi-Res">Hi-Res 高解析度无损 (最高 24-bit 96/192kHz)</option>
+        <option value="Atmos">杜比全景声 Dolby Atmos (空间音频 / EC-3)</option>
+        <option value="AAC">AAC 256kbps (体积小，兼容性广)</option>
+      </select>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px;">
+      <!-- 歌词设置分组卡片 -->
+      <div style="padding:14px;background:var(--surface-2);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;">
+            <span>📝 外挂歌词格式</span>
+          </div>
+          <select id="batch-lyrics-format" style="padding:6px 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:13px;outline:none;cursor:pointer;">
+            <option value="lrc" selected>LRC 标准同步歌词 (推荐)</option>
+            <option value="ttml">TTML 原生逐字歌词</option>
+          </select>
+        </div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.4;">
+          💡 若歌曲无动态时间轴自动降级为纯文本；纯音乐或无歌词歌曲自动跳过。
+        </div>
+        <div style="border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:10px;">
+          <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
+            <span style="font-size:13px;color:var(--text);font-weight:500;">内嵌歌词到音频文件 (写入 ©lyr 标签)</span>
+            <input type="checkbox" id="batch-embed-lyrics" checked style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
+          </label>
+          <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
+            <span style="font-size:13px;color:var(--text);font-weight:500;">保存独立外挂歌词文件 (.lrc / .ttml)</span>
+            <input type="checkbox" id="batch-save-lyrics" checked style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
+          </label>
+        </div>
+      </div>
+
+      <!-- 选项 2: 打包为单 ZIP 压缩包 -->
+      <label id="batch-zip-pack-container" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--surface-2);border:1px solid var(--line);border-radius:14px;cursor:pointer;user-select:none;transition:background 0.2s;">
+        <div style="display:flex;flex-direction:column;gap:3px;">
+          <div style="font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;">
+            <span>📦 打包为单 .zip 压缩包上传</span>
+            <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(250,45,72,0.15);color:var(--accent);font-weight:700;">推荐</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.4;">
+            将整辑歌曲与歌词一键打包，Gofile 单击即可全辑下载
+          </div>
+        </div>
+        <input type="checkbox" id="batch-zip-pack" checked style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;margin-left:14px;flex-shrink:0;">
+      </label>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button type="button" id="batch-modal-cancel" class="btn" style="padding:8px 16px;border-radius:20px;border:1px solid var(--line);background:var(--surface-3);color:var(--text);cursor:pointer;">取消</button>
+      <button type="button" id="batch-modal-confirm" class="btn" style="padding:8px 20px;border-radius:20px;border:none;background:var(--accent);color:#ffffff;font-weight:600;cursor:pointer;">立即开始</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Gofile 分享结果弹窗 -->
+<dialog id="gofile-dialog" class="gofile-dialog" style="padding:0;border:1px solid var(--line);border-radius:18px;background:var(--surface,#1c1c1e);color:var(--text,#fff);box-shadow:0 24px 60px rgba(0,0,0,0.4);width:min(92vw,480px);backdrop-filter:blur(25px);outline:none;">
+  <div style="padding:24px 24px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:rgba(250,45,72,0.15);color:var(--accent);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+        </span>
+        <h3 style="margin:0;font-size:17px;font-weight:700;color:var(--text);">Gofile 转存完成</h3>
+      </div>
+      <button type="button" id="gofile-dialog-close" class="icon-btn" style="width:32px;height:32px;border-radius:50%;background:var(--surface-3);border:none;color:var(--muted);cursor:pointer;display:grid;place-items:center;" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    
+    <div id="gofile-song-info" style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.4;word-break:break-all;"></div>
+    
+    <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--faint);margin-bottom:6px;font-weight:600;letter-spacing:0.5px;">在线分享链接</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="text" id="gofile-link-input" readonly style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;font-family:var(--mono,monospace);outline:none;user-select:all;padding:0;">
+        <button type="button" id="gofile-copy-btn" class="btn btn-primary" style="padding:6px 14px;font-size:13px;font-weight:600;white-space:nowrap;border-radius:20px;">
+          复制链接
+        </button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <a id="gofile-open-link" href="#" target="_blank" rel="noreferrer" class="btn" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:8px 16px;border-radius:20px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);">
+        <span>打开页面</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+      </a>
+      <button type="button" id="gofile-done-btn" class="btn" style="font-size:13px;padding:8px 18px;border-radius:20px;border:none;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;">
+        完成
+      </button>
+    </div>
+
+    <div style="margin-top:14px;font-size:11px;color:var(--faint);line-height:1.4;">
+      ⚡ 免登录高速临时网盘 · 无下载限速 · 长期无访问后自动过期
+    </div>
+  </div>
+</dialog>

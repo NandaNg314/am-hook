@@ -17,56 +17,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 5 7 7-7 7"/></svg>
         </button>
         <div class="suggest" id="suggest" role="listbox" hidden></div>
+      </form>
       <div class="alert error" id="error" role="alert" hidden></div>
 
-      <!-- Apple 深色毛玻璃风格“下载交付选项 (Options)”卡片 -->
-      <section class="delivery-options-card" id="delivery-options-card">
-        <div class="options-header">
-          <span class="options-badge">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-          </span>
-          <h3 class="options-title">下载交付选项 (Options)</h3>
-          <span class="options-hint">Apple Design</span>
-        </div>
-
-        <div class="options-group">
-          <div class="options-group-title">交付模式切换</div>
-          <div class="options-radio-group">
-            <label class="apple-radio-label">
-              <input type="radio" name="deliveryMode" value="local" id="mode-local" checked>
-              <span class="apple-radio-custom"></span>
-              <span class="radio-text">
-                <strong>本地保存 (Local Storage)</strong>
-                <small>浏览器解密并保存到本地</small>
-              </span>
-            </label>
-            <label class="apple-radio-label">
-              <input type="radio" name="deliveryMode" value="gofile" id="mode-gofile">
-              <span class="apple-radio-custom"></span>
-              <span class="radio-text">
-                <strong>Gofile 纯云端转存 (Upload ZIP to Gofile & Clean VPS)</strong>
-                <small>生成单 .zip 自动上传 Gofile，VPS 0 磁盘占用</small>
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <div class="options-group options-checkboxes">
-          <div class="options-group-title">功能开关</div>
-          <div class="options-checkbox-group">
-            <label class="apple-checkbox-label">
-              <input type="checkbox" id="opt-embed-metadata" checked>
-              <span class="apple-checkbox-custom"></span>
-              <span class="checkbox-text">写入纯净元数据 (Embed Pure Metadata)</span>
-            </label>
-            <label class="apple-checkbox-label">
-              <input type="checkbox" id="opt-download-lrc" checked>
-              <span class="apple-checkbox-custom"></span>
-              <span class="checkbox-text">下载配套同步歌词 (.lrc)</span>
-            </label>
-          </div>
-        </div>
-      </section>
       <p class="examples">
         <span data-i18n="home.example"></span>
         <button class="example" type="button" data-example="https://music.apple.com/us/song/cruel-summer/1468058171"><b data-i18n="home.detectSong"></b>Cruel Summer</button>
@@ -74,7 +27,59 @@
         <button class="example" type="button" data-example="https://music.apple.com/us/album/justice-triple-chucks-deluxe-deluxe-video-version/1561058084"><b data-i18n="home.detectAlbum"></b>Justice</button>
         <button class="example" type="button" data-example="https://music.apple.com/us/artist/lisa/1583908668"><b data-i18n="home.detectArtist"></b>LISA</button>
         <button class="example" type="button" data-example="https://music.apple.com/us/playlist/top-100-global/pl.d25f5d1181894928af76c85c967f8f31"><b data-i18n="home.detectPlaylist"></b>Top 100: Global</button>
-      </p>      </section>
+      </p>
+
+      <!-- 全局下载偏好设置卡片 -->
+      <section class="delivery-options-card" id="delivery-options-card">
+        <div class="options-header">
+          <span class="options-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+          </span>
+          <h3 class="options-title">下载偏好设置</h3>
+          <span class="options-hint">全局生效</span>
+        </div>
+
+        <div class="options-grid">
+          <div class="options-group">
+            <div class="options-group-title">交付目标</div>
+            <div class="options-radio-group">
+              <label class="apple-radio-label">
+                <input type="radio" name="deliveryMode" value="local" id="mode-local" checked>
+                <span class="apple-radio-custom"></span>
+                <span class="radio-text">
+                  <strong>本机下载</strong>
+                  <small>浏览器解密并保存到本地</small>
+                </span>
+              </label>
+              <label class="apple-radio-label">
+                <input type="radio" name="deliveryMode" value="gofile" id="mode-gofile">
+                <span class="apple-radio-custom"></span>
+                <span class="radio-text">
+                  <strong>Gofile 云端转存</strong>
+                  <small>打包生成单 ZIP 上传网盘，免本地占用</small>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div class="options-group">
+            <div class="options-group-title">歌曲增强</div>
+            <div class="options-checkbox-group">
+              <label class="apple-checkbox-label">
+                <input type="checkbox" id="opt-embed-metadata" checked>
+                <span class="apple-checkbox-custom"></span>
+                <span class="checkbox-text">内嵌纯净元数据与封面</span>
+              </label>
+              <label class="apple-checkbox-label">
+                <input type="checkbox" id="opt-download-lrc" checked>
+                <span class="apple-checkbox-custom"></span>
+                <span class="checkbox-text">同步保存外挂歌词文件</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
 
     <section class="results" id="results" aria-live="polite" hidden>
       <div class="section-head">

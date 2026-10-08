@@ -54,6 +54,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/assets/ec3-decode-worker.js", get(ui::ec3_worker_handler))
         .route("/assets/ec3-runtime.mjs", get(ui::ec3_runtime_handler))
         .route("/assets/ec3.wasm", get(ui::ec3_wasm_handler))
+        .route("/gofile/servers", get(ui::gofile_servers_handler))
+        .route(
+            "/gofile/upload",
+            post(ui::gofile_upload_handler).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .fallback(proxy::handle_proxy)
         .layer(axum::middleware::from_fn(log::access_log))
         .with_state(state)

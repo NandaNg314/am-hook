@@ -36,6 +36,37 @@
       <div class="variants-head">
         <h2 class="variants-title" data-i18n="song.variants"></h2>
         <span class="variants-count" id="count"></span>
+        <div class="variants-options" style="margin-left:auto;display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:16px;background:var(--surface-2);border:1px solid var(--line);">
+            <div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text);">
+              <span style="color:var(--muted);">歌词:</span>
+              <select id="lyrics-format-select" style="padding:2px 8px;border-radius:6px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:12px;outline:none;cursor:pointer;">
+                <option value="lrc" selected>LRC</option>
+                <option value="ttml">TTML</option>
+              </select>
+            </div>
+            <span style="width:1px;height:12px;background:var(--line);"></span>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="将歌词写入音频文件 ©lyr 标签">
+              <input type="checkbox" id="embed-lyrics-toggle" checked style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>内嵌</span>
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="保存同名独立外挂歌词文件">
+              <input type="checkbox" id="save-lyrics-toggle" checked style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>外挂</span>
+            </label>
+          </div>
+
+          <div style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:16px;background:var(--surface-2);border:1px solid var(--line);">
+            <label class="gofile-opt" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="点击下载时转存至 Gofile 临时分享网盘，免本地磁盘占用">
+              <input type="checkbox" id="gofile-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>☁️ Gofile 转存</span>
+            </label>
+            <label class="zip-opt" id="zip-toggle-label" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="打包为 .zip 压缩包上传至 Gofile">
+              <input type="checkbox" id="zip-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>📦 ZIP 压缩</span>
+            </label>
+          </div>
+        </div>
       </div>
       <div id="variant-list"></div>
     </section>
@@ -43,3 +74,46 @@
 </div>
 
 <div class="menu" id="menu" role="menu" hidden></div>
+
+<dialog id="gofile-dialog" class="gofile-dialog" style="padding:0;border:1px solid var(--line);border-radius:18px;background:var(--surface,#1c1c1e);color:var(--text,#fff);box-shadow:0 24px 60px rgba(0,0,0,0.4);width:min(92vw,480px);backdrop-filter:blur(25px);outline:none;">
+  <div style="padding:24px 24px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:rgba(250,45,72,0.15);color:var(--accent);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+        </span>
+        <h3 style="margin:0;font-size:17px;font-weight:700;color:var(--text);">Gofile 转存完成</h3>
+      </div>
+      <button type="button" id="gofile-dialog-close" class="icon-btn" style="width:32px;height:32px;border-radius:50%;background:var(--surface-3);border:none;color:var(--muted);cursor:pointer;display:grid;place-items:center;" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px;"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    
+    <div id="gofile-song-info" style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.4;word-break:break-all;"></div>
+    
+    <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--faint);margin-bottom:6px;font-weight:600;letter-spacing:0.5px;">在线分享链接</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="text" id="gofile-link-input" readonly style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;font-family:var(--mono,monospace);outline:none;user-select:all;padding:0;">
+        <button type="button" id="gofile-copy-btn" class="btn btn-primary" style="padding:6px 14px;font-size:13px;font-weight:600;white-space:nowrap;border-radius:20px;">
+          复制链接
+        </button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <a id="gofile-open-link" href="#" target="_blank" rel="noreferrer" class="btn" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:8px 16px;border-radius:20px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);">
+        <span>打开页面</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+      </a>
+      <button type="button" id="gofile-done-btn" class="btn" style="font-size:13px;padding:8px 18px;border-radius:20px;border:none;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;">
+        完成
+      </button>
+    </div>
+
+    <div style="margin-top:14px;font-size:11px;color:var(--faint);line-height:1.4;">
+      ⚡ 免登录高速临时网盘 · 无下载限速 · 长期无访问后自动过期
+    </div>
+  </div>
+</dialog>
+

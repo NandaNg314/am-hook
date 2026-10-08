@@ -37,6 +37,33 @@ const {
   ttmlToLrc
 } = require('./utils/metadataAndLyrics.js');
 
+const {
+  handleStatus,
+  handleKey,
+  handleParseSong,
+  handleLyricsTtml
+} = require('./middleware/wrapperProxy.js');
+
+// 自动加载根目录下 .env 环境变量
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    for (const line of envContent.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        const k = trimmed.slice(0, eqIdx).trim();
+        const v = trimmed.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, '');
+        if (!process.env[k]) {
+          process.env[k] = v;
+        }
+      }
+    }
+  }
+} catch (e) {}
+
 const PORT = parseInt(process.env.PORT || '8888', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const UI_DIR = path.join(__dirname, 'src', 'ui');
@@ -242,7 +269,27 @@ const server = http.createServer(async (req, res) => {
 
   req.auth = session;
 
-  // 4. Gofile 转存接口：POST /api/gofile/upload
+  // 4. Wrapper-Lite 代理路由 (/status, /key, /parse/song/:id, /lyrics/:id)
+  if (pathname === '/status' && method === 'GET') {
+    return handleStatus(req, res);
+  }
+
+  if (pathname === '/key' && method === 'GET') {
+    return handleKey(req, res, parsedUrl);
+  }
+
+  if (pathname.startsWith('/parse/song/') && method === 'GET') {
+    const adamId = pathname.slice('/parse/song/'.length);
+    return handleParseSong(req, res, adamId);
+  }
+
+  if (pathname.startsWith('/lyrics/') && method === 'GET') {
+    const adamId = pathname.slice('/lyrics/'.length);
+    const lang = parsedUrl.searchParams.get('language') || '';
+    return handleLyricsTtml(req, res, adamId, lang);
+  }
+
+  // 5. Gofile 转存接口：POST /api/gofile/upload
   if (pathname === '/api/gofile/upload' && method === 'POST') {
     try {
       const contentType = req.headers['content-type'] || '';
@@ -360,7 +407,7 @@ if (require.main === module) {
     console.log(`=======================================================`);
     console.log(`🎵 am-hook Apple Music 定制服务已启动`);
     console.log(`🌐 访问地址: http://127.0.0.1:${PORT}`);
-    console.log(`🔒 鉴权密码: ${process.env.AUTH_PASSWORD || 'wzjnb666'}`);
+    console.log(`🔒 鉴权密码: ${process.env.AUTH_PASSWORD || 'admin123'}`);
     console.log(`📦 Gofile 交付模式: 已就绪 (VPS 0 磁盘占用保证)`);
     console.log(`=======================================================`);
   });

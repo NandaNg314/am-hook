@@ -107,7 +107,7 @@ async function runE2ETests() {
     }, JSON.stringify({ password: 'badpassword' }));
     assert.equal(wrongAuthRes.statusCode, 401, '错误密码应返回 401');
 
-    // 正确密码 "wzjnb666"
+    // 正确密码 "admin123"
     const correctAuthRes = await httpRequest({
       hostname: '127.0.0.1',
       port: TEST_PORT,

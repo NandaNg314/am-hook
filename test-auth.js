@@ -23,7 +23,7 @@ async function runTests() {
 
   // 1. 验证密码校验与 timingSafeEqual 逻辑
   console.log('1. 验证 timingSafeEqual 与 SHA-256 密码比对...');
-  assert.equal(verifyPassword(DEFAULT_PASSWORD), true, '默认密码 wzjnb666 应该校验通过');
+  assert.equal(verifyPassword(DEFAULT_PASSWORD), true, '默认密码 admin123 应该校验通过');
   assert.equal(verifyPassword('wrongpassword'), false, '错误密码应该返回 false');
   assert.equal(verifyPassword(''), false, '空字符串密码应该返回 false');
   assert.equal(verifyPassword(null), false, '非字符串参数应该返回 false');

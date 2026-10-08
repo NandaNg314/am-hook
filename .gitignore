@@ -1,1 +1,8 @@
 /target/
+node_modules/
+.env
+*.env
+*.key
+*.pem
+*.log
+*.zip
