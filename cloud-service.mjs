@@ -16,25 +16,53 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import dns from 'node:dns';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+
+dns.setDefaultResultOrder('ipv4first');
 
 const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 31409;
-const HOST = '127.0.0.1';
-const HOOK_BASE = 'http://127.0.0.1:31408';
+// 自动加载 .env 配置文件 (如果存在)
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    for (const line of envContent.split('\n')) {
+      const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+      if (match) {
+        const key = match[1];
+        let val = (match[2] || '').trim().replace(/^['"]|['"]$/g, '');
+        if (!process.env[key]) process.env[key] = val;
+      }
+    }
+  }
+} catch {}
+
+const PORT = process.env.CLOUD_PORT || 31409;
+const HOST = process.env.CLOUD_HOST || '127.0.0.1';
+const HOOK_BASE = process.env.HOOK_BASE || 'http://127.0.0.1:31408';
 
 // 繁简字转换字典 (OpenCC 词表)
 let t2sMap = {};
 try {
   const t2sPath = path.join(__dirname, 't2s.json');
   if (fs.existsSync(t2sPath)) {
-    t2sMap = JSON.parse(fs.readFileSync(t2sPath, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(t2sPath, 'utf8'));
+    if (raw.t && raw.s) {
+      const tArr = Array.from(raw.t);
+      const sArr = Array.from(raw.s);
+      for (let i = 0; i < tArr.length; i++) {
+        t2sMap[tArr[i]] = sArr[i];
+      }
+    } else {
+      Object.assign(t2sMap, raw);
+    }
   }
 } catch (e) {
   console.warn('加载 t2s.json 失败:', e.message);
@@ -52,7 +80,8 @@ const EXTRA_T2S = {
   '佈': '布',
   '併': '并',
   '傢': '家',
-  '儘': '尽'
+  '儘': '尽',
+  '軼': '轶'
 };
 Object.assign(t2sMap, EXTRA_T2S);
 
@@ -95,6 +124,16 @@ const CHINESE_ARTIST_ALIASES = {
   'leehom wang': '王力宏',
   'jj lin': '林俊杰',
   'wayne lin': '林俊杰',
+  // 中国摇滚 / 民谣系列
+  'zhang chu': '张楚',
+  'dou wei': '窦唯',
+  'he yong': '何勇',
+  'tang dynasty': '唐朝',
+  'black panther': '黑豹',
+  'cui jian': '崔健',
+  'wang feng': '汪峰',
+  'xu wei': '许巍',
+  'pu shu': '朴树',
   // 王菲 / 邓紫棋 / 蔡依林 / 孙燕姿
   'faye wong': '王菲',
   'shirley wong': '王菲',
@@ -225,7 +264,35 @@ const CHINESE_ARTIST_ALIASES = {
   'lay zhang': '张艺兴',
   'mc hotdog': '热狗',
   'soft lipa': '蛋堡',
-  'higher brothers': '更高兄弟'
+  'higher brothers': '更高兄弟',
+  'yico tseng': '曾轶可',
+  'tseng yico': '曾轶可',
+  'yico': '曾轶可',
+  'leah dou': '窦靖童',
+  'elva hsiao': '萧亚轩',
+  'angela chang': '张韶涵',
+  'angela zhang': '张韶涵',
+  'yisa yu': '郁可唯',
+  'sara liu': '刘惜君',
+  'jane zhang': '张靓颖',
+  'chris lee': '李宇春',
+  'bibi zhou': '周笔畅',
+  'shang wenjie': '尚雯婕',
+  'tan weiwei': '谭维维',
+  'della ding': '丁当',
+  'ding dang': '丁当',
+  'momo wu': '吴莫愁',
+  'curley g': '希林娜依·高',
+  'vava': '毛衍七',
+  'sunnee': '杨芸晴',
+  'amber kuo': '郭采洁',
+  'valen hsu': '许茹芸',
+  'tarcy su': '苏慧伦',
+  'winnie hsin': '辛晓琪',
+  'mavis fan': '范晓萱',
+  'shunza': '顺子',
+  'wanfang': '万芳',
+  'peggy hsu': '许哲珮'
 };
 
 /**
@@ -582,9 +649,13 @@ async function defragMp4Buffer(inputBuf) {
   }
 }
 
-function sanitizeFilename(name) {
+function sanitizeFilename(name, maxBytes = 120) {
   if (!name) return 'track';
-  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim();
+  let cleaned = name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim();
+  while (Buffer.byteLength(cleaned, 'utf8') > maxBytes) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  return cleaned || 'track';
 }
 
 /* ==================== 核心转存处理 ==================== */
@@ -607,7 +678,9 @@ async function processTransfer(body) {
     isLastTrack,
     zipFilename,
     zip = false,
-    finalizeBatch = false
+    finalizeBatch = false,
+    noUpload = false,
+    outputDir
   } = body;
 
   // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
@@ -616,11 +689,29 @@ async function processTransfer(body) {
     if (!fs.existsSync(sessionDir)) {
       throw new Error(`批处理会话不存在或已过期: ${batchId}`);
     }
-    const finalZipName = sanitizeFilename(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip'));
+    const finalZipName = sanitizeFilename(toSimplifiedChinese(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip')));
     const zipFilePath = `/tmp/${batchId}.zip`;
     const files = fs.readdirSync(sessionDir);
     console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
     await packZipFolder(sessionDir, zipFilePath);
+
+    if (noUpload) {
+      const zipStat = fs.statSync(zipFilePath);
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+      return {
+        local: true,
+        isZip: true,
+        sessionDir,
+        zipFilePath,
+        zipFileName: finalZipName,
+        fileSize: zipStat.size,
+        totalFiles: files.length,
+        album: meta.album || '',
+        qualityName: quality,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    }
 
     try {
       const zipStat = fs.statSync(zipFilePath);
@@ -794,12 +885,50 @@ async function processTransfer(body) {
     } catch {}
   }
 
+  // 智能华语元数据嗅探：若歌曲标题或艺人名缺少中文，自动跨区优先向 (cn -> tw -> hk -> us) 同步正统中文名
+  const hasChineseInTitle = /[\u4e00-\u9fa5]/.test(meta.title || '');
+  const hasChineseInArtist = /[\u4e00-\u9fa5]/.test(meta.artist || '');
+  if (adamId && (!hasChineseInTitle || !hasChineseInArtist) && !isLikelyJapanese) {
+    for (const sf of ['cn', 'tw', 'hk', 'us']) {
+      try {
+        const sfRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${adamId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(3000) });
+        if (sfRes.ok) {
+          const sData = await sfRes.json();
+          const sAttr = sData.data?.[0]?.attributes;
+          if (sAttr) {
+            let updated = false;
+            if (!hasChineseInTitle && sAttr.name && /[\u4e00-\u9fa5]/.test(sAttr.name)) {
+              meta.title = toSimplifiedChinese(sAttr.name);
+              updated = true;
+            }
+            if (!hasChineseInArtist && sAttr.artistName && /[\u4e00-\u9fa5]/.test(sAttr.artistName)) {
+              meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
+              updated = true;
+            }
+            if (sAttr.albumName && (!meta.album || !/[\u4e00-\u9fa5]/.test(meta.album))) {
+              meta.album = toSimplifiedChinese(sAttr.albumName);
+              updated = true;
+            }
+            if (updated) {
+              console.log(`[Cloud-Transfer] 成功从 ${sf.toUpperCase()} 华语区同步正统中文元数据: ${meta.artist} - ${meta.title}`);
+              if (/[\u4e00-\u9fa5]/.test(meta.title) && /[\u4e00-\u9fa5]/.test(meta.artist)) {
+                break;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+
   // 华语艺人英文名与官方别名规范化 + 繁简转换 (智能保护日文与英文曲名)
   if (meta.artist) meta.artist = normalizeArtistName(meta.artist);
   if (meta.albumArtist) meta.albumArtist = normalizeArtistName(meta.albumArtist || meta.artist);
   if (meta.composer) meta.composer = normalizeArtistName(meta.composer);
   if (meta.title) meta.title = toSimplifiedChinese(meta.title);
   if (meta.album) meta.album = toSimplifiedChinese(meta.album);
+  if (meta.genre) meta.genre = toSimplifiedChinese(meta.genre);
+  if (meta.copyright) meta.copyright = toSimplifiedChinese(meta.copyright);
   if (lyricsData.hasLyrics) {
     if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
     if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
@@ -900,6 +1029,24 @@ async function processTransfer(body) {
     const files = fs.readdirSync(sessionDir);
     await packZipFolder(sessionDir, zipFilePath);
 
+    if (noUpload) {
+      const zipStat = fs.statSync(zipFilePath);
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+      return {
+        local: true,
+        isZip: true,
+        sessionDir,
+        zipFilePath,
+        zipFileName: finalZipName,
+        fileSize: zipStat.size,
+        totalFiles: files.length,
+        album: meta.album || '',
+        qualityName: chosenFormatName,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    }
+
     try {
       const zipStat = fs.statSync(zipFilePath);
       console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
@@ -957,6 +1104,27 @@ async function processTransfer(body) {
     const files = fs.readdirSync(singleDir);
     await packZipFolder(singleDir, zipFilePath);
 
+    if (noUpload) {
+      try { fs.rmSync(singleDir, { recursive: true, force: true }); } catch {}
+      const zipStat = fs.statSync(zipFilePath);
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 📦 单曲 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+      return {
+        local: true,
+        isZip: true,
+        zipFilePath,
+        zipFileName: finalZipName,
+        fileSize: zipStat.size,
+        artist: meta.artist || '',
+        title: meta.title || '',
+        album: meta.album || '',
+        albumArtist: meta.albumArtist || '',
+        qualityName: chosenFormatName,
+        duration: meta.durationInMillis ? Math.round(meta.durationInMillis / 1000) : 0,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    }
+
     try {
       const srv = await getGofileServer();
       const form = new FormData();
@@ -991,6 +1159,63 @@ async function processTransfer(body) {
       try { fs.rmSync(singleDir, { recursive: true, force: true }); } catch {}
       try { fs.rmSync(zipFilePath, { force: true }); } catch {}
     }
+  }
+
+  // 4.2.5 本地处理模式 (免上传至 Gofile，供 Telegram Bot 或内网其他服务直接取用)
+  if (noUpload) {
+    const targetDir = outputDir || path.join('/tmp', `am_tg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+    fs.mkdirSync(targetDir, { recursive: true });
+    const audioFilePath = path.join(targetDir, standardM4aName);
+    fs.writeFileSync(audioFilePath, finalAudioBuf);
+
+    let lrcFilePath = null;
+    if (lyricsFilename && lyricsContent) {
+      lrcFilePath = path.join(targetDir, lyricsFilename);
+      fs.writeFileSync(lrcFilePath, lyricsContent, 'utf8');
+    }
+
+    let thumbFilePath = null;
+    if (coverBuf && coverBuf.length > 0) {
+      try {
+        const coverRawPath = path.join(targetDir, 'cover_raw.jpg');
+        thumbFilePath = path.join(targetDir, 'thumb.jpg');
+        fs.writeFileSync(coverRawPath, coverBuf);
+        // 使用 ffmpeg 压缩为标准 320x320 JPEG 缩略图 (Telegram Bot 官方规范：JPEG, <=320x320, <=200KB)
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-v', 'error',
+          '-i', coverRawPath,
+          '-vf', 'scale=320:320:force_original_aspect_ratio=decrease',
+          '-q:v', '2',
+          thumbFilePath
+        ], { timeout: 10000 });
+        try { fs.rmSync(coverRawPath, { force: true }); } catch {}
+      } catch (thumbErr) {
+        console.warn('[Cloud-Transfer] 生成封面缩略图失败:', thumbErr.message);
+        thumbFilePath = null;
+      }
+    }
+
+    const tEnd = performance.now();
+    console.log(`[Cloud-Transfer] 🎧 本地就绪: ${standardM4aName} (大小: ${(finalAudioBuf.length / (1024 * 1024)).toFixed(1)}MB, 缩略图: ${thumbFilePath ? '就绪' : '无'}, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+
+    return {
+      local: true,
+      audioFilePath,
+      lrcFilePath,
+      thumbFilePath,
+      fileName: standardM4aName,
+      lyricsFileName: lyricsFilename,
+      fileSize: finalAudioBuf.length,
+      artist: meta.artist || '',
+      title: meta.title || '',
+      album: meta.album || '',
+      albumArtist: meta.albumArtist || '',
+      qualityName: chosenFormatName,
+      duration: meta.durationInMillis ? Math.round(meta.durationInMillis / 1000) : 0,
+      coverUrl: meta.coverUrl || '',
+      elapsedMs: Math.round(tEnd - t0)
+    };
   }
 
   // 4.3 常规单文件上传至 Gofile (支持同一 folderId 归集)
@@ -1046,13 +1271,123 @@ async function processTransfer(body) {
   };
 }
 
+/* ==================== 全局顺序排队调度器 (Global Sequential FIFO Queue) ==================== */
+
+class GlobalTransferQueue {
+  constructor(concurrency = 1) {
+    this.concurrency = concurrency;
+    this.queue = [];
+    this.activeCount = 0;
+  }
+
+  get status() {
+    return {
+      active: this.activeCount,
+      waiting: this.queue.length,
+      concurrency: this.concurrency
+    };
+  }
+
+  enqueue(taskFn, meta = {}) {
+    return new Promise((resolve, reject) => {
+      const taskItem = {
+        taskFn,
+        meta,
+        resolve,
+        reject,
+        enqueuedAt: Date.now()
+      };
+      this.queue.push(taskItem);
+      console.log(`[Queue] 任务入队: ${meta.name || '未知任务'} (等待排队中: ${this.queue.length}, 正在执行: ${this.activeCount})`);
+      this._processNext();
+    });
+  }
+
+  async _processNext() {
+    if (this.activeCount >= this.concurrency || this.queue.length === 0) {
+      return;
+    }
+
+    const item = this.queue.shift();
+    this.activeCount++;
+    const waitTime = ((Date.now() - item.enqueuedAt) / 1000).toFixed(1);
+    console.log(`[Queue] ▶ 调度出队执行: ${item.meta.name || '任务'} (排队耗时: ${waitTime}s, 队列剩余: ${this.queue.length})`);
+
+    try {
+      const result = await item.taskFn();
+      item.resolve(result);
+    } catch (err) {
+      item.reject(err);
+    } finally {
+      this.activeCount--;
+      setImmediate(() => this._processNext());
+    }
+  }
+}
+
+// 严格全局时间顺序排队，最大并发 1，杜绝服务器 CPU/RAM 瞬时过载爆满
+const globalQueue = new GlobalTransferQueue(1);
+
+// ==================== Web 访问防刷限流器 (支持环境变量白名单配置) ====================
+const OWNER_IPS = new Set([
+  '127.0.0.1', '::1', 'localhost',
+  ...(process.env.OWNER_IPS ? process.env.OWNER_IPS.split(',').map(s => s.trim()) : [])
+]);
+const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt }
+
+function checkWebRateLimit(clientIp, adminKeyHeader) {
+  // 1. 本地回环、内部调用与管理员静态 IP -> 100% 豁免放行
+  if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) {
+    return { ok: true, isOwner: true };
+  }
+  for (const ip of OWNER_IPS) {
+    if (ip && clientIp.includes(ip)) {
+      return { ok: true, isOwner: true };
+    }
+  }
+
+  // 2. 携带管理员专属 Key -> 100% 豁免放行
+  const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
+  if (adminKeyHeader && adminKeyHeader === ADMIN_SECRET) {
+    return { ok: true, admin: true };
+  }
+
+  // 3. 公网访客 IP 限流 (每分钟最多 5 次，每天最多 30 次)
+  const now = Date.now();
+  let rec = webIpLimitMap.get(clientIp);
+  if (!rec) {
+    rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+    webIpLimitMap.set(clientIp, rec);
+  }
+
+  if (now > rec.resetAt) {
+    rec.count = 0;
+    rec.resetAt = now + 60000;
+  }
+  if (now > rec.dailyResetAt) {
+    rec.dailyCount = 0;
+    rec.dailyResetAt = now + 86400000;
+  }
+
+  if (rec.count >= 5) {
+    return { ok: false, error: '请求过于频繁，请等待 1 分钟后再试 (429 Too Many Requests)' };
+  }
+  if (rec.dailyCount >= 30) {
+    return { ok: false, error: '今日网页端转存配额已用尽 (每日上限 30 次)，请明日再试' };
+  }
+
+  rec.count++;
+  rec.dailyCount++;
+  return { ok: true };
+}
+
 /* ==================== HTTP 服务 ==================== */
 
 const server = http.createServer(async (req, res) => {
   // CORS 响应头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1068,7 +1403,22 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && (u.pathname === '/queue' || u.pathname === '/api/queue-status')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', data: globalQueue.status }));
+    return;
+  }
+
   if (req.method === 'POST' && (u.pathname === '/transfer' || u.pathname === '/api/cloud-transfer')) {
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
+    const rateCheck = checkWebRateLimit(clientIp, adminKey);
+    if (!rateCheck.ok) {
+      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: rateCheck.error }));
+      return;
+    }
+
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
     req.on('error', err => {
@@ -1086,7 +1436,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        const result = await processTransfer(body);
+        const taskName = body.meta?.title ? `${body.meta.artist || ''} - ${body.meta.title} (${body.quality || 'Lossless'})` : (body.adamId || 'Transfer');
+        const result = await globalQueue.enqueue(() => processTransfer(body), {
+          name: taskName,
+          source: body.noUpload ? 'Telegram' : 'WebUI'
+        });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'ok', data: result }));
       } catch (err) {
@@ -1131,7 +1485,8 @@ function cleanupStaleSessions() {
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
       if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
-          (entry.startsWith('am_defrag_') && entry.endsWith('.m4a'))) {
+          (entry.startsWith('am_defrag_') && entry.endsWith('.m4a')) ||
+          entry.startsWith('am_tg_')) {
         const p = path.join(tmpDir, entry);
         try {
           const stat = fs.statSync(p);
@@ -1144,6 +1499,10 @@ function cleanupStaleSessions() {
     }
   } catch {}
 }
+
+server.requestTimeout = 600000; // 10 分钟队列等待防护
+server.headersTimeout = 610000;
+server.keepAliveTimeout = 60000;
 
 server.listen(PORT, HOST, () => {
   console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
