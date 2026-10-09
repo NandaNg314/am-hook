@@ -9,3 +9,9 @@ node_modules/
 __pycache__/
 *.pyc
 AGENT_MAINTENANCE.md
+summary.md
+summary.txt
+tg_bot_db.json
+userbot.mjs
+*.session
+*.session-journal
