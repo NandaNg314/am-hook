@@ -85,6 +85,16 @@ const EXTRA_T2S = {
 };
 Object.assign(t2sMap, EXTRA_T2S);
 
+// 内存级高清封面缓存 (防止整辑下载时频繁向 Apple CDN 请求相同封面触发超时或单曲封面丢失)
+const coverCache = new Map(); // url -> { buf: Uint8Array, expiresAt: number }
+setInterval(() => {
+  const now = Date.now();
+  for (const [url, item] of coverCache.entries()) {
+    if (now > item.expiresAt) coverCache.delete(url);
+  }
+}, 30 * 60 * 1000).unref();
+
+
 /**
  * 繁体中文转简体中文
  * 智能保留：英文、数字、标点符号以及日文假名（若为日语歌则原样保留假名与日本汉字）
@@ -825,14 +835,25 @@ async function processTransfer(body) {
   };
   tasks.push(fetchAudio());
 
-  // 封面图抓取
+  // 封面图抓取 (优先命中内存缓存，杜绝 Apple CDN 批量请求抖动导致封面丢失)
   const fetchCover = async () => {
     if (!meta.coverUrl) return null;
-    try {
-      const cRes = await fetch(meta.coverUrl, { signal: AbortSignal.timeout(8000) });
-      if (cRes.ok) return new Uint8Array(await cRes.arrayBuffer());
-    } catch (e) {
-      console.warn('[Cloud-Transfer] 封面抓取失败:', e.message);
+    const now = Date.now();
+    const cached = coverCache.get(meta.coverUrl);
+    if (cached && cached.expiresAt > now) {
+      return cached.buf;
+    }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const cRes = await fetch(meta.coverUrl, { signal: AbortSignal.timeout(8000) });
+        if (cRes.ok) {
+          const buf = new Uint8Array(await cRes.arrayBuffer());
+          coverCache.set(meta.coverUrl, { buf, expiresAt: now + 3600000 });
+          return buf;
+        }
+      } catch (e) {
+        if (attempt === 2) console.warn('[Cloud-Transfer] 封面抓取失败:', e.message);
+      }
     }
     return null;
   };
@@ -1176,9 +1197,9 @@ async function processTransfer(body) {
 
     let thumbFilePath = null;
     if (coverBuf && coverBuf.length > 0) {
+      const coverRawPath = path.join(targetDir, 'cover_raw.jpg');
+      thumbFilePath = path.join(targetDir, 'thumb.jpg');
       try {
-        const coverRawPath = path.join(targetDir, 'cover_raw.jpg');
-        thumbFilePath = path.join(targetDir, 'thumb.jpg');
         fs.writeFileSync(coverRawPath, coverBuf);
         // 使用 ffmpeg 压缩为标准 320x320 JPEG 缩略图 (Telegram Bot 官方规范：JPEG, <=320x320, <=200KB)
         await execFileAsync('ffmpeg', [
@@ -1189,10 +1210,11 @@ async function processTransfer(body) {
           '-q:v', '2',
           thumbFilePath
         ], { timeout: 10000 });
-        try { fs.rmSync(coverRawPath, { force: true }); } catch {}
       } catch (thumbErr) {
         console.warn('[Cloud-Transfer] 生成封面缩略图失败:', thumbErr.message);
         thumbFilePath = null;
+      } finally {
+        try { fs.rmSync(coverRawPath, { force: true }); } catch {}
       }
     }
 
@@ -1335,6 +1357,16 @@ const OWNER_IPS = new Set([
 ]);
 const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt }
 
+// 定期清理过期的 IP 限流记录，防止长期运行内存累积
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of webIpLimitMap.entries()) {
+    if (now > rec.dailyResetAt) {
+      webIpLimitMap.delete(ip);
+    }
+  }
+}, 60 * 60 * 1000).unref();
+
 function checkWebRateLimit(clientIp, adminKeyHeader) {
   // 1. 本地回环、内部调用与管理员静态 IP -> 100% 豁免放行
   if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) {
@@ -1410,7 +1442,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && (u.pathname === '/transfer' || u.pathname === '/api/cloud-transfer')) {
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (clientIp.startsWith('::ffff:')) {
+      clientIp = clientIp.slice(7);
+    }
     const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
     const rateCheck = checkWebRateLimit(clientIp, adminKey);
     if (!rateCheck.ok) {

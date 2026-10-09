@@ -271,7 +271,9 @@ function getTrafficStats() {
   try {
     const raw = execSync('vnstat --json m -i enp0s6', { timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     const data = JSON.parse(raw);
-    const m = data.interfaces?.[0]?.traffic?.month?.[0];
+    const iface = data.interfaces?.find(i => i.name === 'enp0s6') || data.interfaces?.[0];
+    const currentMonth = new Date().getMonth() + 1;
+    const m = iface?.traffic?.month?.find(x => x.date?.month === currentMonth) || iface?.traffic?.month?.[0];
     if (m && (m.tx || m.rx)) {
       rxBytes = m.rx || 0;
       txBytes = m.tx || 0;
@@ -322,7 +324,8 @@ class UserQuotaManager {
   }
 
   getTodayStr() {
-    const d = new Date();
+    // 强制使用北京时间 (UTC+8) 计算日期，确保每日配额在午夜 00:00 精确刷新
+    const d = new Date(Date.now() + 8 * 3600 * 1000);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
   }
 
@@ -375,6 +378,21 @@ class UserQuotaManager {
     }
     if (isAlbum) record.albumCount++;
     else record.songCount++;
+  }
+
+  cleanupStale() {
+    const today = this.getTodayStr();
+    const now = Date.now();
+    for (const [key, record] of this.dailyUsage.entries()) {
+      if (record.dateStr !== today) {
+        this.dailyUsage.delete(key);
+      }
+    }
+    for (const [key, last] of this.cooldowns.entries()) {
+      if (now - last > 3600000) {
+        this.cooldowns.delete(key);
+      }
+    }
   }
 }
 
@@ -628,16 +646,19 @@ class BotTaskQueue {
 
   enqueue(meta, taskFn) {
     return new Promise((resolve, reject) => {
+      const isQueued = this.runningCount >= this.concurrency;
       const item = {
         meta,
         taskFn,
         resolve,
         reject,
-        notified: false,
+        notified: !isQueued,
         enqueuedAt: Date.now()
       };
       this.queue.push(item);
-      this._updateQueueNotifications();
+      if (isQueued) {
+        this._updateQueueNotifications();
+      }
       this._processNext();
     });
   }
@@ -920,6 +941,7 @@ function cleanStaleUserSessions() {
       userSessions.delete(key);
     }
   }
+  quotaManager.cleanupStale();
 }
 setInterval(cleanStaleUserSessions, 15 * 60 * 1000);
 
@@ -1349,6 +1371,16 @@ ${artistTag} ${titleTag} ${albumTag}`);
           parse_mode: 'HTML'
         });
 
+      } catch (err) {
+        console.error('[TG-Bot] 单曲转存处理异常:', err);
+        try {
+          await tgCall('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text: `❌ <b>转存处理失败:</b> ${escapeHtml(err.message)}`,
+            parse_mode: 'HTML'
+          });
+        } catch {}
       } finally {
         try {
           if (zipFilePath) fs.rmSync(zipFilePath, { force: true });
@@ -1877,7 +1909,7 @@ async function handleUpdate(update) {
 • <b>严格时间顺序排队：</b> 任务级严格 FIFO 串行排队，前序任务完全搞定后自动开始后续任务
 • <b>无损音质点选：</b> ALAC 无损 / Hi-Res / 杜比全景声 / AAC
 • <b>媒体库秒传直发：</b> 库内已存档资源 0 秒秒传，无需重复等待
-• <b>专属权限保护：</b> 绑定作者 ID (<code>${OWNER_USER_ID}</code>)，非授权拉群秒退`;
+• <b>专属权限保护：</b> 绑定作者专属管理权限，非授权拉群秒退`;
 
       await tgCall('sendMessage', {
         chat_id: chatId,
