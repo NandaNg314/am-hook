@@ -1384,7 +1384,8 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
     return { ok: true, admin: true };
   }
 
-  // 3. 公网访客 IP 限流 (每分钟最多 5 次，每天最多 30 次)
+  // 3. 公网访客 IP 限流 (每分钟最多 60 次，支持整辑一键并发入队；每天最多 200 次)
+  // 底层已有 GlobalTransferQueue(1) 严格串行调度，CPU/RAM 绝不会过载
   const now = Date.now();
   let rec = webIpLimitMap.get(clientIp);
   if (!rec) {
@@ -1401,11 +1402,11 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
     rec.dailyResetAt = now + 86400000;
   }
 
-  if (rec.count >= 5) {
+  if (rec.count >= 60) {
     return { ok: false, error: '请求过于频繁，请等待 1 分钟后再试 (429 Too Many Requests)' };
   }
-  if (rec.dailyCount >= 30) {
-    return { ok: false, error: '今日网页端转存配额已用尽 (每日上限 30 次)，请明日再试' };
+  if (rec.dailyCount >= 200) {
+    return { ok: false, error: '今日网页端转存配额已用尽 (每日上限 200 首曲目)，请明日再试' };
   }
 
   rec.count++;
@@ -1449,6 +1450,7 @@ const server = http.createServer(async (req, res) => {
     const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
     const rateCheck = checkWebRateLimit(clientIp, adminKey);
     if (!rateCheck.ok) {
+      console.warn(`[WebRateLimit] ⚠️ 拦截请求来源 IP: ${clientIp}, 原因: ${rateCheck.error}`);
       res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'error', error: rateCheck.error }));
       return;
