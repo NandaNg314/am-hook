@@ -274,7 +274,7 @@ function normalizeArtistName(rawArtist) {
  */
 async function packZipFolder(sourceDir, outputZipPath) {
   const zipScript = path.join(__dirname, 'zip_pack.py');
-  await execFileAsync('python3', [zipScript, outputZipPath, sourceDir]);
+  await execFileAsync('python3', [zipScript, outputZipPath, sourceDir], { timeout: 180000 });
 }
 
 // Gofile 服务器缓存 (缓存 5 分钟)
@@ -570,7 +570,7 @@ async function defragMp4Buffer(inputBuf) {
       '-c', 'copy',
       '-movflags', '+faststart',
       tmpOut
-    ]);
+    ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
     const outBuf = await fs.promises.readFile(tmpOut);
     return new Uint8Array(outBuf);
   } catch (err) {
@@ -622,43 +622,46 @@ async function processTransfer(body) {
     console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
     await packZipFolder(sessionDir, zipFilePath);
 
-    const zipBuf = fs.readFileSync(zipFilePath);
-    console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipBuf.length / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile...`);
-
-    const srv = await getGofileServer();
-    const form = new FormData();
-    form.append('file', new Blob([zipBuf], { type: 'application/zip' }), finalZipName);
-    if (folderId) form.append('folderId', folderId);
-    if (token) form.append('token', token);
-
-    const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(300000)
-    });
-    const upData = await upRes.json();
-    if (upData.status !== 'ok') {
-      throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
-    }
-
     try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-      fs.rmSync(zipFilePath, { force: true });
-    } catch {}
+      const zipStat = fs.statSync(zipFilePath);
+      console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
 
-    const tEnd = performance.now();
-    console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
-    return {
-      downloadPage: upData.data?.downloadPage,
-      folderId: upData.data?.parentFolder || folderId,
-      guestToken: upData.data?.guestToken || token,
-      fileId: upData.data?.fileId,
-      fileName: finalZipName,
-      isZip: true,
-      totalFiles: files.length,
-      qualityName: quality,
-      elapsedMs: Math.round(tEnd - t0)
-    };
+      const srv = await getGofileServer();
+      const form = new FormData();
+      // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
+      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
+      form.append('file', zipBlob, finalZipName);
+      if (folderId) form.append('folderId', folderId);
+      if (token) form.append('token', token);
+
+      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(300000)
+      });
+      const upData = await upRes.json();
+      if (upData.status !== 'ok') {
+        throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
+      }
+
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+      return {
+        downloadPage: upData.data?.downloadPage,
+        folderId: upData.data?.parentFolder || folderId,
+        guestToken: upData.data?.guestToken || token,
+        fileId: upData.data?.fileId,
+        fileName: finalZipName,
+        isZip: true,
+        totalFiles: files.length,
+        qualityName: quality,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    } finally {
+      // 无论上传成功还是失败，均立刻销毁会话与临时 ZIP，杜绝磁盘爆满残留
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+    }
   }
 
   const shouldSaveLyricsFile = saveLyricsFile !== undefined 
@@ -897,44 +900,46 @@ async function processTransfer(body) {
     const files = fs.readdirSync(sessionDir);
     await packZipFolder(sessionDir, zipFilePath);
 
-    const zipBuf = fs.readFileSync(zipFilePath);
-    console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipBuf.length / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile...`);
-
-    const srv = await getGofileServer();
-    const form = new FormData();
-    form.append('file', new Blob([zipBuf], { type: 'application/zip' }), finalZipName);
-    if (folderId) form.append('folderId', folderId);
-    if (token) form.append('token', token);
-
-    const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(300000)
-    });
-    const upData = await upRes.json();
-    if (upData.status !== 'ok') {
-      throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
-    }
-
-    // 清理临时会话目录与 zip 文件，VPS 零磁盘残留
     try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-      fs.rmSync(zipFilePath, { force: true });
-    } catch {}
+      const zipStat = fs.statSync(zipFilePath);
+      console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
 
-    const tEnd = performance.now();
-    console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
-    return {
-      downloadPage: upData.data?.downloadPage,
-      folderId: upData.data?.parentFolder || folderId,
-      guestToken: upData.data?.guestToken || token,
-      fileId: upData.data?.fileId,
-      fileName: finalZipName,
-      isZip: true,
-      totalFiles: files.length,
-      qualityName: chosenFormatName,
-      elapsedMs: Math.round(tEnd - t0)
-    };
+      const srv = await getGofileServer();
+      const form = new FormData();
+      // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
+      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
+      form.append('file', zipBlob, finalZipName);
+      if (folderId) form.append('folderId', folderId);
+      if (token) form.append('token', token);
+
+      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(300000)
+      });
+      const upData = await upRes.json();
+      if (upData.status !== 'ok') {
+        throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
+      }
+
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+      return {
+        downloadPage: upData.data?.downloadPage,
+        folderId: upData.data?.parentFolder || folderId,
+        guestToken: upData.data?.guestToken || token,
+        fileId: upData.data?.fileId,
+        fileName: finalZipName,
+        isZip: true,
+        totalFiles: files.length,
+        qualityName: chosenFormatName,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    } finally {
+      // 无论上传成功还是失败，均立刻销毁会话与临时 ZIP，杜绝磁盘爆满残留
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+    }
   }
 
   // 4.2 单曲压缩模式 (可选将单曲与对应歌词打包为单个 .zip 上传)
@@ -952,40 +957,40 @@ async function processTransfer(body) {
     const files = fs.readdirSync(singleDir);
     await packZipFolder(singleDir, zipFilePath);
 
-    const zipBuf = fs.readFileSync(zipFilePath);
-    const srv = await getGofileServer();
-    const form = new FormData();
-    form.append('file', new Blob([zipBuf], { type: 'application/zip' }), finalZipName);
-    if (folderId) form.append('folderId', folderId);
-    if (token) form.append('token', token);
-
-    const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(180000)
-    });
-    const upData = await upRes.json();
-    if (upData.status !== 'ok') {
-      throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
-    }
-
     try {
-      fs.rmSync(singleDir, { recursive: true, force: true });
-      fs.rmSync(zipFilePath, { force: true });
-    } catch {}
+      const srv = await getGofileServer();
+      const form = new FormData();
+      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
+      form.append('file', zipBlob, finalZipName);
+      if (folderId) form.append('folderId', folderId);
+      if (token) form.append('token', token);
 
-    const tEnd = performance.now();
-    console.log(`[Cloud-Transfer] 🎉 单曲 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
-    return {
-      downloadPage: upData.data?.downloadPage,
-      folderId: upData.data?.parentFolder || folderId,
-      guestToken: upData.data?.guestToken || token,
-      fileId: upData.data?.fileId,
-      fileName: finalZipName,
-      isZip: true,
-      qualityName: chosenFormatName,
-      elapsedMs: Math.round(tEnd - t0)
-    };
+      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(180000)
+      });
+      const upData = await upRes.json();
+      if (upData.status !== 'ok') {
+        throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
+      }
+
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 🎉 单曲 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+      return {
+        downloadPage: upData.data?.downloadPage,
+        folderId: upData.data?.parentFolder || folderId,
+        guestToken: upData.data?.guestToken || token,
+        fileId: upData.data?.fileId,
+        fileName: finalZipName,
+        isZip: true,
+        qualityName: chosenFormatName,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    } finally {
+      try { fs.rmSync(singleDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+    }
   }
 
   // 4.3 常规单文件上传至 Gofile (支持同一 folderId 归集)
@@ -1066,15 +1071,26 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && (u.pathname === '/transfer' || u.pathname === '/api/cloud-transfer')) {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
+    req.on('error', err => {
+      console.warn('[Cloud-Transfer] 客户端传输中断:', err.message);
+    });
     req.on('end', async () => {
+      let body;
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
-        const body = JSON.parse(raw);
+        body = JSON.parse(raw);
+      } catch (jsonErr) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'error', error: `请求体 JSON 格式不合法: ${jsonErr.message}` }));
+        return;
+      }
+
+      try {
         const result = await processTransfer(body);
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'ok', data: result }));
       } catch (err) {
-        console.error('[Cloud-Transfer] 错误:', err);
+        console.error('[Cloud-Transfer] 错误:', err.message);
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: err.message }));
       }
@@ -1133,5 +1149,13 @@ server.listen(PORT, HOST, () => {
   console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
   cleanupStaleSessions();
   setInterval(cleanupStaleSessions, 30 * 60 * 1000);
+});
+
+// 全局异常与未处理 Promise 拒绝守护，确保服务 7x24 小时稳定在线，永不崩溃闪退
+process.on('uncaughtException', err => {
+  console.error('[am-cloud] 全局未捕获异常 (已拦截，服务维持稳定运行):', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[am-cloud] 全局未捕获 Promise 拒绝 (已拦截):', reason);
 });
 
