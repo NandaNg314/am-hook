@@ -1187,7 +1187,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
     await tgCall('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
-      text: `⚠️ <b>您今日的单曲下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 首)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 首全新单曲。\n\n💡 <i>提示：所有已归档曲目均支持秒传直发，秒传不计入任何配额，欢迎随时取用！</i>`,
+      text: `⚠️ <b>您今日的单曲下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 首)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 首全新单曲。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档曲目均支持秒传直发，<b>秒传不计入任何配额</b>，欢迎随时取用！`,
       parse_mode: 'HTML'
     });
     return;
@@ -1490,7 +1490,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
     await tgCall('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
-      text: `⚠️ <b>您今日的专辑下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 张)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 张全新专辑。\n\n💡 <i>提示：所有已归档专辑均支持秒传直发，秒传不计入任何配额，欢迎随时取用！</i>`,
+      text: `⚠️ <b>您今日的专辑下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 张)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 张全新专辑。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档专辑均支持秒传直发，<b>秒传不计入任何配额</b>，欢迎随时取用！`,
       parse_mode: 'HTML'
     });
     return;
@@ -1961,7 +1961,7 @@ ${quotaText}
     if (!cdCheck.ok) {
       await tgCall('sendMessage', {
         chat_id: chatId,
-        text: `⏳ <b>操作太频繁啦！</b>\n请稍候 <code>${cdCheck.waitSec}</code> 秒后再发送新任务。`,
+        text: `⏳ <b>操作太频繁啦！</b>\n请稍候 <code>${cdCheck.waitSec}</code> 秒后再发送新任务。（系统设置 5 秒安全间隔保护，防止任务并发拥堵）`,
         parse_mode: 'HTML'
       });
       return;
