@@ -1403,10 +1403,10 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
   }
 
   if (rec.count >= 60) {
-    return { ok: false, error: '请求过于频繁，请等待 1 分钟后再试 (429 Too Many Requests)' };
+    return { ok: false, error: '⚠️ 请求提交过快，已触发服务器安全保护。请稍候 1 分钟后再试 (429 Too Many Requests)' };
   }
   if (rec.dailyCount >= 200) {
-    return { ok: false, error: '今日网页端转存配额已用尽 (每日上限 200 首曲目)，请明日再试' };
+    return { ok: false, error: '⚠️ 今日网页端转存配额已达上限 (每日限额 200 首曲目)。配额将在明日北京时间 00:00 自动重置刷新。' };
   }
 
   rec.count++;
