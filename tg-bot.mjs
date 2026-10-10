@@ -1775,29 +1775,9 @@ ${artistTag} ${albumTag} #合辑`);
             if (Array.isArray(groupRes) && groupRes.length > 0) {
               const chunkMsgIds = groupRes.map(m => m.message_id);
               allGroupMsgIds.push(...chunkMsgIds);
-
-              if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
-                await new Promise(r => setTimeout(r, 2000));
-                try {
-                  await tgCall('copyMessages', {
-                    chat_id: chatId,
-                    from_chat_id: AUTHORIZED_GROUP_ID,
-                    message_ids: chunkMsgIds
-                  });
-                } catch {
-                  for (const mid of chunkMsgIds) {
-                    await tgCall('copyMessage', {
-                      chat_id: chatId,
-                      from_chat_id: AUTHORIZED_GROUP_ID,
-                      message_id: mid
-                    });
-                    await new Promise(r => setTimeout(r, 1000));
-                  }
-                }
-              }
             } else {
-              // 降级策略：逐首单曲发送至频道与用户
-              console.log(`[TG-Bot] 正在逐首发送合辑曲目 (${chunk.length} 首)...`);
+              // 降级策略：逐首单曲发送至频道
+              console.log(`[TG-Bot] 正在逐首发送合辑曲目至频道 (${chunk.length} 首)...`);
               for (let trackIdx = 0; trackIdx < chunk.length; trackIdx++) {
                 const f = chunk[trackIdx];
                 const singleCaption = trackIdx === 0 ? chunkCaption : '';
@@ -1815,16 +1795,8 @@ ${artistTag} ${albumTag} #合辑`);
                   const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
                   if (audioRes && audioRes.message_id) {
                     allGroupMsgIds.push(audioRes.message_id);
-                    if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
-                      await new Promise(r => setTimeout(r, 1000));
-                      await tgCall('copyMessage', {
-                        chat_id: chatId,
-                        from_chat_id: AUTHORIZED_GROUP_ID,
-                        message_id: audioRes.message_id
-                      });
-                    }
                   }
-                  await new Promise(r => setTimeout(r, 3500));
+                  await new Promise(r => setTimeout(r, 2500));
                 } catch (sendErr) {
                   console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
                 }
@@ -1835,6 +1807,29 @@ ${artistTag} ${albumTag} #合辑`);
           if (i + chunkSize < downloadedFiles.length) {
             console.log(`[TG-Bot] 合辑气泡发送完毕，等待 8 秒避免 Telegram 频道限流...`);
             await new Promise(r => setTimeout(r, 8000));
+          }
+        }
+
+        // 频道归档全部完成后，一次性将整张专辑的所有气泡/消息同步复制给私聊用户
+        if (allGroupMsgIds.length > 0 && String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
+          console.log(`[TG-Bot] 频道全辑归档就绪 (${allGroupMsgIds.length} 首歌)，正在一次性同步推送到私聊...`);
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            await tgCall('copyMessages', {
+              chat_id: chatId,
+              from_chat_id: AUTHORIZED_GROUP_ID,
+              message_ids: allGroupMsgIds
+            });
+          } catch (copyAllErr) {
+            console.warn(`[TG-Bot] copyMessages 批量复制失败，降级为逐首复制: ${copyAllErr.message}`);
+            for (const mid of allGroupMsgIds) {
+              await tgCall('copyMessage', {
+                chat_id: chatId,
+                from_chat_id: AUTHORIZED_GROUP_ID,
+                message_id: mid
+              });
+              await new Promise(r => setTimeout(r, 800));
+            }
           }
         }
 
