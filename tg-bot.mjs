@@ -413,9 +413,14 @@ async function tgCall(method, body = {}, maxRetries = 3) {
       });
       const data = await res.json();
       if (!data.ok) {
-        if (res.status === 429 && data.parameters?.retry_after) {
-          const waitSec = data.parameters.retry_after + 1;
-          console.warn(`[Telegram API] 触发速率限制，等待 ${waitSec} 秒后重试...`);
+        let retrySec = data.parameters?.retry_after;
+        if (!retrySec && data.description) {
+          const m = data.description.match(/retry after (\d+)/i);
+          if (m) retrySec = parseInt(m[1], 10);
+        }
+        if (retrySec) {
+          const waitSec = Math.max(retrySec + 2, 3);
+          console.warn(`[Telegram API] 调用 ${method} 触发速率限制，等待 ${waitSec} 秒后重试...`);
           await new Promise(r => setTimeout(r, waitSec * 1000));
           continue;
         }
@@ -426,9 +431,11 @@ async function tgCall(method, body = {}, maxRetries = 3) {
       if (err.message.includes('message is not modified') || err.message.includes('query is too old')) {
         return null;
       }
+      const m = err.message.match(/retry after (\d+)/i);
+      const waitMs = m ? (parseInt(m[1], 10) + 2) * 1000 : 1000 * attempt;
       console.warn(`[Telegram API] 调用 ${method} 异常 (第 ${attempt}/${maxRetries} 次): ${err.message}`);
       if (attempt >= maxRetries) throw err;
-      await new Promise(r => setTimeout(r, 1000 * attempt));
+      await new Promise(r => setTimeout(r, waitMs));
     }
   }
 }
@@ -461,8 +468,13 @@ async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, ma
       });
       const data = await res.json();
       if (!data.ok) {
-        if (res.status === 429 && data.parameters?.retry_after) {
-          const waitSec = data.parameters.retry_after + 1;
+        let retrySec = data.parameters?.retry_after;
+        if (!retrySec && data.description) {
+          const m = data.description.match(/retry after (\d+)/i);
+          if (m) retrySec = parseInt(m[1], 10);
+        }
+        if (retrySec) {
+          const waitSec = Math.max(retrySec + 2, 3);
           console.warn(`[Telegram API] 上传触发速率限制，等待 ${waitSec} 秒后重试...`);
           await new Promise(r => setTimeout(r, waitSec * 1000));
           continue;
@@ -471,14 +483,16 @@ async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, ma
       }
       return data.result;
     } catch (err) {
+      const m = err.message.match(/retry after (\d+)/i);
+      const waitMs = m ? (parseInt(m[1], 10) + 2) * 1000 : 2000 * attempt;
       console.warn(`[TG-Bot] 上传 ${fileName} 失败 (第 ${attempt}/${maxRetries} 次): ${err.message}`);
       if (attempt >= maxRetries) throw err;
-      await new Promise(r => setTimeout(r, 2000 * attempt));
+      await new Promise(r => setTimeout(r, waitMs));
     }
   }
 }
 
-async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 3) {
+async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 4) {
   let attempt = 0;
   while (attempt < maxRetries) {
     attempt++;
@@ -502,8 +516,13 @@ async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 
       });
       const data = await res.json();
       if (!data.ok) {
-        if (res.status === 429 && data.parameters?.retry_after) {
-          const waitSec = data.parameters.retry_after + 1;
+        let retrySec = data.parameters?.retry_after;
+        if (!retrySec && data.description) {
+          const m = data.description.match(/retry after (\d+)/i);
+          if (m) retrySec = parseInt(m[1], 10);
+        }
+        if (retrySec) {
+          const waitSec = Math.max(retrySec + 2, 4);
           console.warn(`[Telegram API] sendMediaGroup 触发速率限制，等待 ${waitSec} 秒后重试...`);
           await new Promise(r => setTimeout(r, waitSec * 1000));
           continue;
@@ -512,9 +531,11 @@ async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 
       }
       return data.result;
     } catch (err) {
+      const m = err.message.match(/retry after (\d+)/i);
+      const waitMs = m ? (parseInt(m[1], 10) + 2) * 1000 : 3000 * attempt;
       console.warn(`[Telegram API] sendMediaGroup 异常 (第 ${attempt}/${maxRetries} 次): ${err.message}`);
       if (attempt >= maxRetries) throw err;
-      await new Promise(r => setTimeout(r, 2000 * attempt));
+      await new Promise(r => setTimeout(r, waitMs));
     }
   }
 }
@@ -1545,21 +1566,31 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
             noUpload: true
           };
 
-          try {
-            const res = await fetch(CLOUD_API, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-              signal: AbortSignal.timeout(180000)
-            });
-            const data = await res.json();
-            if (data.status !== 'ok' || !data.data) {
-              throw new Error(data.error || '解析异常');
+          let trackSuccess = false;
+          for (let retry = 0; retry < 2; retry++) {
+            try {
+              const res = await fetch(CLOUD_API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(180000)
+              });
+              const data = await res.json();
+              if (data.status !== 'ok' || !data.data) {
+                throw new Error(data.error || '解析异常');
+              }
+              downloadedFiles.push({ ...data.data, track });
+              trackSuccess = true;
+              break;
+            } catch (trackErr) {
+              if (retry === 0) {
+                console.warn(`[TG-Bot] 专辑曲目 [${i + 1}/${totalTracks}] ${track.name} 下载异常，1.5秒后重试: ${trackErr.message}`);
+                await new Promise(r => setTimeout(r, 1500));
+              } else {
+                console.warn(`[TG-Bot] 专辑曲目 [${i + 1}/${totalTracks}] 下载跳过:`, track.name, trackErr.message);
+                skippedTracks.push({ track, error: trackErr.message });
+              }
             }
-            downloadedFiles.push({ ...data.data, track });
-          } catch (trackErr) {
-            console.warn(`[TG-Bot] 专辑曲目 [${i + 1}/${totalTracks}] 下载跳过:`, track.name, trackErr.message);
-            skippedTracks.push({ track, error: trackErr.message });
           }
         }
 
@@ -1730,7 +1761,13 @@ ${artistTag} ${albumTag} #合辑`);
               };
             });
 
-            const groupRes = await tgSendMediaGroup(AUTHORIZED_GROUP_ID, mediaArray, filesMap);
+            let groupRes = null;
+            try {
+              groupRes = await tgSendMediaGroup(AUTHORIZED_GROUP_ID, mediaArray, filesMap);
+            } catch (groupErr) {
+              console.warn(`[TG-Bot] sendMediaGroup 失败，降级为逐首单曲上传: ${groupErr.message}`);
+            }
+
             if (Array.isArray(groupRes) && groupRes.length > 0) {
               const chunkMsgIds = groupRes.map(m => m.message_id);
               allGroupMsgIds.push(...chunkMsgIds);
@@ -1750,6 +1787,39 @@ ${artistTag} ${albumTag} #合辑`);
                       message_id: mid
                     });
                   }
+                }
+              }
+            } else {
+              // 降级策略：逐首单曲发送至频道与用户
+              console.log(`[TG-Bot] 正在逐首发送合辑曲目 (${chunk.length} 首)...`);
+              for (let trackIdx = 0; trackIdx < chunk.length; trackIdx++) {
+                const f = chunk[trackIdx];
+                const singleCaption = trackIdx === 0 ? chunkCaption : '';
+                const audioFields = {
+                  chat_id: AUTHORIZED_GROUP_ID,
+                  ...(singleCaption ? { caption: singleCaption, parse_mode: 'HTML' } : {}),
+                  title: f.title,
+                  performer: f.artist || albumData.artistName,
+                  duration: f.duration || 0
+                };
+                if (f.thumbFilePath && fs.existsSync(f.thumbFilePath)) {
+                  audioFields.thumbnailPath = f.thumbFilePath;
+                }
+                try {
+                  const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
+                  if (audioRes && audioRes.message_id) {
+                    allGroupMsgIds.push(audioRes.message_id);
+                    if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
+                      await tgCall('copyMessage', {
+                        chat_id: chatId,
+                        from_chat_id: AUTHORIZED_GROUP_ID,
+                        message_id: audioRes.message_id
+                      });
+                    }
+                  }
+                  await new Promise(r => setTimeout(r, 1500));
+                } catch (sendErr) {
+                  console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
                 }
               }
             }
