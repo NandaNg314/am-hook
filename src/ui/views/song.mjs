@@ -277,7 +277,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   /* ---------- 纯净 MP4 元数据与同步歌词内嵌 ---------- */
   function createDataAtom(type, flags, payload) {
-    const typeBytes = new TextEncoder().encode(type);
+    // MP4 fourcc 必须精确 4 字节，非 ASCII (如 \xa9) 必须用 charCodeAt 保证单字节
+    const typeBytes = Uint8Array.from(type, (c) => c.charCodeAt(0));
     const dataHeader = new Uint8Array(16);
     const dataView = new DataView(dataHeader.buffer);
     const dataSize = 16 + payload.length;
@@ -300,10 +301,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   function createTextAtom(name, text) {
     if (!text) return new Uint8Array(0);
-    return createDataAtom(name, 1, new TextEncoder().encode(text));
+    return createDataAtom(name, 1, new TextEncoder().encode(String(text)));
   }
 
   function createTrackAtom(trackNum, totalTracks = 0) {
+    if (!trackNum) return new Uint8Array(0);
     const buf = new Uint8Array(8);
     const v = new DataView(buf.buffer);
     v.setUint16(2, Number(trackNum) || 0, false);
@@ -312,6 +314,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   function createDiscAtom(discNum, totalDiscs = 0) {
+    if (!discNum) return new Uint8Array(0);
     const buf = new Uint8Array(6);
     const v = new DataView(buf.buffer);
     v.setUint16(2, Number(discNum) || 0, false);
@@ -342,6 +345,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (tags.cover) atoms.push(createCoverAtom(tags.cover));
 
     const totalPayloadLen = atoms.reduce((sum, a) => sum + a.length, 0);
+    if (totalPayloadLen === 0) return mp4Bytes;
+
     const ilstSize = 8 + totalPayloadLen;
     const fullNewIlst = new Uint8Array(ilstSize);
     new DataView(fullNewIlst.buffer).setUint32(0, ilstSize, false);
@@ -355,96 +360,118 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const dv = new DataView(mp4Bytes.buffer, mp4Bytes.byteOffset, mp4Bytes.byteLength);
     let moovOffset = -1;
     let moovSize = 0;
+    let mdatOffset = -1;
     let offset = 0;
     while (offset + 8 <= mp4Bytes.length) {
-      const size = dv.getUint32(offset, false);
+      let size = dv.getUint32(offset, false);
       const type = String.fromCharCode(...mp4Bytes.subarray(offset + 4, offset + 8));
       if (type === 'moov') {
         moovOffset = offset;
         moovSize = size;
-        break;
+      } else if (type === 'mdat') {
+        if (mdatOffset === -1) mdatOffset = offset;
+      }
+      if (size === 1) {
+        if (offset + 16 <= mp4Bytes.length) {
+          size = Number(dv.getBigUint64(offset + 8, false));
+        } else break;
       }
       if (size === 0) break;
       offset += size;
     }
     if (moovOffset === -1) return mp4Bytes;
 
-    const moovBytes = new Uint8Array(mp4Bytes.subarray(moovOffset, moovOffset + moovSize));
-    const moovView = new DataView(moovBytes.buffer, moovBytes.byteOffset, moovBytes.byteLength);
-
-    let ilstOffsetInMoov = -1;
-    let oldIlstSize = 0;
-    for (let i = 0; i <= moovBytes.length - 8; i++) {
-      const type = String.fromCharCode(...moovBytes.subarray(i + 4, i + 8));
-      if (type === 'ilst') {
-        ilstOffsetInMoov = i;
-        oldIlstSize = moovView.getUint32(i, false);
+    const moovBytes = mp4Bytes.subarray(moovOffset, moovOffset + moovSize);
+    let udtaOffset = -1;
+    let udtaSize = 0;
+    let uOffset = 8;
+    const mdv = new DataView(moovBytes.buffer, moovBytes.byteOffset, moovBytes.byteLength);
+    while (uOffset + 8 <= moovBytes.length) {
+      const size = mdv.getUint32(uOffset, false);
+      const type = String.fromCharCode(...moovBytes.subarray(uOffset + 4, uOffset + 8));
+      if (type === 'udta') {
+        udtaOffset = uOffset;
+        udtaSize = size;
         break;
       }
-    }
-    if (ilstOffsetInMoov === -1) return mp4Bytes;
-
-    const delta = fullNewIlst.length - oldIlstSize;
-
-    let metaOffsetInMoov = -1;
-    let udtaOffsetInMoov = -1;
-    for (let i = ilstOffsetInMoov - 8; i >= 0; i--) {
-      const type = String.fromCharCode(...moovBytes.subarray(i + 4, i + 8));
-      if (type === 'meta' && metaOffsetInMoov === -1) {
-        metaOffsetInMoov = i;
-      }
-      if (type === 'udta' && udtaOffsetInMoov === -1 && metaOffsetInMoov !== -1) {
-        udtaOffsetInMoov = i;
-        break;
-      }
+      if (size === 0) break;
+      uOffset += size;
     }
 
-    if (udtaOffsetInMoov !== -1) {
-      const oldUdtaSize = moovView.getUint32(udtaOffsetInMoov, false);
-      moovView.setUint32(udtaOffsetInMoov, oldUdtaSize + delta, false);
-    }
-    if (metaOffsetInMoov !== -1) {
-      const oldMetaSize = moovView.getUint32(metaOffsetInMoov, false);
-      moovView.setUint32(metaOffsetInMoov, oldMetaSize + delta, false);
-    }
-    const oldMoovSize = moovView.getUint32(0, false);
-    moovView.setUint32(0, oldMoovSize + delta, false);
+    // 标准 iTunes Metadata Handler (33 字节，所有播放器与系统属性读取器均强制要求)
+    const hdlrBox = new Uint8Array([
+      0x00, 0x00, 0x00, 0x21, // size: 33
+      0x68, 0x64, 0x6c, 0x72, // 'hdlr'
+      0x00, 0x00, 0x00, 0x00, // version & flags
+      0x00, 0x00, 0x00, 0x00, // predefined
+      0x6d, 0x64, 0x69, 0x72, // handler type: 'mdir'
+      0x61, 0x70, 0x70, 0x6c, // handler subtype: 'appl'
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
+      0x00                     // name
+    ]);
 
-    for (let i = 0; i <= moovBytes.length - 8; i++) {
-      const type = String.fromCharCode(...moovBytes.subarray(i + 4, i + 8));
-      if (type === 'stco') {
-        const entryCount = moovView.getUint32(i + 12, false);
-        let entryPos = i + 16;
-        for (let c = 0; c < entryCount; c++) {
-          const chunkOff = moovView.getUint32(entryPos, false);
-          moovView.setUint32(entryPos, chunkOff + delta, false);
-          entryPos += 4;
+    const metaSize = 12 + hdlrBox.length + fullNewIlst.length;
+    const metaBox = new Uint8Array(metaSize);
+    new DataView(metaBox.buffer).setUint32(0, metaSize, false);
+    metaBox.set(new TextEncoder().encode('meta'), 4);
+    metaBox.set(hdlrBox, 12);
+    metaBox.set(fullNewIlst, 12 + hdlrBox.length);
+
+    const udtaTotal = 8 + metaBox.length;
+    const finalUdta = new Uint8Array(udtaTotal);
+    new DataView(finalUdta.buffer).setUint32(0, udtaTotal, false);
+    finalUdta.set(new TextEncoder().encode('udta'), 4);
+    finalUdta.set(metaBox, 8);
+
+    const newMoovSize = (udtaOffset === -1 ? moovSize : moovSize - udtaSize) + finalUdta.length;
+    const newMoov = new Uint8Array(newMoovSize);
+    const moovBeforeUdta = udtaOffset === -1 ? moovBytes : moovBytes.subarray(0, udtaOffset);
+    const moovAfterUdta = udtaOffset === -1 ? new Uint8Array(0) : moovBytes.subarray(udtaOffset + udtaSize);
+
+    newMoov.set(moovBeforeUdta, 0);
+    newMoov.set(finalUdta, moovBeforeUdta.length);
+    newMoov.set(moovAfterUdta, moovBeforeUdta.length + finalUdta.length);
+    new DataView(newMoov.buffer).setUint32(0, newMoovSize, false);
+
+    const delta = newMoovSize - moovSize;
+
+    // 当 moov 位于 mdat 之前时，moov 扩容 delta 字节导致 mdat 整体后移 delta 字节，
+    // 必须同步修正 moov 内所有 stco / co64 chunk offset
+    if (delta !== 0 && mdatOffset !== -1 && mdatOffset > moovOffset) {
+      const patchView = new DataView(newMoov.buffer, newMoov.byteOffset, newMoov.byteLength);
+      for (let i = 0; i <= newMoov.length - 16; i++) {
+        const type = String.fromCharCode(...newMoov.subarray(i + 4, i + 8));
+        if (type === 'stco') {
+          const boxSize = patchView.getUint32(i, false);
+          const entryCount = patchView.getUint32(i + 12, false);
+          if (boxSize === 16 + entryCount * 4) {
+            let pos = i + 16;
+            for (let e = 0; e < entryCount; e++) {
+              const oldOff = patchView.getUint32(pos, false);
+              patchView.setUint32(pos, oldOff + delta, false);
+              pos += 4;
+            }
+          }
+        } else if (type === 'co64') {
+          const boxSize = patchView.getUint32(i, false);
+          const entryCount = patchView.getUint32(i + 12, false);
+          if (boxSize === 16 + entryCount * 8) {
+            let pos = i + 16;
+            for (let e = 0; e < entryCount; e++) {
+              const oldOff = patchView.getBigUint64(pos, false);
+              patchView.setBigUint64(pos, oldOff + BigInt(delta), false);
+              pos += 8;
+            }
+          }
         }
-      } else if (type === 'co64') {
-        const entryCount = moovView.getUint32(i + 12, false);
-        let entryPos = i + 16;
-        for (let c = 0; c < entryCount; c++) {
-          const chunkOff = moovView.getBigUint64(entryPos, false);
-          moovView.setBigUint64(entryPos, chunkOff + BigInt(delta), false);
-          entryPos += 8;
-        }
       }
     }
 
-    const partBeforeIlst = moovBytes.subarray(0, ilstOffsetInMoov);
-    const partAfterIlst = moovBytes.subarray(ilstOffsetInMoov + oldIlstSize);
-    const newMoov = new Uint8Array(partBeforeIlst.length + fullNewIlst.length + partAfterIlst.length);
-    newMoov.set(partBeforeIlst, 0);
-    newMoov.set(fullNewIlst, partBeforeIlst.length);
-    newMoov.set(partAfterIlst, partBeforeIlst.length + fullNewIlst.length);
-
-    const partBeforeMoov = mp4Bytes.subarray(0, moovOffset);
-    const partAfterMoov = mp4Bytes.subarray(moovOffset + moovSize);
-    const out = new Uint8Array(partBeforeMoov.length + newMoov.length + partAfterMoov.length);
-    out.set(partBeforeMoov, 0);
-    out.set(newMoov, partBeforeMoov.length);
-    out.set(partAfterMoov, partBeforeMoov.length + newMoov.length);
-    return out;
+    const finalMp4 = new Uint8Array(mp4Bytes.length - moovSize + newMoovSize);
+    finalMp4.set(mp4Bytes.subarray(0, moovOffset), 0);
+    finalMp4.set(newMoov, moovOffset);
+    finalMp4.set(mp4Bytes.subarray(moovOffset + moovSize), moovOffset + newMoovSize);
+    return finalMp4;
   }
 
   function parseTimeToSeconds(timeStr) {
@@ -744,14 +771,35 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         job.statusText = '正在内嵌官方元数据与歌词...';
         showDownload(id);
         toast('正在内嵌官方元数据、高清封面与歌词...');
-        const coverUrl = meta.artwork ? meta.artwork.replace('600x600', '1200x1200') : '';
+        const coverUrl = meta.artwork
+          ? meta.artwork.replace('600x600', '1400x1400')
+          : (meta.resource?.attributes?.artwork?.url
+              ? meta.resource.attributes.artwork.url.replace('{w}', '1400').replace('{h}', '1400').replace('{c}', 'bb').replace('{f}', 'jpg')
+              : '');
+
+        const fetchCoverBuf = async () => {
+          if (coverUrl) {
+            try {
+              const res = await fetch(coverUrl);
+              if (res.ok) return await res.arrayBuffer();
+            } catch (err) {
+              console.warn('1400x1400 cover fetch failed, trying standard:', err);
+            }
+          }
+          if (meta.artwork) {
+            try {
+              const res = await fetch(meta.artwork);
+              if (res.ok) return await res.arrayBuffer();
+            } catch (err) {
+              console.warn('Fallback cover fetch failed:', err);
+            }
+          }
+          return null;
+        };
+
         const [lyrRes, coverBuf] = await Promise.all([
           fetchLyricsData(adamId),
-          coverUrl
-            ? fetch(coverUrl)
-                .then((r) => (r.ok ? r.arrayBuffer() : null))
-                .catch(() => (meta.artwork ? fetch(meta.artwork).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null) : null))
-            : (meta.artwork ? fetch(meta.artwork).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null) : null),
+          fetchCoverBuf(),
         ]);
         lyricsData = lyrRes;
 
@@ -780,7 +828,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         });
         finalFile = new Blob([taggedBytes], { type: 'audio/mp4' });
       } catch (tagErr) {
-        console.warn('Tagging error:', tagErr);
+        console.error('Tagging error:', tagErr);
       }
 
       saveResult({ file: finalFile, dispose: result.dispose }, standardM4aName);
