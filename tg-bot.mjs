@@ -1116,9 +1116,8 @@ async function fetchAlbumDetails(albumId, storefront = 'hk') {
           if (!/[\u4e00-\u9fa5]/.test(albumName) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
             albumName = toSimplifiedChinese(cAttr.name);
           }
-          if (cData.data?.[0]?.relationships?.tracks?.data?.length) {
-            tracks = cData.data[0].relationships.tracks.data;
-          }
+          // 注意：cn 嗅探只补全中文元数据（艺人名/专辑名），绝不覆盖 tracks——
+          // 曲目 ID 必须保持从 tr 区解析，否则跨区 adamId 不匹配导致批量转存误判无版权
         }
       }
     } catch {}

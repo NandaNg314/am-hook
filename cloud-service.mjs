@@ -791,6 +791,8 @@ async function processTransfer(body) {
             const wpUrl = wpData?.data?.m3u8;
             if (wpUrl && wpUrl.includes('.m3u8')) {
               webplaybackM3u8 = wpUrl;
+              // webplayback 为标准 HLS（CENC key 内嵌），实际音质为 AAC 256kbps 上限（Apple 端格式限制）
+              chosenFormatName = 'AAC (webplayback)';
               console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback 标准 HLS 拉流: ${adamId}`);
             }
           }
