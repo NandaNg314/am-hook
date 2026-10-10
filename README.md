@@ -2,8 +2,8 @@
 
 [中文](README.zh-CN.md) | English
 
-> 🚀 **An industrial-grade, cloud-powered enhanced fork of [am-hook](https://github.com/WorldObservationLog/am-hook).**  
-> On top of the original high-performance Rust decryption core, this fork features **an automated cloud transfer pipeline (`am-cloud`), one-click artist discography batch archiving to Gofile with password protection, 100+ Chinese artist alias normalizer, Japanese storefront auto-routing (anti-romaji), standard QuickTime MP4 `hdlr` tag injection, and Windows File Explorer ZIP compatibility**.
+> 🚀 **An industrial-grade, cloud-powered enhanced fork of [am-hook](https://github.com/itouakirai/am-hook).**  
+> On top of the original high-performance Rust decryption core, this fork features **an automated cloud transfer pipeline (`am-cloud`), a Telegram bot with instant media-library caching (`am-tgbot`), one-click artist discography batch archiving to Gofile with password protection, 100+ Chinese artist alias normalizer, Japanese storefront auto-routing (anti-romaji), standard QuickTime MP4 `hdlr` tag injection, and Windows File Explorer ZIP compatibility**.
 
 ![am-hook home page](docs/home.png)
 
@@ -35,6 +35,16 @@
    * Injects the standard `hdlr` metadata handler atom (`mdir/appl`) into `moov.udta.meta`, ensuring full compatibility with Windows Explorer, Foobar2000, and in-car stereos with 1400×1400 high-res artwork, tags, and embedded synchronized lyrics.
 8. 🧹 **Safe Memory & Disk Auto-Garbage Collection**:
    * Temporary directories and zip archives are wiped immediately upon upload completion. Includes an automated 2-hour TTL cleanup routine.
+9. 🤖 **Telegram Bot Request & Instant Delivery (`am-tgbot`)**:
+   * Send an Apple Music song / album / playlist link directly in Telegram to resolve and transfer it; pick from Lossless / Hi-Res / Dolby Atmos / AAC qualities and ZIP or single-audio delivery.
+   * **Zero-copy uploads** over the official Local Bot API `file://` channel — bypasses Telegram's 50MB limit (up to 2GB), with single media-group requests taking milliseconds.
+   * **Media-library caching**: archived tracks / albums are re-sent instantly from the channel (`copyMessage`) with 0s wait, consuming no VPS bandwidth after the first transfer.
+   * **Adaptive pacing**: priority single-track queue insertion, balanced media-group chunk planning, and flood-limit backoff prevent 429 stalls and album-wide crashes.
+   * Bilingual UI (Chinese / English), artist profile browsing, full playlist pagination, and owner-only remote ops commands.
+10. 🗂️ **Cross-Region Catalogs & Legacy Media**:
+   * **Turkey storefront priority**: track IDs are resolved from the TR catalog to match the wrapper account region, eliminating cross-region ID mismatches.
+   * **M4P single-file fallback**: legacy FairPlay single-file tracks are re-fetched via the wrapper `webplayback` standard HLS (decrypted directly by ffmpeg).
+   * **Wrapper self-healing**: an event-driven watchdog auto-restarts wrapper-lite on Fairplay session stalls — batch downloads stay hands-free.
 
 ---
 
@@ -52,6 +62,9 @@
 | **Dual Lyrics Export** | ❌ Web player display only. |  **Dual Mode Support**. Both embedded lyrics (`©lyr` atom) and standalone `.lrc` file export. |
 | **VPS Memory & OOM Protection** | ⚠️ Unbounded concurrency risks OOM crash on VPS. |  **Sequential Album Pipeline**. RAM capped at ~1.5GB (out of 12GB), 0% OOM risk; zero leftover disk storage. |
 | **Security & Access Control** | ❌ No authentication; open to public abuse. |  **Private Password Gate + SHA-256 Hashing**. Protects bandwidth and VPS resources from unauthorized access. |
+| **Telegram Request & Delivery** | ❌ Web UI only. |  **Native Telegram Bot (`am-tgbot`)**. Send a link to transcribe; pick Lossless / Hi-Res / Atmos / AAC and ZIP / single-audio delivery, bilingual UI; zero-copy `file://` Local Bot API flushes singles and full albums in seconds. |
+| **Media-Library Instant Cache** | ❌ Every request re-downloads from scratch. |  **Channel-archived copyMessage caching**. Archive once, then re-send instantly with 0s wait and no VPS bandwidth. |
+| **Cross-Region & Legacy Tracks** | ⚠️ Some old / live tracks are nontransferable (M4P single-file or cross-region ID mismatch). |  **TR storefront priority + M4P fallback + wrapper self-healing**. Avoids cross-region ID mismatches, falls back to standard HLS for legacy FairPlay files, and auto-restarts a stalled wrapper — hands-free batch transfers. |
 
 ---
 
