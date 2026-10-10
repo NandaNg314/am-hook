@@ -492,7 +492,7 @@ async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, ma
   }
 }
 
-async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 4) {
+async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 2) {
   let attempt = 0;
   while (attempt < maxRetries) {
     attempt++;
@@ -522,9 +522,12 @@ async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 
           if (m) retrySec = parseInt(m[1], 10);
         }
         if (retrySec) {
-          const waitSec = Math.max(retrySec + 2, 4);
+          const waitSec = Math.max(retrySec + 2, 8);
           console.warn(`[Telegram API] sendMediaGroup 触发速率限制，等待 ${waitSec} 秒后重试...`);
           await new Promise(r => setTimeout(r, waitSec * 1000));
+          if (attempt >= maxRetries) {
+            throw new Error(`Telegram API [sendMediaGroup] 频控: ${data.description || '未知错误'}`);
+          }
           continue;
         }
         throw new Error(`Telegram API [sendMediaGroup] 错误: ${data.description || '未知错误'}`);
@@ -1695,7 +1698,7 @@ ${artistTag} ${albumTag} #全辑ZIP`);
         });
 
         const allGroupMsgIds = [];
-        const chunkSize = 10;
+        const chunkSize = 5;
 
         for (let i = 0; i < downloadedFiles.length; i += chunkSize) {
           const chunk = downloadedFiles.slice(i, i + chunkSize);
@@ -1723,6 +1726,7 @@ ${artistTag} ${albumTag} #合辑`);
             if (audioRes && audioRes.message_id) {
               allGroupMsgIds.push(audioRes.message_id);
               if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
+                await new Promise(r => setTimeout(r, 1500));
                 await tgCall('copyMessage', {
                   chat_id: chatId,
                   from_chat_id: AUTHORIZED_GROUP_ID,
@@ -1773,6 +1777,7 @@ ${artistTag} ${albumTag} #合辑`);
               allGroupMsgIds.push(...chunkMsgIds);
 
               if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
+                await new Promise(r => setTimeout(r, 2000));
                 try {
                   await tgCall('copyMessages', {
                     chat_id: chatId,
@@ -1786,6 +1791,7 @@ ${artistTag} ${albumTag} #合辑`);
                       from_chat_id: AUTHORIZED_GROUP_ID,
                       message_id: mid
                     });
+                    await new Promise(r => setTimeout(r, 1000));
                   }
                 }
               }
@@ -1810,6 +1816,7 @@ ${artistTag} ${albumTag} #合辑`);
                   if (audioRes && audioRes.message_id) {
                     allGroupMsgIds.push(audioRes.message_id);
                     if (String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
+                      await new Promise(r => setTimeout(r, 1000));
                       await tgCall('copyMessage', {
                         chat_id: chatId,
                         from_chat_id: AUTHORIZED_GROUP_ID,
@@ -1817,12 +1824,17 @@ ${artistTag} ${albumTag} #合辑`);
                       });
                     }
                   }
-                  await new Promise(r => setTimeout(r, 1500));
+                  await new Promise(r => setTimeout(r, 3500));
                 } catch (sendErr) {
                   console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
                 }
               }
             }
+          }
+
+          if (i + chunkSize < downloadedFiles.length) {
+            console.log(`[TG-Bot] 合辑气泡发送完毕，等待 8 秒避免 Telegram 频道限流...`);
+            await new Promise(r => setTimeout(r, 8000));
           }
         }
 
