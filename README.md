@@ -53,7 +53,7 @@
 | Feature | Upstream `am-hook` | Enhanced Edition (This Repo) |
 | :--- | :--- | :--- |
 | **Cloud Transfer & Direct Storage** | ❌ **None**. Browser-only local download, consuming client RAM & bandwidth. |  **Dedicated Cloud Service (`am-cloud`)**. Directly streams, tags, zips, and uploads to Gofile with public shareable links. |
-| **Artist Discography Archiving** | ❌ **None**. No artist discography batch export. |  **Native Discography Pipeline**. Batch transfers full discographies with customizable categories & password gate. |
+| **Artist Discography Archiving** | ❌ **None**. No artist discography batch export. |  **Native Discography Pipeline**. Batch transfers full discographies with customizable categories & an anti-abuse password gate on the artist page. |
 | **Concurrent Album Transfer** | ❌ **None**. Manual single-track clicking. |  **3-Worker Concurrent Pool**. Complete 20+ song album processed and packaged in ~40 seconds. |
 | **Chinese Artist Alias Normalization** | ❌ **None**. Shows `aMEI`, `Eason Chan`, `Cheer Chen`, etc. in international storefronts. |  **Built-in 100+ Artist Alias Dictionary**. Automatically normalizes aliases to authentic Chinese names. |
 | **Japanese Anti-Romaji Routing** | ❌ **None**. Displays romaji transliterations (`Gurenge`, `Kenshi Yonezu`) and furigana. |  **Automatic JP Storefront Routing**. Fetches genuine Japanese kanji/kana and strips romaji from lyrics. |
@@ -61,7 +61,7 @@
 | **MP4 iTunes `hdlr` Tag Patch** | ⚠️ Basic tags; artwork/metadata missing on Windows Explorer and car players. |  **QuickTime 33-Byte `hdlr` Box Injection**. 1400×1400 HD artwork, full metadata, and embedded synchronized lyrics. |
 | **Dual Lyrics Export** | ❌ Web player display only. |  **Dual Mode Support**. Both embedded lyrics (`©lyr` atom) and standalone `.lrc` file export. |
 | **VPS Memory & OOM Protection** | ⚠️ Unbounded concurrency risks OOM crash on VPS. |  **Sequential Album Pipeline**. RAM capped at ~1.5GB (out of 12GB), 0% OOM risk; zero leftover disk storage. |
-| **Security & Access Control** | ❌ No authentication; open to public abuse. |  **Private Password Gate + SHA-256 Hashing**. Protects bandwidth and VPS resources from unauthorized access. |
+| **Artist Page Anti-Abuse Password** | ❌ None. On a public deployment anyone can trigger artist discography batch transfers and burn bandwidth. |  **Artist-page password gate + SHA-256**. Limited to the discography batch action to prevent accidental triggers and bandwidth abuse; zero plaintext secret leakage. |
 | **Telegram Request & Delivery** | ❌ Web UI only. |  **Native Telegram Bot (`am-tgbot`)**. Send a link to transcribe; pick Lossless / Hi-Res / Atmos / AAC and ZIP / single-audio delivery, bilingual UI; zero-copy `file://` Local Bot API flushes singles and full albums in seconds. |
 | **Media-Library Instant Cache** | ❌ Every request re-downloads from scratch. |  **Channel-archived copyMessage caching**. Archive once, then re-send instantly with 0s wait and no VPS bandwidth. |
 | **Cross-Region & Legacy Tracks** | ⚠️ Some old / live tracks are nontransferable (M4P single-file or cross-region ID mismatch). |  **TR storefront priority + M4P fallback + wrapper self-healing**. Avoids cross-region ID mismatches, falls back to standard HLS for legacy FairPlay files, and auto-restarts a stalled wrapper — hands-free batch transfers. |
