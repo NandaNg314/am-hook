@@ -47,6 +47,7 @@ try {
 const PORT = process.env.CLOUD_PORT || 31409;
 const HOST = process.env.CLOUD_HOST || '127.0.0.1';
 const HOOK_BASE = process.env.HOOK_BASE || 'http://127.0.0.1:31408';
+const WRAPPER_BASE = process.env.WRAPPER_BASE || 'http://127.0.0.1:12340';
 
 // 繁简字转换字典 (OpenCC 词表)
 let t2sMap = {};
@@ -775,47 +776,67 @@ async function processTransfer(body) {
   let chosenFormatName = '';
 
   // 1. 如果没有直接传 hookFileUrl，通过 127.0.0.1:31408/parse/song/{adamId} 获取
+  let webplaybackM3u8 = null; // 当 master 为 M4P 单文件时，回退 /webplayback 标准 HLS
   if (!audioHookUrl) {
     if (!adamId) throw new Error('缺少 adamId 或 hookFileUrl');
-    const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: AbortSignal.timeout(10000) });
+    const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: AbortSignal.timeout(30000) });
     if (!parseRes.ok) {
       const parseErr = await parseRes.json().catch(() => ({}));
-      if (parseErr.msg === 'failed to get m3u8' || parseErr.msg?.includes('无资源') || parseErr.msg?.includes('无版权') || parseRes.status === 404 || parseRes.status === 500) {
-        throw new Error('此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
+      // master m3u8 解析不出变体（wrapper 返回 M4P 单文件 + accessKey）：改用 /webplayback 拿标准 HLS（CENC key 内嵌）
+      if (parseErr.msg?.includes('No variants') || parseErr.msg?.includes('failed to get m3u8')) {
+        try {
+          const wpRes = await fetch(`${WRAPPER_BASE}/webplayback?adamId=${adamId}`, { signal: AbortSignal.timeout(15000) });
+          if (wpRes.ok) {
+            const wpData = await wpRes.json();
+            const wpUrl = wpData?.data?.m3u8;
+            if (wpUrl && wpUrl.includes('.m3u8')) {
+              webplaybackM3u8 = wpUrl;
+              console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback 标准 HLS 拉流: ${adamId}`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[Cloud-Transfer] webplayback 回退拉流失败: ${e.message}`);
+        }
       }
-      throw new Error(`解析歌曲失败: ${parseErr.msg || 'HTTP ' + parseRes.status}`);
-    }
-    const parseData = await parseRes.json();
-    const variants = parseData.variants || [];
-    if (!variants.length) throw new Error('未找到可用的音频流（该地区可能无播放版权）');
-
-    const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
-
-    let selected = null;
-    const qLower = quality.toLowerCase();
-    if (qLower.includes('hi-res') || qLower.includes('hires')) {
-      selected = variants.find(v => (v.codecs === 'alac') && (v.sample_rate > 48000 || v.bit_depth > 16)) ||
-                 variants.find(v => v.codecs === 'alac');
-    } else if (qLower.includes('atmos') || qLower.includes('ec-3') || qLower.includes('ec3')) {
-      selected = variants.find(v => (v.codecs && v.codecs.includes('ec-3')) || (v.group_id && v.group_id.includes('atmos'))) ||
-                 variants.find(v => v.codecs === 'alac');
-    } else if (qLower.includes('aac')) {
-      selected = variants.find(v => (v.codecs && v.codecs.includes('mp4a')) || (v.group_id && v.group_id.includes('256'))) || variants[0];
+      if (!webplaybackM3u8) {
+        if (parseErr.msg === 'failed to get m3u8' || parseErr.msg?.includes('无资源') || parseErr.msg?.includes('无版权') || parseRes.status === 404 || parseRes.status === 500) {
+          throw new Error('此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
+        }
+        throw new Error(`解析歌曲失败: ${parseErr.msg || 'HTTP ' + parseRes.status}`);
+      }
     } else {
-      // 默认 Lossless
-      selected = variants.find(v => v.codecs === 'alac' || (v.group_id && v.group_id.includes('alac'))) || variants[0];
-    }
-    if (!selected) selected = variants[0];
+      const parseData = await parseRes.json();
+      const variants = parseData.variants || [];
+      if (!variants.length) throw new Error('未找到可用的音频流（该地区可能无播放版权）');
 
-    audioHookUrl = `${HOOK_BASE}/${base}${selected.file_uri}`;
-    chosenFormatName = selected.group_id || selected.codecs || 'Lossless';
+      const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
+
+      let selected = null;
+      const qLower = quality.toLowerCase();
+      if (qLower.includes('hi-res') || qLower.includes('hires')) {
+        selected = variants.find(v => (v.codecs === 'alac') && (v.sample_rate > 48000 || v.bit_depth > 16)) ||
+                   variants.find(v => v.codecs === 'alac');
+      } else if (qLower.includes('atmos') || qLower.includes('ec-3') || qLower.includes('ec3')) {
+        selected = variants.find(v => (v.codecs && v.codecs.includes('ec-3')) || (v.group_id && v.group_id.includes('atmos'))) ||
+                   variants.find(v => v.codecs === 'alac');
+      } else if (qLower.includes('aac')) {
+        selected = variants.find(v => (v.codecs && v.codecs.includes('mp4a')) || (v.group_id && v.group_id.includes('256'))) || variants[0];
+      } else {
+        // 默认 Lossless
+        selected = variants.find(v => v.codecs === 'alac' || (v.group_id && v.group_id.includes('alac'))) || variants[0];
+      }
+      if (!selected) selected = variants[0];
+
+      audioHookUrl = `${HOOK_BASE}/${base}${selected.file_uri}`;
+      chosenFormatName = selected.group_id || selected.codecs || 'Lossless';
+    }
   }
 
-  // 确保 audioHookUrl 指向本地 HOOK_BASE
+  // 确保 audioHookUrl 指向本地 HOOK_BASE (webplayback 回退路径不走此逻辑)
   let targetAudioUrl = audioHookUrl;
-  if (targetAudioUrl.startsWith('/')) {
+  if (targetAudioUrl && targetAudioUrl.startsWith('/')) {
     targetAudioUrl = `${HOOK_BASE}${targetAudioUrl}`;
-  } else if (!targetAudioUrl.startsWith('http://127.0.0.1:31408') && !targetAudioUrl.startsWith('http://localhost:31408')) {
+  } else if (targetAudioUrl && !targetAudioUrl.startsWith('http://127.0.0.1:31408') && !targetAudioUrl.startsWith('http://localhost:31408')) {
     // 如果是远程域名例如 https://example.com:3140/... 则转换为本地 127.0.0.1:31408
     try {
       const u = new URL(targetAudioUrl);
@@ -829,7 +850,25 @@ async function processTransfer(body) {
 
   // 音频抓取
   const fetchAudio = async () => {
-    const aRes = await fetch(targetAudioUrl, { signal: AbortSignal.timeout(60000) });
+    if (webplaybackM3u8) {
+      // M4P 单文件回退：ffmpeg 直接下载并解密 webplayback 标准 HLS（CENC key 内嵌于 m3u8，无需 wrapper /key）
+      const rnd = Math.random().toString(36).slice(2, 8);
+      const tmpOut = `/tmp/am_wp_${Date.now()}_${rnd}.m4a`;
+      try {
+        await execFileAsync('ffmpeg', [
+          '-y', '-v', 'error',
+          '-allowed_extensions', 'ALL',
+          '-user_agent', 'Mozilla/5.0',
+          '-i', webplaybackM3u8,
+          '-c', 'copy',
+          tmpOut
+        ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+        return new Uint8Array(await fs.promises.readFile(tmpOut));
+      } finally {
+        try { await fs.promises.unlink(tmpOut); } catch {}
+      }
+    }
+    const aRes = await fetch(targetAudioUrl, { signal: AbortSignal.timeout(300000) });
     if (!aRes.ok) throw new Error(`获取音频流失败: HTTP ${aRes.status}`);
     return new Uint8Array(await aRes.arrayBuffer());
   };
@@ -1482,9 +1521,17 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'ok', data: result }));
       } catch (err) {
-        console.error('[Cloud-Transfer] 错误:', err.message);
+        // wrapper-lite 卡死特征：terminated / internal error / Fairplay -42786 等。
+        // 后台 wrapper-watchdog 已会自动重启 wrapper-lite，这里把原生态错误翻译成友好提示，
+        // 让用户/日志能明确看到"wrapper 卡死已自愈，请重试"，而非晦涩的 terminated。
+        const rawMsg = err.message || String(err);
+        const wrapperStuck = /terminated|internal error|Fairplay|KDCanProcessCKC|-42786/i.test(rawMsg);
+        console.error(wrapperStuck ? '[Cloud-Transfer] 错误(wrapper卡死):' : '[Cloud-Transfer] 错误:', rawMsg);
+        const userErr = wrapperStuck
+          ? `解密鉴权服务(wrapper)临时卡死，已自动重启。请稍候重试本次下载。（原始: ${rawMsg.slice(0, 80)}）`
+          : rawMsg;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', error: err.message }));
+        res.end(JSON.stringify({ status: 'error', error: userErr }));
       }
     });
     return;
@@ -1519,7 +1566,7 @@ function cleanupStaleSessions() {
   try {
     const tmpDir = '/tmp';
     const now = Date.now();
-    const maxAge = 2 * 60 * 60 * 1000;
+    const maxAge = 30 * 60 * 1000; // 30 分钟自动过期，防止异常终止导致残余堆积
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
       if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
@@ -1529,8 +1576,8 @@ function cleanupStaleSessions() {
         try {
           const stat = fs.statSync(p);
           if (now - stat.mtimeMs > maxAge) {
-            fs.rmSync(p, { force: true });
-            console.log(`[am-cloud] 自动清理过期临时文件: ${entry}`);
+            fs.rmSync(p, { recursive: true, force: true });
+            console.log(`[am-cloud] 自动清理过期临时文件或目录: ${entry}`);
           }
         } catch {}
       }

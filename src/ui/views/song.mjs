@@ -493,7 +493,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   function ttmlToLrc(ttmlContent) {
-    if (!ttmlContent || typeof ttmlContent !== 'string') return '';
+    if (!ttmlContent || typeof ttmlContent !== 'string') return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     let cleaned = ttmlContent;
     cleaned = cleaned.replace(/<div[^>]*type=["']translation["'][^>]*>[\s\S]*?<\/div>/gi, '');
     cleaned = cleaned.replace(/<span[^>]*ttm:role=["']x-translation["'][^>]*>[\s\S]*?<\/span>/gi, '');
@@ -543,14 +543,15 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const res = await fetch(`/lyrics/${trackId}`);
       if (!res.ok) return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
       const rawTtml = await res.text();
-      const parsed = parseLyricsSong(rawTtml);
+      const parsed = ttmlToLrc(rawTtml);
       if (parsed.hasLyrics && meta.isChinese) {
         if (parsed.lrc) parsed.lrc = toSimplified(parsed.lrc);
         if (parsed.plain) parsed.plain = toSimplified(parsed.plain);
         if (parsed.ttml) parsed.ttml = toSimplified(parsed.ttml);
       }
       return parsed;
-    } catch {
+    } catch (err) {
+      console.warn('fetchLyricsData failed:', err);
       return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     }
   }
