@@ -15,3 +15,18 @@ tg_bot_db.json
 userbot.mjs
 *.session
 *.session-journal
+
+# 本地运维/调试文档与脚本 (含服务器凭据信息，勿上传)
+PROJECT_MEMORY.md
+/scripts/wrapper-watchdog.sh
+/scripts/wrapper-watchdog-fast.sh
+/check_*.sh
+/check_*.py
+/find_*.sh
+/find_*.py
+/get_master.sh
+/probe_wrapper.sh
+/repro_*.mjs
+/run_*.sh
+/test_*.sh
+/verify_*.mjs
