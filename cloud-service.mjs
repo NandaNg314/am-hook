@@ -350,9 +350,11 @@ function normalizeArtistName(rawArtist) {
  * 1. 强制写入 PKZIP Bit 11 (0x800) UTF-8 标识位，彻底解决 Windows 资源管理器打开含中日韩字符 ZIP 乱码、报损坏或空白的问题
  * 2. 采用 ZIP_STORED (Store 0，无额外压缩计算)，直接流式打包，速度极快
  */
-async function packZipFolder(sourceDir, outputZipPath) {
+async function packZipFolder(sourceDir, outputZipPath, fileList = null) {
   const zipScript = path.join(__dirname, 'zip_pack.py');
-  await execFileAsync('python3', [zipScript, outputZipPath, sourceDir], { timeout: 180000 });
+  const args = [zipScript, outputZipPath, sourceDir];
+  if (Array.isArray(fileList) && fileList.length) args.push(...fileList);
+  await execFileAsync('python3', args, { timeout: 180000 });
 }
 
 // Gofile 服务器缓存 (缓存 5 分钟)
@@ -703,7 +705,63 @@ async function processTransfer(body) {
     const finalZipName = sanitizeFilename(toSimplifiedChinese(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip')));
     const zipFilePath = `/tmp/${batchId}.zip`;
     const files = fs.readdirSync(sessionDir);
+    const splitMaxMB = Number(body.splitMaxMB || 0);
     console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
+
+    // 大专辑分卷 (noUpload / Telegram 场景)：按累计大小贪心切卷，每卷均为完整独立 ZIP，规避 TG 单文件 2000MB 硬上限
+    if (noUpload && splitMaxMB > 0) {
+      const fileSizes = files
+        .map((name) => ({ name, size: fs.statSync(path.join(sessionDir, name)).size }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const totalBytes = fileSizes.reduce((s, f) => s + f.size, 0);
+      // 按 splitMaxMB 切卷，多文件卷贪心保证 <=limit；仅单文件超限（实际不存在的极端曲目）才可能超出，
+      // 由 unifiedSendMedia 的 2000MB 检查兜底。1900 已留 100MB 余量在硬限内。
+      const limitBytes = splitMaxMB * 1024 * 1024;
+      if (totalBytes > limitBytes) {
+        // 贪心切卷：累计大小达到 limit 即开新卷。若某单文件本身超过 limit（极端超长曲目），
+        // 则单独成卷并继续，避免后续所有曲目被它连带卡死；该卷可能>limit，但 unifiedSendMedia 的 2000MB 检查仍为最终兜底。
+        const groups = [];
+        let cur = [];
+        let curBytes = 0;
+        for (const f of fileSizes) {
+          if (cur.length && curBytes + f.size > limitBytes) {
+            groups.push(cur);
+            cur = [];
+            curBytes = 0;
+          }
+          cur.push(f.name);
+          curBytes += f.size;
+        }
+        if (cur.length) groups.push(cur);
+
+        const baseName = finalZipName.replace(/\.zip$/i, '');
+        const zipParts = [];
+        for (let i = 0; i < groups.length; i++) {
+          const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
+          const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
+          await packZipFolder(sessionDir, partPath, groups[i]);
+          const partStat = fs.statSync(partPath);
+          const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
+          zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: groups[i].length, trackFiles });
+          console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
+        }
+        const tEnd = performance.now();
+        return {
+          local: true,
+          isZip: true,
+          sessionDir,
+          zipParts,
+          zipFilePath: zipParts[0].filePath,
+          zipFileName: finalZipName,
+          fileSize: totalBytes,
+          totalFiles: files.length,
+          album: meta.album || '',
+          qualityName: quality,
+          elapsedMs: Math.round(tEnd - t0)
+        };
+      }
+    }
+
     await packZipFolder(sessionDir, zipFilePath);
 
     if (noUpload) {
