@@ -39,6 +39,8 @@
    * Send an Apple Music song / album / playlist link directly in Telegram to resolve and transfer it; pick from Lossless / Hi-Res / Dolby Atmos / AAC qualities and ZIP or single-audio delivery.
    * **Zero-copy uploads** over the official Local Bot API `file://` channel — bypasses Telegram's 50MB limit (up to 2GB), with single media-group requests taking milliseconds.
    * **Media-library caching**: archived tracks / albums are re-sent instantly from the channel (`copyMessage`) with 0s wait, consuming no VPS bandwidth after the first transfer.
+   * **Multi-select batch download**: tick multiple albums on the artist page or multiple tracks inside an album to batch-download at once; albums already cached in the channel are skipped and sent together at the end.
+   * **Artist discography (admin)**: the owner can 1-click batch-download ALL albums of an artist with cached-album skip (normal users can download each single album).
    * **Adaptive pacing**: priority single-track queue insertion, balanced media-group chunk planning, and flood-limit backoff prevent 429 stalls and album-wide crashes.
    * Bilingual UI (Chinese / English), artist profile browsing, full playlist pagination, and owner-only remote ops commands.
 10. 🗂️ **Cross-Region Catalogs & Legacy Media**:
