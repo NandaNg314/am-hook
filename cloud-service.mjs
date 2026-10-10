@@ -1347,8 +1347,9 @@ class GlobalTransferQueue {
   }
 }
 
-// 严格全局时间顺序排队，最大并发 1，杜绝服务器 CPU/RAM 瞬时过载爆满
-const globalQueue = new GlobalTransferQueue(1);
+// 全局排队调度器，并发默认为 2（支持环境变量 CLOUD_CONCURRENCY 配置），兼顾极速下载与服务器负载
+const CLOUD_CONCURRENCY = parseInt(process.env.CLOUD_CONCURRENCY || '2', 10);
+const globalQueue = new GlobalTransferQueue(CLOUD_CONCURRENCY);
 
 // ==================== Web 访问防刷限流器 (支持环境变量白名单配置) ====================
 const OWNER_IPS = new Set([
