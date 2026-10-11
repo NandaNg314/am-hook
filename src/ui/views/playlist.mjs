@@ -458,11 +458,13 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   const batchZipPack = $('batch-zip-pack');
   const batchZipPackContainer = $('batch-zip-pack-container');
+  const batchModalHint = $('batch-modal-hint');
 
   batchGofileBtn?.addEventListener('click', () => {
     currentBatchMode = 'gofile';
     if (batchModalTitle) batchModalTitle.textContent = '☁️ 转存歌单至 Gofile (VPS 2000M 极速)';
     if (batchZipPackContainer) batchZipPackContainer.hidden = false;
+    if (batchModalHint) batchModalHint.innerHTML = '💡 Gofile 云端转存计入每日转存配额（200 首/IP/天）。开始前会自动检查剩余配额，不足时直接拦截。';
     batchModal?.showModal();
   });
 
@@ -470,6 +472,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     currentBatchMode = 'local';
     if (batchModalTitle) batchModalTitle.textContent = '📥 批量下载歌单到本机';
     if (batchZipPackContainer) batchZipPackContainer.hidden = true;
+    if (batchModalHint) batchModalHint.innerHTML = '💡 本机批量下载在浏览器内解密并保存，同样计入每日转存配额（消耗服务器出站带宽）。';
     batchModal?.showModal();
   });
 
@@ -494,6 +497,23 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   async function runBatchGofile(quality, embedLyrics, saveLyricsFile, lyricsFormat, isZip = true) {
     if (!tracks.length) return;
+
+    // 前置配额预检查：剩余配额不足以覆盖整单曲目时直接拦截，避免逐首打到撞墙浪费服务器资源
+    try {
+      const quotaRes = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
+      const quotaJson = await quotaRes.json();
+      if (quotaJson.status === 'ok' && quotaJson.data && !quotaJson.data.unlimited) {
+        const remaining = quotaJson.data.remaining;
+        if (remaining < tracks.length) {
+          toast(`⚠️ 今日转存配额不足：本歌单共 ${tracks.length} 首，今日仅剩 ${remaining} 首。请明日北京时间 00:00 后重试或缩小范围`);
+          console.warn(`[Batch] 前置配额拦截: 歌单 ${tracks.length} 首 > 剩余 ${remaining} 首`);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[Batch] 配额预检查失败(继续):', err.message);
+    }
+
     batchAbortController = new AbortController();
     const batchSig = batchAbortController.signal;
 
@@ -655,6 +675,26 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   async function runBatchLocal(quality, embedLyrics, saveLyricsFile, lyricsFormat) {
     if (!tracks.length) return;
+
+    // 本机批量下载同样消耗 VPS 出站带宽，预先扣除整批配额；不足直接拦截
+    try {
+      const consumeRes = await fetch('/api/quota/consume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: tracks.length }),
+        signal: AbortSignal.timeout(8000)
+      });
+      if (consumeRes.status === 429) {
+        const errJson = await consumeRes.json().catch(() => null);
+        toast(errJson?.error || '⚠️ 今日转存配额不足，无法进行本机批量下载');
+        return;
+      }
+      if (!consumeRes.ok) throw new Error(`配额预扣失败: HTTP ${consumeRes.status}`);
+    } catch (err) {
+      toast(`⚠️ 配额预扣失败: ${err.message}`);
+      return;
+    }
+
     batchAbortController = new AbortController();
     const batchSig = batchAbortController.signal;
 

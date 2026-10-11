@@ -545,6 +545,24 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   async function runDiscographyTransfer({ quality, embedLyrics, saveLyrics, includeFull, includeLive, includeSingles, includeCompilations }) {
     if (!artist) return;
+
+    // 前置配额低水位检查：剩余配额极低时直接拦截，避免白跑全量检索与逐首下载
+    let quotaRemaining = Infinity;
+    try {
+      const quotaRes = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
+      const quotaJson = await quotaRes.json();
+      if (quotaJson.status === 'ok' && quotaJson.data && !quotaJson.data.unlimited) {
+        quotaRemaining = quotaJson.data.remaining;
+        if (quotaRemaining < 5) {
+          toast(`⚠️ 今日转存配额不足：今日仅剩 ${quotaRemaining} 首。请明日北京时间 00:00 后重试`);
+          console.warn(`[Disco] 前置配额拦截: 剩余 ${quotaRemaining} 首`);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[Disco] 配额预检查失败(继续):', err.message);
+    }
+
     discoAbortController = new AbortController();
     const sig = discoAbortController.signal;
 
@@ -641,6 +659,15 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       }
 
       if (!albTracks.length) continue;
+
+      // 每张专辑曲目读出后做一次配额检查：剩余不足以覆盖本张专辑时跳过该张，避免中途撞墙
+      if (quotaRemaining !== Infinity && quotaRemaining < albTracks.length) {
+        if (discoStatusDetail) discoStatusDetail.textContent = `⚠️ 今日配额不足，跳过《${albTitle}》(${albTracks.length} 首 > 剩余 ${quotaRemaining} 首)`;
+        console.warn(`[Disco] 配额不足跳过专辑: ${albTitle} ${albTracks.length} 首 > 剩余 ${quotaRemaining} 首`);
+        quotaRemaining = 0;
+        continue;
+      }
+      if (quotaRemaining !== Infinity) quotaRemaining -= albTracks.length;
 
       const batchSessionId = `disco_${alb.id}_${Date.now()}`;
       const zipFilename = `${albArtist} - ${albTitle} [${quality}].zip`;
