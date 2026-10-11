@@ -3763,7 +3763,7 @@ ${quotaText}
 
     // ==================== 站长专属 VPS 运维指令区 (仅限 OWNER_USER_ID) ====================
     const isOwner = String(chatId) === String(OWNER_USER_ID);
-    const adminCmdMatch = text.match(/^\/(admin|cmd|status|sys|clean|check|restart|history|logs)(?:\s+(.*))?$/i);
+    const adminCmdMatch = text.match(/^\/(admin|cmd|status|sys|clean|cleansessions|cleansession|check|restart|history|logs)(?:\s+(.*))?$/i);
     if (adminCmdMatch) {
       if (!isOwner) {
         await tgCall('sendMessage', {
@@ -3785,7 +3785,8 @@ ${quotaText}
 🛠️ <b>可用指令列表：</b>
 • <code>/history</code>：查看最近 1 小时全平台任务流水 (包含 Web 端与 TG 端的转存/解密状态)。
 • <code>/status</code> 或 <code>/sys</code>：查看 VPS 系统资源 (CPU/内存/磁盘/开机时长)、各核心服务运行状态及当前任务队列。
-• <code>/clean</code>：一键清理 VPS 临时垃圾文件 (扫描并删除 <code>/tmp</code> 中残留音频与目录)，即时释放磁盘。
+• <code>/clean</code>：一键清理 VPS 临时垃圾文件 (扫描 <code>/tmp</code> 遗留音频与 &gt;10m 会话目录；支持 <code>/clean force</code> 强清)。
+• <code>/cleansessions</code>：强力清空 <code>/tmp/am_sessions/*</code> (无视时间限制，即时抹除所有中断残留批次)。
 • <code>/check</code>：系统全链路健康体检 (检测 am-hook、am-cloud、Widevine CDM 与 Local Bot API 各端口及解密拉流可用性)。
 • <code>/restart &lt;服务&gt;</code>：远程重启指定服务，支持：
   - <code>/restart bot</code>：重启 Telegram Bot
@@ -4004,9 +4005,79 @@ ${quotaText}
         return;
       }
 
-      // 3. 一键磁盘清理
+      // 3. 强力清空批量会话目录 (对应 rm -rf /tmp/am_sessions/*)
+      if (cmd === 'cleansessions' || cmd === 'cleansession') {
+        const waitMsg = await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: '🧹 <b>正在强力清空 /tmp/am_sessions 批量转存会话缓存...</b>',
+          parse_mode: 'HTML'
+        });
+        try {
+          const beforeDisk = execSync("df -h / | tail -n 1 | awk '{print $4}'", { encoding: 'utf8' }).trim();
+          const sessionsRoot = '/tmp/am_sessions';
+          let cleanedCount = 0;
+          const cleanedNames = [];
+          if (fs.existsSync(sessionsRoot)) {
+            const entries = fs.readdirSync(sessionsRoot);
+            for (const entry of entries) {
+              const p = path.join(sessionsRoot, entry);
+              try {
+                fs.rmSync(p, { recursive: true, force: true });
+                cleanedCount++;
+                cleanedNames.push(entry);
+              } catch (err) {
+                console.error(`[TG-Bot] 删除会话目录失败: ${p}`, err);
+              }
+            }
+          }
+          const afterDisk = execSync("df -h / | tail -n 1 | awk '{print $4}'", { encoding: 'utf8' }).trim();
+
+          if (cleanedCount === 0) {
+            await tgCall('editMessageText', {
+              chat_id: chatId,
+              message_id: waitMsg.message_id,
+              text: `🍃 <b>/tmp/am_sessions 目录目前为空</b>\n暂无残留的专辑/歌单批量转存会话，无需清理。\n• 当前可用磁盘：<code>${afterDisk}</code>`,
+              parse_mode: 'HTML'
+            });
+            return;
+          }
+
+          let listStr = '';
+          const displayList = cleanedNames.slice(0, 6).map(n => `• <code>${escapeHtml(n)}</code>`).join('\n');
+          const moreStr = cleanedNames.length > 6 ? `\n<i>... 另有 ${cleanedNames.length - 6} 个目录已清除</i>` : '';
+          listStr = `\n\n🗑️ <b>已清除会话项：</b>\n${displayList}${moreStr}`;
+
+          const runningNote = botTaskQueue.runningCount > 0 
+            ? `\n\n⚠️ <i>注意：当前队列中有 ${botTaskQueue.runningCount} 个任务执行中，进行中的转存可能受影响。</i>` 
+            : '';
+
+          await tgCall('editMessageText', {
+            chat_id: chatId,
+            message_id: waitMsg.message_id,
+            text: `✨ <b>/tmp/am_sessions 会话缓存已强力清空！</b>\n• 清理会话目录：<code>${cleanedCount} 个</code>\n• 清理前可用：<code>${beforeDisk}</code>\n• 清理后可用：<code>${afterDisk}</code>${listStr}${runningNote}`,
+            parse_mode: 'HTML'
+          });
+        } catch (e) {
+          await tgCall('editMessageText', {
+            chat_id: chatId,
+            message_id: waitMsg.message_id,
+            text: `❌ <b>清理执行异常:</b> ${escapeHtml(e.message)}`,
+            parse_mode: 'HTML'
+          });
+        }
+        return;
+      }
+
+      // 3.5 一键磁盘清理 (支持 /clean force 强制包含所有会话)
       if (cmd === 'clean') {
-        const waitMsg = await tgCall('sendMessage', { chat_id: chatId, text: '🧹 <b>正在扫描并清理 VPS 临时缓存与孤立文件...</b>', parse_mode: 'HTML' });
+        const isForce = arg === 'force' || arg === 'all' || arg === 'sessions';
+        const waitMsg = await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: isForce 
+            ? '🧹 <b>正在强制扫描并深度清理 VPS 临时缓存与所有会话目录...</b>' 
+            : '🧹 <b>正在扫描并清理 VPS 临时缓存与孤立文件...</b>',
+          parse_mode: 'HTML'
+        });
         try {
           const beforeDisk = execSync("df -h / | tail -n 1 | awk '{print $4}'", { encoding: 'utf8' }).trim();
           let cleanedCount = 0;
@@ -4014,15 +4085,23 @@ ${quotaText}
           if (fs.existsSync(tmpDir)) {
             const entries = fs.readdirSync(tmpDir);
             for (const entry of entries) {
-              if (entry.startsWith('am_tg_') || entry.startsWith('album_') || entry.startsWith('playlist_')) {
+              if (
+                entry.startsWith('am_tg_') ||
+                entry.startsWith('album_') ||
+                entry.startsWith('playlist_') ||
+                entry.startsWith('am_defrag_') ||
+                entry.startsWith('am_wp_') ||
+                entry.startsWith('am_single_')
+              ) {
                 try {
                   fs.rmSync(path.join(tmpDir, entry), { recursive: true, force: true });
                   cleanedCount++;
                 } catch {}
               }
             }
-            // 扫描 /tmp/am_sessions 子目录：清理中断/废弃的批量转存会话目录
-            // （mtime 超过 10 分钟才删，避免误删正在进行的转存）
+            // 扫描 /tmp/am_sessions 子目录
+            // 常规模式：mtime 超过 10 分钟才删，避免误删正在进行的转存
+            // 强制模式 (/clean force)：无视时间限制，全部清除
             const sessionsRoot = path.join(tmpDir, 'am_sessions');
             if (fs.existsSync(sessionsRoot)) {
               const now = Date.now();
@@ -4030,7 +4109,7 @@ ${quotaText}
                 const sessPath = path.join(sessionsRoot, sess);
                 try {
                   const st = fs.statSync(sessPath);
-                  if (now - st.mtimeMs > 10 * 60 * 1000) {
+                  if (isForce || (now - st.mtimeMs > 10 * 60 * 1000)) {
                     fs.rmSync(sessPath, { recursive: true, force: true });
                     cleanedCount++;
                   }
@@ -4039,10 +4118,12 @@ ${quotaText}
             }
           }
           const afterDisk = execSync("df -h / | tail -n 1 | awk '{print $4}'", { encoding: 'utf8' }).trim();
+          const modeNote = isForce ? ' (强制深度模式)' : '';
+          const tipNote = (!isForce) ? '\n\n💡 <i>提示：刚中断的会话处于 10 分钟保护期；若需强制清空所有残留批次，请使用 <code>/cleansessions</code> 或 <code>/clean force</code></i>' : '';
           await tgCall('editMessageText', {
             chat_id: chatId,
             message_id: waitMsg.message_id,
-            text: `✨ <b>VPS 磁盘清理完成！</b>\n• 清理遗留目录项：<code>${cleanedCount} 个</code>\n• 清理前可用：<code>${beforeDisk}</code>\n• 清理后可用：<code>${afterDisk}</code>`,
+            text: `✨ <b>VPS 磁盘清理完成！${modeNote}</b>\n• 清理遗留目录项：<code>${cleanedCount} 个</code>\n• 清理前可用：<code>${beforeDisk}</code>\n• 清理后可用：<code>${afterDisk}</code>${tipNote}`,
             parse_mode: 'HTML'
           });
         } catch (e) {
@@ -4980,6 +5061,7 @@ async function startBot() {
             { command: 'status', description: 'VPS 硬件资源与服务监控仪表盘' },
             { command: 'check', description: '全链路服务与 Apple Music 账号探活' },
             { command: 'clean', description: '一键扫描清理 VPS 临时垃圾' },
+            { command: 'cleansessions', description: '强力清空 /tmp/am_sessions 会话缓存' },
             { command: 'restart', description: '远程重启指定服务 (bot/cloud/hook/api/all)' },
             { command: 'stats', description: '服务器流量与配额监控' },
             { command: 'lang', description: '切换语言 (Switch Language)' }
