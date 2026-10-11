@@ -671,6 +671,28 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const job = { ctl: new AbortController(), done: 0, total: 0, statusText: '' };
     downloads.set(id, job);
     showDownload(id);
+    // 本机下载同样消耗 VPS 出站带宽，纳入每日转存配额（owner/admin 由服务端豁免）
+    if (!isGofile) {
+      try {
+        const consumeRes = await fetch('/api/quota/consume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tracks: 1 }),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!consumeRes.ok && consumeRes.status !== 429) throw new Error(`配额预扣失败: HTTP ${consumeRes.status}`);
+        if (consumeRes.status === 429) {
+          const errJson = await consumeRes.json().catch(() => null);
+          toast(errJson?.error || '⚠️ 今日转存配额不足，无法进行本机下载');
+          downloads.delete(id);
+          return;
+        }
+      } catch (err) {
+        toast(`⚠️ 配额预扣失败: ${err.message}`);
+        downloads.delete(id);
+        return;
+      }
+    }
     if (isGofile) {
       job.statusText = '☁️ VPS 2000M 极速转存中...';
       job.done = 10;

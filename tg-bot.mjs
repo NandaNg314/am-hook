@@ -3525,7 +3525,9 @@ ${quotaText}
       if (cmd === 'status' || cmd === 'sys') {
         let loadStr = '未知';
         try {
-          loadStr = os.loadavg().map(n => n.toFixed(2)).join(', ');
+          // loadavg 是 1/5/15 分钟平均"排队进程数"，除以 vCPU 数换算成直观的百分比占用
+          const cores = os.cpus().length;
+          loadStr = os.loadavg().map(n => `${Math.min(100, Math.round((n / cores) * 100))}%`).join(' / ');
         } catch {}
 
         const totalMemGb = (os.totalmem() / (1024 ** 3)).toFixed(1);
@@ -3563,7 +3565,7 @@ ${quotaText}
 
 ⏱️ <b>系统状态：</b>
 • 运行时间：<code>${uptimeH} 小时 ${uptimeM} 分钟</code>
-• CPU 负载：<code>${loadStr}</code> (${os.cpus().length} vCPU)
+• CPU 占用：<code>${loadStr}</code> (1/5/15 分钟均值 · ${os.cpus().length} vCPU)
 • 物理内存：<code>${usedMemGb} GB / ${totalMemGb} GB (${memPct}%)</code> (可用: <code>${freeMemGb} GB</code>)
 • 磁盘空间：<code>${diskInfo}</code>
 

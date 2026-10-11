@@ -59,6 +59,22 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
 
   const isUrlLike = (value) => /^https?:\/\//i.test(value);
 
+  // 拉取当前 IP 每日转存配额并填充首页说明（站长/管理员不限量则显示对应文案）
+  const quotaText = root.querySelector('#quota-status-text');
+  if (quotaText) {
+    (async () => {
+      try {
+        const q = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
+        const j = await q.json();
+        if (j.status === 'ok' && j.data) {
+          quotaText.textContent = j.data.unlimited
+            ? '当前身份为管理员，无每日转存数量限制。'
+            : `网页端每次 24h 内限转存 200 首曲目（北京时间 00:00 重置）。今日已用 ${j.data.used} 首，剩余 ${j.data.remaining} 首。云端转存与本机批量下载均计入配额（本机下载消耗服务器出站带宽），开始前会自动校验剩余配额，不足时直接拦截。`;
+        }
+      } catch { /* 拉取失败保持静态文案 */ }
+    })();
+  }
+
   $('form').addEventListener('submit', (event) => {
     event.preventDefault();
     const value = input.value.trim();

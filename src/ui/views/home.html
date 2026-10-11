@@ -48,7 +48,7 @@
                 <span class="apple-radio-custom"></span>
                 <span class="radio-text">
                   <strong>本机下载</strong>
-                  <small>浏览器解密并保存到本地</small>
+                  <small>浏览器解密并保存到本地 · 计入每日转存配额</small>
                 </span>
               </label>
               <label class="apple-radio-label">
@@ -56,7 +56,7 @@
                 <span class="apple-radio-custom"></span>
                 <span class="radio-text">
                   <strong>Gofile 云端转存</strong>
-                  <small>打包生成单 ZIP 上传网盘，免本地占用</small>
+                  <small>打包生成单 ZIP 上传网盘，免本地占用 · 计入每日转存配额</small>
                 </span>
               </label>
             </div>
@@ -77,6 +77,15 @@
               </label>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- 每日转存配额说明 -->
+      <section class="quota-notice" id="quota-notice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:18px;height:18px;flex-shrink:0;"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        <div class="quota-text">
+          <strong>每日转存配额 · Daily Transfer Quota</strong>
+          <span id="quota-status-text">网页端每人每日限转存 200 首曲目（北京时间 00:00 重置）。批量转存前会自动检查剩余配额，不足时直接拦截，避免浪费服务器资源。</span>
         </div>
       </section>
     </section>

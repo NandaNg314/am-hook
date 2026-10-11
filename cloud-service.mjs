@@ -1542,6 +1542,70 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 只读配额查询：供批量转存前置预检查，不消耗任何配额（绝不调用 checkWebRateLimit，其内部会 rec.count++）
+  if (req.method === 'GET' && u.pathname === '/api/quota') {
+    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
+    const isOwnerIp = !clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1') || Array.from(OWNER_IPS).some(ip => ip && clientIp.includes(ip));
+    const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
+    if (isOwnerIp || (adminKey && adminKey === ADMIN_SECRET)) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'ok', data: { unlimited: true } }));
+      return;
+    }
+    const now = Date.now();
+    let rec = webIpLimitMap.get(clientIp);
+    if (!rec) {
+      rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+      webIpLimitMap.set(clientIp, rec);
+    }
+    if (now > rec.resetAt) rec.count = 0;
+    if (now > rec.dailyResetAt) rec.dailyCount = 0;
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'ok', data: { unlimited: false, used: rec.dailyCount, max: 200, remaining: Math.max(0, 200 - rec.dailyCount) } }));
+    return;
+  }
+
+  // 配额预扣：本机下载同样消耗 VPS 出站带宽，纳入每日配额；owner/admin 豁免
+  if (req.method === 'POST' && u.pathname === '/api/quota/consume') {
+    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
+    const isOwnerIp = !clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1') || Array.from(OWNER_IPS).some(ip => ip && clientIp.includes(ip));
+    const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
+    if (isOwnerIp || (adminKey && adminKey === ADMIN_SECRET)) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'ok', data: { unlimited: true } }));
+      return;
+    }
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      let tracks = 1;
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        tracks = Math.max(1, parseInt(body.tracks, 10) || 1);
+      } catch {}
+      const now = Date.now();
+      let rec = webIpLimitMap.get(clientIp);
+      if (!rec) {
+        rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+        webIpLimitMap.set(clientIp, rec);
+      }
+      if (now > rec.dailyResetAt) rec.dailyCount = 0;
+      if (rec.dailyCount + tracks > 200) {
+        res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'error', error: `⚠️ 今日转存配额不足：本批 ${tracks} 首，今日仅剩 ${Math.max(0, 200 - rec.dailyCount)} 首。请明日北京时间 00:00 后重试或缩小范围` }));
+        return;
+      }
+      rec.dailyCount += tracks;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'ok', data: { remaining: Math.max(0, 200 - rec.dailyCount) } }));
+    });
+    return;
+  }
+
   if (req.method === 'POST' && (u.pathname === '/transfer' || u.pathname === '/api/cloud-transfer')) {
     let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
     if (clientIp.startsWith('::ffff:')) {
