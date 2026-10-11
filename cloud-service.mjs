@@ -924,6 +924,20 @@ async function processTransfer(body) {
           '-c', 'copy',
           tmpOut
         ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+
+        // 验证音频流是否真实解密（检测 CENC/DRM 未解密导致的静音/损坏）
+        try {
+          await execFileAsync('ffmpeg', [
+            '-v', 'error',
+            '-xerror',
+            '-i', tmpOut,
+            '-t', '1',
+            '-f', 'null', '-'
+          ], { timeout: 15000 });
+        } catch (checkErr) {
+          throw new Error('此歌曲为 Apple Music 早期旧版加密资源 (M4P/CENC)，无可用解密密钥，暂无法转存');
+        }
+
         return new Uint8Array(await fs.promises.readFile(tmpOut));
       } finally {
         try { await fs.promises.unlink(tmpOut); } catch {}
