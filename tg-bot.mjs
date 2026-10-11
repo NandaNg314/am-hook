@@ -3811,36 +3811,117 @@ ${quotaText}
           const rawLogs = execSync('journalctl -u am-cloud.service -u am-tgbot.service -u am-hook.service --since "1 hour ago" --no-pager', { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
 
           const events = [];
+          const active = new Map();   // sid -> { album, zips, files, lastTime }
+          let curSid = null;           // 当前正在打包的会话 ID（打包请求与其后的 ZIP/归档行近邻）
+
           for (const line of rawLogs.split('\n')) {
-            const timeMatch = line.match(/^(\w+\s+\d+\s+(\d{2}:\d{2}:\d{2}))/);
-            const timeStr = timeMatch ? timeMatch[2] : '';
+            const mtime = line.match(/^(\w+\s+\d+\s+)(\d{2}:\d{2}:\d{2})/);
+            const timeStr = mtime ? mtime[2] : '';
 
             if (line.includes('[Cloud-Transfer] ✔ 批处理就绪:')) {
-              const m = line.match(/批处理就绪:\s*([^()]+)\.m4a\s*\(耗时:\s*([^)]+)\)/);
+              const m = line.match(/批处理就绪:\s*(.+?)\.m4a\s*\(耗时:\s*([^)]+)\)/);
               if (m) events.push({ time: timeStr, type: '🌐 Web', text: `<b>${escapeHtml(m[1].trim())}</b> [${m[2].trim()}]` });
             } else if (line.includes('[Cloud-Transfer] 🎧 本地就绪:')) {
-              const m = line.match(/本地就绪:\s*([^()]+)\.m4a\s*\(大小:\s*([^,]+),\s*缩略图:\s*[^,]+,\s*耗时:\s*([^)]+)\)/);
+              const m = line.match(/本地就绪:\s*(.+?)\.m4a\s*\(大小:\s*([^,]+),\s*缩略图:\s*[^,]+,\s*耗时:\s*([^)]+)\)/);
               if (m) events.push({ time: timeStr, type: '🎵 本地', text: `<b>${escapeHtml(m[1].trim())}</b> (${m[2].trim()}, ${m[3].trim()})` });
-            } else if (line.includes('[Cloud-Transfer] 📦 全辑 ZIP 本地就绪:')) {
-              const m = line.match(/全辑 ZIP 本地就绪:\s*([^()]+)\.zip\s*\(大小:\s*([^,]+),\s*耗时:\s*([^)]+)\)/);
-              if (m) events.push({ time: timeStr, type: '📦 ZIP', text: `<b>${escapeHtml(m[1].trim())}</b> (${m[2].trim()})` });
-            } else if (line.includes('[TG-Bot] 频道全辑归档就绪')) {
-              const m = line.match(/频道全辑归档就绪\s*\(([0-9]+)\s*首歌\)/);
-              if (m) events.push({ time: timeStr, type: '🤖 TG', text: `全辑推送私聊归档 (共 ${m[1]} 首)` });
+            } else if (line.includes('收到全辑并发转存打包请求')) {
+              const m = line.match(/正在将会话\s+(\S+)\s*\((\d+)\s*个文件\)\s*打包为\.zip/);
+              if (m) {
+                curSid = m[1];
+                active.set(curSid, { album: '', zips: 0, files: Number(m[2]), lastTime: timeStr });
+              }
+            } else if (line.includes('[Cloud-Transfer] 📦 全辑 ZIP')) {
+              // 分卷: "📦 全辑 ZIP 分卷 1/3 本地就绪: 名.zip (大小: X, 文件含...) "
+              // 单卷: "📦 全辑 ZIP 本地就绪: 名.zip (大小: X, 耗时: Y)"
+              const m = line.match(/本地就绪:\s*(.+?)\.zip\s*\(大小:\s*([^,]+)/);
+              if (m) {
+                const title = m[1].replace(/ \(Collector's Edition\)/g, '').replace(/ \[part \d+\]/g, '').trim();
+                const partLabel = (() => { const p = line.match(/分卷\s*(\d+)\/(\d+)/); return p ? `分卷 ${p[1]}/${p[2]} ` : ''; })();
+                events.push({ time: timeStr, type: '📦 ZIP', text: `<b>${escapeHtml(title)}</b> [${partLabel}${m[2].trim()}]` });
+                if (curSid && active.has(curSid)) {
+                  const s = active.get(curSid);
+                  if (!s.album) s.album = title;
+                  s.zips++;
+                  s.lastTime = timeStr;
+                }
+              }
+            } else if (line.includes('[TG-Bot] 分卷') && line.includes('已归档频道')) {
+              const m = line.match(/分卷\s*(\d+)\/(\d+)\s*已归档频道/);
+              if (m) {
+                const albumRef = curSid && active.has(curSid) ? active.get(curSid).album : '';
+                const label = albumRef ? `<b>${escapeHtml(albumRef)}</b> · ` : '';
+                events.push({ time: timeStr, type: '🤖 TG', text: `${label}分卷 ${m[1]}/${m[2]} 已归档频道` });
+              }
             } else if (line.includes('当前歌曲在解析账号所属地区无资源或未上架')) {
-              const m = line.match(/master\s*([0-9]+)/);
-              events.push({ time: timeStr, type: '⚠️ 地区', text: `曲目 ID ${m ? m[1] : ''} 在土耳其区未上架 (已跳过)` });
+              const cm = line.match(/master\s*([0-9]+)/);
+              events.push({ time: timeStr, type: '⚠️ 地区', text: `曲目 ID ${cm ? cm[1] : ''} 在土耳其区未上架 (已跳过)` });
+            } else if (line.includes('[Cloud-Transfer] 🎉') && line.includes('转存完成')) {
+              const m = line.match(/转存完成!\s*总耗时:\s*([^,]+)/);
+              if (m) events.push({ time: timeStr, type: '✅ 完成', text: `全辑转存完成 (${m[1].trim()})` });
             }
           }
 
-          const recentEvents = events.slice(-30).reverse();
-          let summaryText = `📋 <b>最近 1 小时全平台任务流水 (共检索到 ${events.length} 项)</b>\n\n`;
+          // ── 进行中任务看板（以文件系统活跃会话为准） ──
+          // ── 进行中任务看板（以文件系统活跃会话为准，独立于日志） ──
+          // 判定依据：/tmp/am_sessions 下目录 mtime 在最近 15 分钟内 → 该会话此刻仍在写入，即"进行中"。
+          // 专辑名从目录内 .m4a 文件名推导（取 "艺人 - 歌名" 的艺人段），无需依赖日志。
+          let boardText = '';
+          let activeCount = 0;
+          const activeLines = [];
+          try {
+            if (fs.existsSync('/tmp/am_sessions')) {
+              for (const e of fs.readdirSync('/tmp/am_sessions')) {
+                const dir = path.join('/tmp/am_sessions', e);
+                let st;
+                try { st = fs.statSync(dir); } catch { continue; }
+                if (!st.isDirectory() || (Date.now() - st.mtimeMs) >= 15 * 60 * 1000) continue;
+
+                let files = [];
+                try { files = fs.readdirSync(dir); } catch {}
+                const m4a = files.filter(f => f.endsWith('.m4a'));
+                const artist = (() => {
+                  for (const f of m4a) { const idx = f.indexOf(' - '); if (idx > 0) return f.slice(0, idx).trim(); }
+                  return '';
+                })();
+                const kind = e.startsWith('playlist_') ? '歌单' : e.startsWith('album_') ? '专辑' : '单曲';
+                const label = artist ? `${escapeHtml(artist)} (${kind})` : escapeHtml(e);
+                const logRec = active.get(e);
+                const zipNote = logRec && logRec.zips > 0 ? ` · 已打包 ${logRec.zips} 卷` : '';
+                activeLines.push(`• <code>${label}</code> — 已就绪 ${m4a.length} 首${zipNote}`);
+              }
+            }
+          } catch {}
+
+          if (activeLines.length > 0) {
+            activeCount = activeLines.length;
+            boardText = `⚡ <b>进行中任务</b> (${activeCount})\n${activeLines.join('\n')}\n\n`;
+          }
+
+          // 流水展示：优先保留"任务级"事件(ZIP/归档)，单曲与地区跳过类聚合成计数，避免刷屏。
+          const TASK_LEVEL = new Set(['📦 ZIP', '🤖 TG', '✅ 完成']);
+          const taskEvents = events.filter(e => TASK_LEVEL.has(e.type));
+          const songEvents = events.filter(e => !TASK_LEVEL.has(e.type));
+
+          // 单曲类事件按类型折叠为一行计数摘要
+          const songSummary = (() => {
+            if (songEvents.length === 0) return [];
+            const byType = {};
+            for (const e of songEvents) byType[e.type] = (byType[e.type] || 0) + 1;
+            return Object.entries(byType).map(([t, n]) => `• <code>${t}</code> 单曲事件共 <b>${n}</b> 条 (详见服务日志)`);
+          })();
+
+          const recentTask = taskEvents.slice(-20).reverse();
+          let summaryText = `${boardText}📋 <b>最近 1 小时全平台任务流水 (共 ${events.length} 项)</b>\n\n`;
           if (events.length === 0) {
             summaryText += '🍃 <i>过去 1 小时内暂无下载、转存或解密任务 (系统空闲)</i>';
           } else {
-            summaryText += recentEvents.map(e => `• <code>${e.time}</code> [${e.type}] ${e.text}`).join('\n');
-            if (events.length > 30) {
-              summaryText += `\n\n<i>... 更多早期记录省略，近 1 小时总计 ${events.length} 项</i>`;
+            if (recentTask.length > 0) {
+              summaryText += `<b>▎任务级事件</b> (${taskEvents.length})\n`;
+              summaryText += recentTask.map(e => `• <code>${e.time}</code> [${e.type}] ${e.text}`).join('\n');
+              if (taskEvents.length > 20) summaryText += `\n<i>... 更早 ${taskEvents.length - 20} 条任务事件省略</i>`;
+            }
+            if (songSummary.length > 0) {
+              summaryText += `${recentTask.length > 0 ? '\n\n' : ''}<b>▎单曲级事件</b>\n${songSummary.join('\n')}`;
             }
           }
 
