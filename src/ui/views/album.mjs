@@ -555,6 +555,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     let finalDownloadPage = null;
     let successCount = 0;
     let finishedCount = 0;
+    let batchAbortReason = null;
 
     const albAttr = (album && album.attributes) || {};
 
@@ -603,6 +604,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           if (resJson.data.guestToken && !guestToken) guestToken = resJson.data.guestToken;
           if (resJson.data.downloadPage) finalDownloadPage = resJson.data.downloadPage;
           successCount++;
+        } else if (resp.status === 429 || /配额|上限|Too Many/i.test(resJson.error || '')) {
+          // 配额不足：立即中止整批，明确报错（不留着继续跑浪费资源）
+          const msg = resJson.error || '今日转存配额不足';
+          batchAbortReason = msg;
+          batchAbortController.abort();
+          toast(`⚠️ ${msg}`);
+          console.warn(`[Batch] 配额不足中止批量: ${msg}`);
+          return;
         } else {
           console.warn(`[Batch] 曲目《${songTitle}》转存失败:`, resJson.error);
         }
@@ -676,7 +685,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
 
     if (batchSig.aborted) {
-      toast('已取消批量转存');
+      toast(batchAbortReason ? `⚠️ ${batchAbortReason}` : '已取消批量转存');
       return;
     }
 

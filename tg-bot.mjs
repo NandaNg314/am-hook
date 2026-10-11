@@ -2818,7 +2818,8 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
               noUpload: true,
               splitMaxMB: 1900
             }),
-            signal: AbortSignal.timeout(180000)
+            // 大专辑（如 100+ 曲）多卷打包可能耗时数分钟，放宽至 600s 防止中途超时导致 sessionDir 被误删
+            signal: AbortSignal.timeout(600000)
           });
           const finData = await finRes.json();
           if (finData.status !== 'ok' || !finData.data) {
@@ -3597,6 +3598,22 @@ ${quotaText}
                 try {
                   fs.rmSync(path.join(tmpDir, entry), { recursive: true, force: true });
                   cleanedCount++;
+                } catch {}
+              }
+            }
+            // 扫描 /tmp/am_sessions 子目录：清理中断/废弃的批量转存会话目录
+            // （mtime 超过 10 分钟才删，避免误删正在进行的转存）
+            const sessionsRoot = path.join(tmpDir, 'am_sessions');
+            if (fs.existsSync(sessionsRoot)) {
+              const now = Date.now();
+              for (const sess of fs.readdirSync(sessionsRoot)) {
+                const sessPath = path.join(sessionsRoot, sess);
+                try {
+                  const st = fs.statSync(sessPath);
+                  if (now - st.mtimeMs > 10 * 60 * 1000) {
+                    fs.rmSync(sessPath, { recursive: true, force: true });
+                    cleanedCount++;
+                  }
                 } catch {}
               }
             }

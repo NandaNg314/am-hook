@@ -354,7 +354,8 @@ async function packZipFolder(sourceDir, outputZipPath, fileList = null) {
   const zipScript = path.join(__dirname, 'zip_pack.py');
   const args = [zipScript, outputZipPath, sourceDir];
   if (Array.isArray(fileList) && fileList.length) args.push(...fileList);
-  await execFileAsync('python3', args, { timeout: 180000 });
+  // 大专辑（100+ 曲/多卷）单卷打包可能数分钟，放宽至 600s 防止中途超时残留空 zip
+  await execFileAsync('python3', args, { timeout: 600000 });
 }
 
 // Gofile 服务器缓存 (缓存 5 分钟)
@@ -1467,6 +1468,20 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000).unref();
 
+function nextBeijingMidnight() {
+  // 计算下一个北京时间 (UTC+8) 00:00 的毫秒时间戳，用于每日配额到点精确重置
+  const now = Date.now();
+  const bjOffsetMs = 8 * 3600 * 1000;
+  const bjNow = new Date(now + bjOffsetMs);
+  // 北京时间的日期部分
+  const y = bjNow.getUTCFullYear();
+  const m = bjNow.getUTCMonth();
+  const d = bjNow.getUTCDate();
+  // 北京时间下一个 00:00 => 以 UTC 表示就是 (y,m,d+1) 的 00:00 UTC 再减 8h
+  const nextBjMidnightUtc = Date.UTC(y, m, d + 1) - bjOffsetMs;
+  return nextBjMidnightUtc > now ? nextBjMidnightUtc : now + 86400000; // 兜底防负值
+}
+
 function checkWebRateLimit(clientIp, adminKeyHeader) {
   // 1. 本地回环、内部调用与管理员静态 IP -> 100% 豁免放行
   if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) {
@@ -1489,7 +1504,7 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
   const now = Date.now();
   let rec = webIpLimitMap.get(clientIp);
   if (!rec) {
-    rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+    rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
     webIpLimitMap.set(clientIp, rec);
   }
 
@@ -1499,7 +1514,7 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
   }
   if (now > rec.dailyResetAt) {
     rec.dailyCount = 0;
-    rec.dailyResetAt = now + 86400000;
+    rec.dailyResetAt = nextBeijingMidnight();
   }
 
   if (rec.count >= 60) {
@@ -1557,11 +1572,14 @@ const server = http.createServer(async (req, res) => {
     const now = Date.now();
     let rec = webIpLimitMap.get(clientIp);
     if (!rec) {
-      rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+      rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
       webIpLimitMap.set(clientIp, rec);
     }
     if (now > rec.resetAt) rec.count = 0;
-    if (now > rec.dailyResetAt) rec.dailyCount = 0;
+    if (now > rec.dailyResetAt) {
+      rec.dailyCount = 0;
+      rec.dailyResetAt = nextBeijingMidnight();
+    }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ status: 'ok', data: { unlimited: false, used: rec.dailyCount, max: 200, remaining: Math.max(0, 200 - rec.dailyCount) } }));
     return;
@@ -1590,10 +1608,13 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
       let rec = webIpLimitMap.get(clientIp);
       if (!rec) {
-        rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: now + 86400000 };
+        rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
         webIpLimitMap.set(clientIp, rec);
       }
-      if (now > rec.dailyResetAt) rec.dailyCount = 0;
+      if (now > rec.dailyResetAt) {
+        rec.dailyCount = 0;
+        rec.dailyResetAt = nextBeijingMidnight();
+      }
       if (rec.dailyCount + tracks > 200) {
         res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: `⚠️ 今日转存配额不足：本批 ${tracks} 首，今日仅剩 ${Math.max(0, 200 - rec.dailyCount)} 首。请明日北京时间 00:00 后重试或缩小范围` }));
