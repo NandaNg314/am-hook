@@ -16,6 +16,12 @@ userbot.mjs
 *.session
 *.session-journal
 
+# Widevine CDM 解密设备与 pywidevine 环境（含 device.wvd，属解密核心，绝不可公开上传）
+/tools/
+
+# 本地 Agent 工具数据（会话/计划文件，含服务器细节与运维信息，勿上传）
+.mimocode/
+
 # 本地运维/调试文档与脚本 (含服务器凭据信息，勿上传)
 PROJECT_MEMORY.md
 /scripts/wrapper-watchdog.sh

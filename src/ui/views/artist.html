@@ -133,12 +133,24 @@
     <div style="padding:14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:14px;display:flex;flex-direction:column;gap:10px;">
       <span style="font-size:13px;font-weight:600;color:#a1a1a6;">📝 歌词设置</span>
       <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
-        <span style="font-size:13px;color:#ffffff;font-weight:500;">内嵌歌词到音频文件 (写入 ©lyr 标签)</span>
-        <input type="checkbox" id="disco-embed-lyrics" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">内嵌格式 (©lyr)</span>
+        <select id="disco-lyrics-format" style="padding:4px 10px;border-radius:8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#ffffff;font-size:13px;outline:none;">
+          <option value="lrc" selected>LRC (推荐)</option>
+          <option value="ttml">TTML</option>
+          <option value="off">关闭内嵌</option>
+        </select>
       </label>
       <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
-        <span style="font-size:13px;color:#ffffff;font-weight:500;">保存独立外挂歌词文件 (.lrc)</span>
-        <input type="checkbox" id="disco-save-lyrics" checked style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">外置歌词 (.lrc)</span>
+        <input type="checkbox" id="disco-save-lrc" style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">外置歌词 (.ttml)</span>
+        <input type="checkbox" id="disco-save-ttml" style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" title="附加 Apple Music 官方中文翻译（仅非中文歌曲生效）">
+        <span style="font-size:13px;color:#ffffff;font-weight:500;">🇨🇳 中文翻译歌词 (官方翻译，仅非中文歌)</span>
+        <input type="checkbox" id="disco-translate-lyrics" style="accent-color:#fa2d48;width:17px;height:17px;cursor:pointer;">
       </label>
     </div>
   </div>

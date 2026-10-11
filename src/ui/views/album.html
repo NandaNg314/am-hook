@@ -87,19 +87,24 @@
           <select id="batch-lyrics-format" style="padding:6px 12px;border-radius:8px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:13px;outline:none;cursor:pointer;">
             <option value="lrc" selected>LRC 标准同步歌词 (推荐)</option>
             <option value="ttml">TTML 原生逐字歌词</option>
+            <option value="off">关闭内嵌</option>
           </select>
         </div>
         <div style="font-size:11px;color:var(--muted);line-height:1.4;">
-          💡 若歌曲无动态时间轴自动降级为纯文本；纯音乐或无歌词歌曲自动跳过。
+          💡 内嵌格式选择 ©lyr 标签内容（TTML 仅部分播放器可解析）；下方外置歌词可单独下载 .lrc/.ttml，纯音乐或无歌词歌曲自动跳过。
         </div>
         <div style="border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:10px;">
           <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
-            <span style="font-size:13px;color:var(--text);font-weight:500;">内嵌歌词到音频文件 (写入 ©lyr 标签)</span>
-            <input type="checkbox" id="batch-embed-lyrics" checked style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
+            <span style="font-size:13px;color:var(--text);font-weight:500;">外置歌词 (.lrc)</span>
+            <input type="checkbox" id="batch-save-lrc" style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
           </label>
           <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;">
-            <span style="font-size:13px;color:var(--text);font-weight:500;">保存独立外挂歌词文件 (.lrc / .ttml)</span>
-            <input type="checkbox" id="batch-save-lyrics" checked style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
+            <span style="font-size:13px;color:var(--text);font-weight:500;">外置歌词 (.ttml)</span>
+            <input type="checkbox" id="batch-save-ttml" style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
+          </label>
+          <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" title="附加 Apple Music 官方中文翻译（仅非中文歌曲生效）">
+            <span style="font-size:13px;color:var(--text);font-weight:500;">🇨🇳 中文翻译歌词 (官方翻译，仅非中文歌)</span>
+            <input type="checkbox" id="batch-translate-lyrics" style="accent-color:#fa2d48;width:18px;height:18px;cursor:pointer;">
           </label>
         </div>
       </div>

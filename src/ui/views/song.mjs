@@ -81,23 +81,47 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     });
   }
 
-  const embedToggle = $('embed-lyrics-toggle');
-  if (embedToggle) {
-    if (localStorage.getItem('am_embed_lyr') !== null) {
-      embedToggle.checked = localStorage.getItem('am_embed_lyr') === 'true';
+  const saveLrcToggle = $('save-lrc-toggle');
+  if (saveLrcToggle) {
+    if (localStorage.getItem('am_save_lrc') !== null) {
+      saveLrcToggle.checked = localStorage.getItem('am_save_lrc') === 'true';
     }
-    embedToggle.addEventListener('change', () => {
-      localStorage.setItem('am_embed_lyr', String(embedToggle.checked));
+    saveLrcToggle.addEventListener('change', () => {
+      localStorage.setItem('am_save_lrc', String(saveLrcToggle.checked));
     });
   }
 
-  const saveLyricsToggle = $('save-lyrics-toggle');
-  if (saveLyricsToggle) {
-    if (localStorage.getItem('am_save_lyr') !== null) {
-      saveLyricsToggle.checked = localStorage.getItem('am_save_lyr') === 'true';
+  const saveTtmlToggle = $('save-ttml-toggle');
+  if (saveTtmlToggle) {
+    if (localStorage.getItem('am_save_ttml') !== null) {
+      saveTtmlToggle.checked = localStorage.getItem('am_save_ttml') === 'true';
     }
-    saveLyricsToggle.addEventListener('change', () => {
-      localStorage.setItem('am_save_lyr', String(saveLyricsToggle.checked));
+    saveTtmlToggle.addEventListener('change', () => {
+      localStorage.setItem('am_save_ttml', String(saveTtmlToggle.checked));
+    });
+  }
+
+  // 统一读取歌词交付选项（与 TG 端正交维度一致）：内嵌格式 embedMode + 外置格式数组 saveFormats
+  function getLyricsOptions() {
+    const fmtSelect = document.querySelector('#lyrics-format-select');
+    const embedMode = fmtSelect ? fmtSelect.value : (localStorage.getItem('am_lyrics_fmt') || 'lrc');
+    const lrcOn = document.querySelector('#save-lrc-toggle') ? document.querySelector('#save-lrc-toggle').checked : (localStorage.getItem('am_save_lrc') === 'true');
+    const ttmlOn = document.querySelector('#save-ttml-toggle') ? document.querySelector('#save-ttml-toggle').checked : (localStorage.getItem('am_save_ttml') === 'true');
+    const saveFormats = [];
+    if (lrcOn) saveFormats.push('lrc');
+    if (ttmlOn) saveFormats.push('ttml');
+    const translateOn = document.querySelector('#translate-lyrics-toggle') ? document.querySelector('#translate-lyrics-toggle').checked : (localStorage.getItem('am_translate_lyr') === 'true');
+    return { embedMode, saveFormats, translateOn };
+  }
+
+  const translateLyricsToggle = $('translate-lyrics-toggle');
+  const translateLyricsLabel = $('translate-lyrics-label');
+  if (translateLyricsToggle) {
+    if (localStorage.getItem('am_translate_lyr') !== null) {
+      translateLyricsToggle.checked = localStorage.getItem('am_translate_lyr') === 'true';
+    }
+    translateLyricsToggle.addEventListener('change', () => {
+      localStorage.setItem('am_translate_lyr', String(translateLyricsToggle.checked));
     });
   }
 
@@ -538,11 +562,71 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     return { hasLyrics: true, isDynamic, lrc, plain, ttml: ttmlContent };
   }
 
-  async function fetchLyricsData(trackId) {
+  // 官方翻译 → 双语 LRC（同时间戳两行：原文 + 译文）。译文按 itunes:key 与 <text for> 对齐。
+  function ttmlToBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
+    if (!ttmlContent || typeof ttmlContent !== 'string') return null;
+    // 原文已是中文：无需翻译
+    const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
+    if (rootLang.startsWith('zh')) return null;
+
+    const unescape = (s) => s
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
+
+    // 1. 选翻译块（优先目标语言且非自动生成）
+    const all = [];
+    const tRe = /<translation\b[^>]*xml:lang=["']([^"']+)["'][^>]*>([\s\S]*?)<\/translation>/gi;
+    let tm;
+    while ((tm = tRe.exec(ttmlContent)) !== null) {
+      all.push({ lang: (tm[1] || '').toLowerCase(), auto: /\bautomaticallyCreated=["'](true|1)["']/i.test(tm[0]), body: tm[2] });
+    }
+    const wantBase = targetLang.split('-')[0];
+    let block = '';
+    const pick = all.find((t) => t.lang === targetLang.toLowerCase() && !t.auto)
+      || all.find((t) => t.lang.split('-')[0] === wantBase && !t.auto)
+      || all.find((t) => !t.auto) || all[0];
+    if (pick) block = pick.body;
+    if (!block) return null;
+
+    // 2. for=KEY -> 译文（剥离背景和声 x-bg）
+    const transMap = {};
+    const textRe = /<text\b[^>]*for=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
+    let xm;
+    while ((xm = textRe.exec(block)) !== null) {
+      const key = xm[1];
+      const txt = unescape(xm[2].replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '').replace(/<[^>]+>/g, '')).trim();
+      if (key && txt) transMap[key] = txt;
+    }
+
+    // 3. 原文行 + 译文行（同时间戳）
+    const pRe = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
+    const lines = [];
+    let pm;
+    while ((pm = pRe.exec(ttmlContent)) !== null) {
+      const attrs = pm[1] || '';
+      const body = unescape(pm[2].replace(/<[^>]+>/g, '')).trim();
+      if (!body) continue;
+      const beginMatch = attrs.match(/\bbegin=["']([^"']+)["']/i);
+      const keyMatch = attrs.match(/\bitunes:key=["']([^"']+)["']/i);
+      if (!beginMatch) continue;
+      const ts = formatLrcTimestamp(parseTimeToSeconds(beginMatch[1]));
+      lines.push(`${ts} ${body}`);
+      if (keyMatch && transMap[keyMatch[1]]) lines.push(`${ts} ${transMap[keyMatch[1]]}`);
+    }
+    if (!lines.length) return null;
+    return { hasLyrics: true, isDynamic: true, lrc: lines.join('\n'), plain: lines.join('\n'), ttml: ttmlContent };
+  }
+
+  async function fetchLyricsData(trackId, translate = false) {
     try {
-      const res = await fetch(`/lyrics/${trackId}`);
+      const url = `/lyrics/${trackId}${translate ? '?language=zh-Hans-CN' : ''}`;
+      const res = await fetch(url);
       if (!res.ok) return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
       const rawTtml = await res.text();
+      if (translate) {
+        const bilingual = ttmlToBilingualLrc(rawTtml, 'zh-Hans-CN');
+        if (bilingual) return bilingual;
+      }
       const parsed = ttmlToLrc(rawTtml);
       if (parsed.hasLyrics && meta.isChinese) {
         if (parsed.lrc) parsed.lrc = toSimplified(parsed.lrc);
@@ -700,12 +784,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       showDownload(id);
       toast('☁️ 正在通过 VPS 2000M 云端极速转存至 Gofile...');
 
-      const fmtSelect = document.querySelector('#lyrics-format-select');
-      const lyricsFormat = fmtSelect ? fmtSelect.value : (localStorage.getItem('am_lyrics_fmt') || 'lrc');
-      const embedToggle = document.querySelector('#embed-lyrics-toggle');
-      const shouldEmbedLyrics = embedToggle ? embedToggle.checked : (localStorage.getItem('am_embed_lyr') !== 'false');
-      const saveLyrToggle = document.querySelector('#save-lyrics-toggle');
-      const shouldSaveLyricsFile = saveLyrToggle ? saveLyrToggle.checked : (localStorage.getItem('am_save_lyr') !== 'false');
+      const lyrOpts = getLyricsOptions();
+      const lyricsFormat = lyrOpts.embedMode;
+      const shouldEmbedLyrics = lyrOpts.embedMode !== 'off';
+      const shouldSaveLyricsFile = lyrOpts.saveFormats.length > 0;
+      const shouldTranslateLyrics = lyrOpts.translateOn;
       const zipChecked = document.querySelector('#zip-toggle')?.checked ?? false;
       const coverUrl = meta.artwork ? meta.artwork.replace('600x600', '1400x1400') : '';
 
@@ -741,8 +824,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             },
             embedLyrics: shouldEmbedLyrics,
             saveLyricsFile: shouldSaveLyricsFile,
-            lyricsFormat,
+            lyricsFormat: (lyricsFormat === 'ttml' || lyricsFormat === 'lrc') ? lyricsFormat : 'lrc',
             saveLrc: shouldSaveLyricsFile,
+            saveLyricsFormats: (lyrOpts.saveFormats.length ? lyrOpts.saveFormats : (shouldSaveLyricsFile ? [lyricsFormat === 'ttml' ? 'ttml' : 'lrc'] : [])),
+            translateLyrics: shouldTranslateLyrics,
             zip: zipChecked
           }),
           signal: job.ctl.signal
@@ -781,12 +866,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const cleanTitle = safeName(toSimplified(meta.title || adamId || 'Track'));
       const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
 
-      const fmtSelect = document.querySelector('#lyrics-format-select');
-      const lyricsFormat = fmtSelect ? fmtSelect.value : (localStorage.getItem('am_lyrics_fmt') || 'lrc');
-      const embedToggle = document.querySelector('#embed-lyrics-toggle');
-      const shouldEmbedLyrics = embedToggle ? embedToggle.checked : (localStorage.getItem('am_embed_lyr') !== 'false');
-      const saveLyrToggle = document.querySelector('#save-lyrics-toggle');
-      const shouldSaveLyricsFile = saveLyrToggle ? saveLyrToggle.checked : (localStorage.getItem('am_save_lyr') !== 'false');
+      const lyrOpts = getLyricsOptions();
+      const lyricsFormat = lyrOpts.embedMode;
+      const shouldEmbedLyrics = lyrOpts.embedMode !== 'off';
+      const shouldSaveLyricsFile = lyrOpts.saveFormats.length > 0;
+      const shouldTranslateLyrics = lyrOpts.translateOn;
+      const saveFormats = lyrOpts.saveFormats;
 
       let finalFile = result.file;
       let lyricsData = null;
@@ -821,15 +906,19 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         };
 
         const [lyrRes, coverBuf] = await Promise.all([
-          fetchLyricsData(adamId),
+          fetchLyricsData(adamId, shouldTranslateLyrics),
           fetchCoverBuf(),
         ]);
         lyricsData = lyrRes;
 
         let embedLrcText = '';
         if (shouldEmbedLyrics && lyricsData && lyricsData.hasLyrics) {
-          // 若有动态时间轴内嵌 LRC，无动态歌词自动降级为纯文本内嵌
-          embedLrcText = lyricsData.isDynamic ? lyricsData.lrc : lyricsData.plain;
+          // 内嵌格式由 lyricsFormat 决定：LRC/纯文本 或 TTML 原文（落后于 TG 端的正交维度）
+          if (lyricsFormat === 'ttml' && lyricsData.ttml) {
+            embedLrcText = lyricsData.ttml;
+          } else {
+            embedLrcText = lyricsData.isDynamic ? lyricsData.lrc : lyricsData.plain;
+          }
         }
 
         const rawBuf = await result.file.arrayBuffer();
@@ -856,12 +945,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
       saveResult({ file: finalFile, dispose: result.dispose }, standardM4aName);
 
-      // 可选保存独立外挂歌词文件（无歌词则跳过）
-      if (shouldSaveLyricsFile && lyricsData && lyricsData.hasLyrics) {
-        if (lyricsFormat === 'ttml' && lyricsData.ttml) {
-          downloadLyricsFile(lyricsData.ttml, 'ttml', meta.artist, meta.title);
-        } else if (lyricsData.lrc) {
-          downloadLyricsFile(lyricsData.lrc, 'lrc', meta.artist, meta.title);
+      // 可选保存独立外挂歌词文件（按外置格式数组多格式保存；无歌词则跳过）
+      if (saveFormats.length && lyricsData && lyricsData.hasLyrics) {
+        for (const fmt of saveFormats) {
+          if (fmt === 'ttml' && lyricsData.ttml) {
+            downloadLyricsFile(lyricsData.ttml, 'ttml', meta.artist, meta.title);
+          } else if (fmt === 'lrc' && lyricsData.lrc) {
+            downloadLyricsFile(lyricsData.lrc, 'lrc', meta.artist, meta.title);
+          }
         }
       }
 
@@ -1059,13 +1150,15 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         hint: '根据所选格式保存 .lrc 或 .ttml 歌词',
         onSelect: async () => {
           toast('正在获取歌词...');
-          const data = await fetchLyricsData(adamId);
+          const o = getLyricsOptions();
+          const translateOn = o.translateOn;
+          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese);
           if (!data || !data.hasLyrics) { toast('暂无歌词或此曲为纯音乐'); return; }
-          const fmt = lyricsFormatSelect ? lyricsFormatSelect.value : (localStorage.getItem('am_lyrics_fmt') || 'lrc');
-          if (fmt === 'ttml' && data.ttml) {
-            downloadLyricsFile(data.ttml, 'ttml', meta.artist, meta.title);
-          } else {
-            downloadLyricsFile(data.lrc, 'lrc', meta.artist, meta.title);
+          // 优先按外置格式数组下载；未选外置则按当前内嵌格式下载一个
+          const fmts = o.saveFormats.length ? o.saveFormats : [(o.embedMode === 'ttml' && data.ttml) ? 'ttml' : 'lrc'];
+          for (const f of fmts) {
+            if (f === 'ttml' && data.ttml) downloadLyricsFile(data.ttml, 'ttml', meta.artist, meta.title);
+            else if (f === 'lrc' && data.lrc) downloadLyricsFile(data.lrc, 'lrc', meta.artist, meta.title);
           }
           toast('已开始下载歌词');
         },
@@ -1377,6 +1470,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     meta = result;
     metaLoaded = true;
     renderMeta();
+    // 中文歌无需翻译：仅非中文歌曲显示"中文翻译"开关
+    if (translateLyricsLabel) {
+      translateLyricsLabel.style.display = meta.isChinese ? 'none' : 'inline-flex';
+    }
     libraryToggle.refresh();
     favoriteToggle.refresh();
     playlistBtn.disabled = !meta.resource;

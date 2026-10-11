@@ -39,20 +39,25 @@
         <div class="variants-options" style="margin-left:auto;display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:16px;background:var(--surface-2);border:1px solid var(--line);">
             <div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text);">
-              <span style="color:var(--muted);">歌词:</span>
-              <select id="lyrics-format-select" style="padding:2px 8px;border-radius:6px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:12px;outline:none;cursor:pointer;">
+              <span style="color:var(--muted);" title="选择音频文件 ©lyr 标签内嵌的歌词格式（TTML 仅部分播放器可解析显示）">内嵌:</span>
+              <select id="lyrics-format-select" style="padding:2px 8px;border-radius:6px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:12px;outline:none;cursor:pointer;" title="选择音频文件 ©lyr 标签内嵌的歌词格式（TTML 仅部分播放器可解析显示）">
                 <option value="lrc" selected>LRC</option>
                 <option value="ttml">TTML</option>
+                <option value="off">关闭</option>
               </select>
             </div>
             <span style="width:1px;height:12px;background:var(--line);"></span>
-            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="将歌词写入音频文件 ©lyr 标签">
-              <input type="checkbox" id="embed-lyrics-toggle" checked style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
-              <span>内嵌</span>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="另存同名独立外挂歌词文件 (.lrc)">
+              <input type="checkbox" id="save-lrc-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>外挂 .lrc</span>
             </label>
-            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="保存同名独立外挂歌词文件">
-              <input type="checkbox" id="save-lyrics-toggle" checked style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
-              <span>外挂</span>
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="另存同名独立外挂歌词文件 (.ttml)">
+              <input type="checkbox" id="save-ttml-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>外挂 .ttml</span>
+            </label>
+            <label id="translate-lyrics-label" style="display:none;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="在歌词中附加 Apple Music 官方中文翻译（仅非中文歌曲可用）">
+              <input type="checkbox" id="translate-lyrics-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>🇨🇳 中文翻译</span>
             </label>
           </div>
 
