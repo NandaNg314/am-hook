@@ -2660,16 +2660,18 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
         await pushAlbumMsgsToPrivate(chatId, res.allGroupMsgIds);
 
         const useTotalSizeMb = res.zipSizeMb || res.sendResult?.sizeMb || 0;
+        const useUploadSec = res.uploadDurationSec || res.sendResult?.durationSec || 0;
+        const useSpeedMbS = useTotalSizeMb && useUploadSec ? Number((useTotalSizeMb / useUploadSec).toFixed(2)) : (res.sendResult?.speedMbS || 0);
         const statsText = res.sendResult?.durationSec ? (
           isEn
-            ? `\n\n📊 <b>Performance Stats:</b>\n• Total Size: <code>${useTotalSizeMb} MB</code> (${res.downloadedCount} tracks, ${res.zipPartCount || 1} zip ${res.zipPartCount > 1 ? 'parts' : 'part'})\n• Official Upload Time: <code>${res.sendResult.durationSec}s</code> (Speed: <code>${res.sendResult.speedMbS} MB/s</code>)\n• Total Elapsed: <code>${res.totalDurationSec}s</code>\n• Dedicated Tunnel: <code>Official Local Bot API (Zero-Copy)</code>`
-            : `\n\n📊 <b>全辑性能统计：</b>\n• 全辑体积：<code>${useTotalSizeMb} MB</code> (共 ${res.downloadedCount} 首${res.zipPartCount > 1 ? `，${res.zipPartCount} 卷分卷` : ''})\n• 官方上传耗时：<code>${res.sendResult.durationSec} 秒</code> (速度: <code>${res.sendResult.speedMbS} MB/s</code>)\n• 全辑总耗时：<code>${res.totalDurationSec} 秒</code>\n• 传输通道：<code>官方 Local Bot API 专线 (零拷贝极速通道)</code>`
+            ? `\n\n📊 <b>Performance Stats:</b>\n• Total Size: <code>${useTotalSizeMb} MB</code> (${res.downloadedCount} tracks, ${res.zipPartCount || 1} zip ${res.zipPartCount > 1 ? 'parts' : 'part'})\n• Official Upload Time: <code>${useUploadSec}s</code> (Speed: <code>${useSpeedMbS} MB/s</code>)\n• Total Elapsed: <code>${res.totalDurationSec}s</code>\n• Dedicated Tunnel: <code>Official Local Bot API (Zero-Copy)</code>`
+            : `\n\n📊 <b>全辑性能统计：</b>\n• 全辑体积：<code>${useTotalSizeMb} MB</code> (共 ${res.downloadedCount} 首${res.zipPartCount > 1 ? `，${res.zipPartCount} 卷分卷` : ''})\n• 官方上传耗时：<code>${useUploadSec} 秒</code> (速度: <code>${useSpeedMbS} MB/s</code>)\n• 全辑总耗时：<code>${res.totalDurationSec} 秒</code>\n• 传输通道：<code>官方 Local Bot API 专线 (零拷贝极速通道)</code>`
         ) : '';
 
         const skipNote = res.skippedTracks?.length ? (
           isEn
-            ? `\n\n⚠️ Note: ${res.skippedTracks.length} tracks skipped due to regional copyright restrictions.`
-            : `\n\n⚠️ 注：有 ${res.skippedTracks.length} 首歌曲因地区版权未收录。`
+            ? `\n\n⚠️ <b>Note:</b> ${res.skippedTracks.length} ${res.skippedTracks.length > 1 ? 'tracks were' : 'track was'} skipped:\n${res.skippedTracks.map(s => `• ${escapeHtml(s.track?.name || s.track || 'Unknown')} — ${escapeHtml((s.error || 'unavailable').split('\n')[0])}`).join('\n')}`
+            : `\n\n⚠️ <b>注明：</b>有 ${res.skippedTracks.length} 首歌曲未能收录：\n${res.skippedTracks.map(s => `• ${escapeHtml(s.track?.name || s.track || '未知曲目')}— ${escapeHtml((s.error || '不可用').split('\n')[0])}`).join('\n')}`
         ) : '';
 
         await tgCall('editMessageText', {
@@ -2687,12 +2689,15 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
       } catch (err) {
         console.error('[TG-Bot] 全辑下载处理异常:', err);
         try {
+          const contactHint = isEn
+            ? `\n\n⚠️ If the issue persists, please contact the admin: <a href="https://t.me/whyResetmytelegramaccount">🧑‍💻 @whyResetmytelegramaccount</a>`
+            : `\n\n⚠️ 若问题持续，请点击联系站长：<a href="https://t.me/whyResetmytelegramaccount">🧑‍💻 @whyResetmytelegramaccount</a>`;
           await tgCall('editMessageText', {
             chat_id: chatId,
             message_id: messageId,
             text: isEn
-              ? `❌ <b>${typeLabel} processing error:</b> ${escapeHtml(err.message)}`
-              : `❌ <b>全辑处理遇到错误:</b> ${escapeHtml(err.message)}`,
+              ? `❌ <b>${typeLabel} processing error:</b> ${escapeHtml(err.message)}${contactHint}`
+              : `❌ <b>全辑处理遇到错误:</b> ${escapeHtml(err.message)}${contactHint}`,
             parse_mode: 'HTML'
           });
         } catch {}
@@ -2854,6 +2859,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`);
 
           const allZipMsgIds = [];
           let lastSendResult = null;
+          let uploadDurationTotalSec = 0; // 累计所有分卷的纯上传耗时（不含卷间冷却），避免完成消息只显示最后一卷
           for (let zi = 0; zi < zipPartList.length; zi++) {
             const part = zipPartList[zi];
             const partPath = part.filePath;
@@ -2884,6 +2890,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             }
             allZipMsgIds.push(sendResult.groupMsgId);
             lastSendResult = sendResult;
+            uploadDurationTotalSec += Number(sendResult.durationSec || 0);
 
             if (zi + 1 < zipPartList.length) {
               console.log(`[TG-Bot] 分卷 ${zi + 1}/${zipPartList.length} 已归档频道，冷却 3s 后继续下一卷...`);
@@ -2920,6 +2927,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             totalDurationSec,
             zipSizeMb: totalZipMb,
             zipPartCount: zipPartList.length,
+            uploadDurationSec: uploadDurationTotalSec, // 全卷累计上传耗时（秒）
             sendResult: lastSendResult
           };
         }
