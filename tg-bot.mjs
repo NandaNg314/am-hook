@@ -1474,7 +1474,11 @@ function cleanStaleUserSessions() {
 setInterval(cleanStaleUserSessions, 15 * 60 * 1000);
 
 // ==================== 卡片构建器 ====================
-function buildSongCard(details, selectedQuality = 'Lossless', needLrc = true, isZip = false, lang = 'zh', backAlbumId = null) {
+function buildSongCard(details, selectedQuality = 'Lossless', needLrc = true, isZip = false, lang = 'zh', backAlbumId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+  // embedLyricsMode: 'lrc' | 'ttml' | 'off'（内嵌 ©lyr；off = 不内嵌）
+  // saveLyricsFormats: [] | ['lrc'] | ['ttml'] | ['lrc','ttml']（外置歌词文件，可 0~2 个）
+  const embedMode = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
+  const saveFormats = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
   const isEn = lang === 'en';
   const cacheKey = `${details.songId}_${selectedQuality.toLowerCase()}_${isZip ? 'zip' : 'audio'}`;
   const isCached = Boolean(db.get(cacheKey));
@@ -1540,13 +1544,33 @@ ${isCached ? '\n⚡ <b>状态：群组已归档，点击将秒速直发！</b>' 
     }
   ]);
 
+  // 歌词交付：内嵌格式二选一/关 + 外置歌词多选 + 翻译 + 仅下载歌词
+  const embedLabel = (m) => m === 'lrc' ? 'LRC' : (m === 'ttml' ? 'TTML' : (isEn ? 'Off' : '关'));
+  inlineKeyboard.push([
+    { text: `📝 ${isEn ? 'Embed' : '内嵌'}: ${embedLabel('lrc')} ${embedMode === 'lrc' ? '✅' : ''}`, callback_data: `efmt:lrc:${details.songId}` },
+    { text: `${embedLabel('ttml')} ${embedMode === 'ttml' ? '✅' : ''}`, callback_data: `efmt:ttml:${details.songId}` },
+    { text: `${embedLabel('off')} ${embedMode === 'off' ? '✅' : ''}`, callback_data: `efmt:off:${details.songId}` }
+  ]);
+
+  inlineKeyboard.push([
+    { text: `📄 ${isEn ? 'External' : '外置'}: .lrc ${saveFormats.includes('lrc') ? '✅' : ''}`, callback_data: `esave:lrc:${details.songId}` },
+    { text: `.ttml ${saveFormats.includes('ttml') ? '✅' : ''}`, callback_data: `esave:ttml:${details.songId}` }
+  ]);
+
   inlineKeyboard.push([
     {
       text: isEn
-        ? `📝 Separate Lyrics (.lrc): ${needLrc ? 'Yes ✅' : 'No ❌'}`
-        : `📝 独立歌词 (.lrc): ${needLrc ? '需要 ✅' : '不需要 ❌'}`,
-      callback_data: `lrc:${needLrc ? '0' : '1'}:${details.songId}`
+        ? `🇨🇳 Chinese Translation: ${needTranslate ? 'Yes ✅' : 'No ❌'}`
+        : `🇨🇳 中文翻译歌词: ${needTranslate ? '需要 ✅' : '不需要 ❌'}`,
+      callback_data: `tlrc:${needTranslate ? '0' : '1'}:${details.songId}`
     }
+  ]);
+
+  // 仅下载歌词：不发音频，直接推歌词文件（LRC/TTML/两者），用于自行补歌词场景
+  inlineKeyboard.push([
+    { text: `🎵 ${isEn ? 'Lyrics Only' : '仅歌词'}: LRC`, callback_data: `lyronly:lrc:${details.songId}` },
+    { text: 'TTML', callback_data: `lyronly:ttml:${details.songId}` },
+    { text: isEn ? 'Both' : '两者', callback_data: `lyronly:both:${details.songId}` }
   ]);
 
   inlineKeyboard.push([
@@ -1582,7 +1606,10 @@ ${isCached ? '\n⚡ <b>状态：群组已归档，点击将秒速直发！</b>' 
   return { text, reply_markup: { inline_keyboard: inlineKeyboard } };
 }
 
-function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true, deliveryMode = 'zip', lang = 'zh', isOwner = false, backArtistId = null) {
+function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true, deliveryMode = 'zip', lang = 'zh', isOwner = false, backArtistId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+  // embedLyricsMode: 'lrc' | 'ttml' | 'off'; saveLyricsFormats: [] | ['lrc'] | ['ttml'] | ['lrc','ttml']
+  const embedMode = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
+  const saveFormats = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
   const isEn = lang === 'en';
   const isPl = albumData.isPlaylist === true;
   const cacheKey = `album_${albumData.albumId}_${selectedQuality.toLowerCase()}_${deliveryMode}`;
@@ -1628,13 +1655,32 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
       }
     ]);
 
+    const aEmbedLabel = (m) => m === 'lrc' ? 'LRC' : (m === 'ttml' ? 'TTML' : (isEn ? 'Off' : '关'));
+    inlineKeyboard.push([
+      { text: `📝 ${isEn ? 'Embed' : '内嵌'}: ${aEmbedLabel('lrc')} ${embedMode === 'lrc' ? '✅' : ''}`, callback_data: `aefmt:lrc:${albumData.albumId}` },
+      { text: `${aEmbedLabel('ttml')} ${embedMode === 'ttml' ? '✅' : ''}`, callback_data: `aefmt:ttml:${albumData.albumId}` },
+      { text: `${aEmbedLabel('off')} ${embedMode === 'off' ? '✅' : ''}`, callback_data: `aefmt:off:${albumData.albumId}` }
+    ]);
+
+    inlineKeyboard.push([
+      { text: `📄 ${isEn ? 'External' : '外置'}: .lrc ${saveFormats.includes('lrc') ? '✅' : ''}`, callback_data: `aesave:lrc:${albumData.albumId}` },
+      { text: `.ttml ${saveFormats.includes('ttml') ? '✅' : ''}`, callback_data: `aesave:ttml:${albumData.albumId}` }
+    ]);
+
     inlineKeyboard.push([
       {
         text: isEn
-          ? `📝 Separate Lyrics (.lrc): ${needLrc ? 'Yes ✅' : 'No ❌'}`
-          : `📝 包含独立歌词 (.lrc): ${needLrc ? '需要 ✅' : '不需要 ❌'}`,
-        callback_data: `alrc:${needLrc ? '0' : '1'}:${albumData.albumId}`
+          ? `🇨🇳 Chinese Translation: ${needTranslate ? 'Yes ✅' : 'No ❌'}`
+          : `🇨🇳 中文翻译歌词: ${needTranslate ? '需要 ✅' : '不需要 ❌'}`,
+        callback_data: `atlrc:${needTranslate ? '0' : '1'}:${albumData.albumId}`
       }
+    ]);
+
+    // 仅下载歌词：不发音频，整辑每首只推歌词文件
+    inlineKeyboard.push([
+      { text: `🎵 ${isEn ? 'Lyrics Only' : '仅歌词'}: LRC`, callback_data: `alyronly:lrc:${albumData.albumId}` },
+      { text: 'TTML', callback_data: `alyronly:ttml:${albumData.albumId}` },
+      { text: isEn ? 'Both' : '两者', callback_data: `alyronly:both:${albumData.albumId}` }
     ]);
 
     inlineKeyboard.push([
@@ -1679,7 +1725,145 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
 }
 
 // ==================== 单曲下载、归档与直发 ====================
-async function handleDownload(chatId, messageId, details, quality, needLrc, isZip) {
+
+// 仅下载歌词（单曲）：不发音频，按需向 cloud-service 取 LRC/TTML 歌词文件并推送给用户
+async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTranslate = false) {
+  const userLang = getUserLang(chatId);
+  const isEn = userLang === 'en';
+  const wantFormats = want === 'both' ? ['lrc', 'ttml'] : [want];
+  await tgCall('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: isEn
+      ? `⏳ <b>Fetching lyrics only...</b>\n🎵 ${escapeHtml(details.title)} - ${escapeHtml(details.artist)}`
+      : `⏳ <b>正在获取歌词文件（无需下载音频）...</b>\n🎵 ${escapeHtml(details.title)} - ${escapeHtml(details.artist)}`,
+    parse_mode: 'HTML'
+  });
+  try {
+    const payload = {
+      adamId: details.songId,
+      quality: 'AAC',
+      meta: { title: details.title, artist: details.artist, album: details.album || '' },
+      lyricsOnly: true,
+      saveLyricsFormats: wantFormats,
+      translateLyrics: Boolean(needTranslate),
+      noUpload: true
+    };
+    const res = await fetch(CLOUD_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await res.json();
+    if (data.status !== 'ok' || !data.data?.lyricsFiles?.length) {
+      throw new Error(data.error || '无歌词可下载（纯音乐或地区无歌词资源）');
+    }
+    const files = data.data.lyricsFiles;
+    const sentIds = [];
+    for (const f of files) {
+      const fpath = `/tmp/am_lyr_only_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${f.filename.split('.').pop()}`;
+      fs.writeFileSync(fpath, f.content, 'utf8');
+      const cap = safeCaption(`📝 <b>${escapeHtml(details.title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`);
+      const r = await unifiedSendMedia({
+        chatId,
+        filePath: fpath,
+        fileName: f.filename,
+        caption: cap,
+        isAudio: false,
+        isZip: false
+      });
+      sentIds.push(r.groupMsgId || r.fileId);
+      try { fs.rmSync(fpath, { force: true }); } catch {}
+    }
+    await tgCall('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: isEn
+        ? `🎉 <b>Lyrics delivered!</b> (${files.length} file${files.length > 1 ? 's' : ''})`
+        : `🎉 <b>歌词已推送！</b>（${files.length} 个文件，未下载音频）`,
+      parse_mode: 'HTML'
+    });
+  } catch (err) {
+    console.warn('[TG-Bot] 仅歌词下载失败:', err.message);
+    try {
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: isEn ? `❌ <b>Lyrics fetch failed:</b> ${escapeHtml(err.message)}` : `❌ <b>歌词获取失败：</b>${escapeHtml(err.message)}`,
+        parse_mode: 'HTML'
+      });
+    } catch {}
+  }
+}
+
+// 缓存歌词字段归一化：兼容旧 `lrcFileId`/`lrcGroupMsgId` 单格式缓存,统一为 lyricsFiles{lrc,ttml}
+function normalizeCachedLyrics(cached) {
+  const lf = cached.lyricsFiles || {};
+  if (!lf.lrc && (cached.lrcFileId || cached.lrcGroupMsgId)) {
+    lf.lrc = { fileId: cached.lrcFileId || null, groupMsgId: cached.lrcGroupMsgId || null };
+  }
+  return lf;
+}
+
+// 缓存命中时按需补齐目标格式歌词：有缓存直接返回推送凭据；缺格式则现场向 cloud-service 补生成（几 KB 秒级，不重下音频）并回写缓存
+async function ensureLyricsFiles(cacheKey, cached, wantFormats, details) {
+  const lf = normalizeCachedLyrics(cached);
+  const results = {}; // fmt -> { fileId, groupMsgId } | null（null = 无歌词）
+  const missing = wantFormats.filter((f) => !lf[f]);
+  // 先补生成缺失格式（并行）
+  if (missing.length) {
+    try {
+      const payload = {
+        adamId: String(details.songId || details.id),
+        quality: 'AAC',
+        meta: { title: details.title || details.attributes?.name || '', artist: details.artist || details.attributes?.artistName || '' },
+        lyricsOnly: true,
+        saveLyricsFormats: missing,
+        noUpload: true
+      };
+      const res = await fetch(CLOUD_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await res.json();
+      if (data.status === 'ok' && data.data?.lyricsFiles?.length) {
+        for (const f of data.data.lyricsFiles) {
+          const fmt = f.filename.endsWith('.ttml') ? 'ttml' : 'lrc';
+          // 上传到归档频道，供后续用户秒传复用
+          const fpath = `/tmp/am_lyr_fix_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${fmt}`;
+          fs.writeFileSync(fpath, f.content, 'utf8');
+          const up = await unifiedSendMedia({
+            chatId: AUTHORIZED_GROUP_ID,
+            filePath: fpath,
+            fileName: f.filename,
+            caption: safeCaption(`📝 ${escapeHtml(payload.meta.artist)} - ${escapeHtml(payload.meta.title)}`),
+            isAudio: false,
+            isZip: false
+          });
+          try { fs.rmSync(fpath, { force: true }); } catch {}
+          lf[fmt] = { fileId: up.fileId || null, groupMsgId: up.groupMsgId || null };
+        }
+        // 回写缓存
+        const fresh = db.get(cacheKey);
+        if (fresh) {
+          fresh.lyricsFiles = lf;
+          db.set(cacheKey, fresh);
+        }
+      }
+    } catch (err) {
+      console.warn('[Cache] 歌词补生成失败 (非致命):', err.message);
+    }
+  }
+  for (const f of wantFormats) {
+    results[f] = lf[f] || null;
+  }
+  return results;
+}
+
+async function handleDownload(chatId, messageId, details, quality, needLrc, isZip, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const songId = details.songId;
@@ -1709,22 +1893,28 @@ async function handleDownload(chatId, messageId, details, quality, needLrc, isZi
           from_chat_id: AUTHORIZED_GROUP_ID,
           message_id: cached.groupMsgId
         });
-        if (needLrc && (cached.lrcGroupMsgId || cached.lrcFileId)) {
-          try {
-            if (cached.lrcGroupMsgId) {
-              await tgCall('copyMessage', {
-                chat_id: chatId,
-                from_chat_id: AUTHORIZED_GROUP_ID,
-                message_id: cached.lrcGroupMsgId
-              });
-            } else if (cached.lrcFileId) {
-              await tgCall('sendDocument', {
-                chat_id: chatId,
-                document: cached.lrcFileId,
-                caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.lrc`)
-              });
-            }
-          } catch {}
+        // 按需发送/补齐用户请求的外置歌词格式（缓存命中秒发，缺格式现场补生成）
+        if (saveLyricsFormats.length) {
+          const lfResults = await ensureLyricsFiles(cacheKey, cached, saveLyricsFormats, details);
+          for (const fmt of saveLyricsFormats) {
+            const entry = lfResults[fmt];
+            if (!entry) continue;
+            try {
+              if (entry.groupMsgId) {
+                await tgCall('copyMessage', {
+                  chat_id: chatId,
+                  from_chat_id: AUTHORIZED_GROUP_ID,
+                  message_id: entry.groupMsgId
+                });
+              } else if (entry.fileId) {
+                await tgCall('sendDocument', {
+                  chat_id: chatId,
+                  document: entry.fileId,
+                  caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.${fmt}`)
+                });
+              }
+            } catch {}
+          }
         }
         copySuccess = true;
       } else if (isZip && cached.zipFileId) {
@@ -1761,13 +1951,28 @@ ${artistTag} ${titleTag} ${albumTag}`);
           performer: cached.artist
         });
 
-        if (needLrc && cached.lrcFileId) {
-          await tgCall('sendDocument', {
-            chat_id: chatId,
-            document: cached.lrcFileId,
-            caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.lrc`),
-            reply_to_message_id: audioMsg.message_id
-          });
+        if (saveLyricsFormats.length) {
+          const lfResults = await ensureLyricsFiles(cacheKey, cached, saveLyricsFormats, details);
+          for (const fmt of saveLyricsFormats) {
+            const entry = lfResults[fmt];
+            if (!entry) continue;
+            try {
+              if (entry.groupMsgId) {
+                await tgCall('copyMessage', {
+                  chat_id: chatId,
+                  from_chat_id: AUTHORIZED_GROUP_ID,
+                  message_id: entry.groupMsgId
+                });
+              } else if (entry.fileId) {
+                await tgCall('sendDocument', {
+                  chat_id: chatId,
+                  document: entry.fileId,
+                  caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.${fmt}`),
+                  reply_to_message_id: audioMsg.message_id
+                });
+              }
+            } catch {}
+          }
         }
         copySuccess = true;
       }
@@ -1831,8 +2036,11 @@ ${artistTag} ${titleTag} ${albumTag}`);
           coverUrl: details.coverUrl,
           durationInMillis: details.durationInMillis
         },
-        saveLrc: needLrc,
-        embedLyrics: true,
+        saveLrc: saveLyricsFormats.length > 0,
+        embedLyrics: embedLyricsMode !== 'off',
+        lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
+        saveLyricsFormats,
+        translateLyrics: needTranslate || false,
         zip: Boolean(isZip),
         noUpload: true
       };
@@ -1860,7 +2068,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
         return;
       }
 
-      const { isZip: resIsZip, zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, fileSize, artist, title, album, qualityName, duration } = transferResult;
+      const { isZip: resIsZip, zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, extraLyricsFiles, fileSize, artist, title, album, qualityName, duration } = transferResult;
 
       // 上传归档至指定的授权群组/频道并推送到私聊
       await tgCall('editMessageText', {
@@ -1933,24 +2141,57 @@ ${artistTag} ${titleTag} ${albumTag}`);
             duration: duration || Math.round((details.durationInMillis || 0) / 1000)
           });
 
+          // 发送所有外置歌词文件（主文件 + 附加格式），并构建 lyricsFiles 多格式缓存凭据
           let lrcFileId = null;
           let lrcGroupMsgId = null;
-          if (needLrc && lrcFilePath && fs.existsSync(lrcFilePath)) {
+          let lrcTtmlFileId = null;
+          let lrcTtmlGroupMsgId = null;
+          const sendOneLyric = async (fpath, fname, replyTo) => {
+            const cap = safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}\n${artistTag} ${titleTag}`);
+            const r = await unifiedSendMedia({
+              chatId,
+              filePath: fpath,
+              fileName: fname,
+              caption: cap,
+              isAudio: false,
+              isZip: false,
+              replyToMessageId: replyTo
+            });
+            return r;
+          };
+          if (lrcFilePath && fs.existsSync(lrcFilePath)) {
             try {
-              const lrcCaption = safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}\n${artistTag} ${titleTag}`);
-              const lrcResult = await unifiedSendMedia({
-                chatId,
-                filePath: lrcFilePath,
-                fileName: lyricsFileName || `${artist} - ${title}.lrc`,
-                caption: lrcCaption,
-                isAudio: false,
-                isZip: false,
-                replyToMessageId: sendResult.groupMsgId
-              });
-              lrcGroupMsgId = lrcResult.groupMsgId;
-              lrcFileId = lrcResult.fileId || null;
+              const primaryExt = (lyricsFileName || '').endsWith('.ttml') ? 'ttml' : 'lrc';
+              const r = await sendOneLyric(lrcFilePath, lyricsFileName || `${artist} - ${title}.${primaryExt}`, sendResult.groupMsgId);
+              if (primaryExt === 'ttml') {
+                lrcTtmlGroupMsgId = r.groupMsgId;
+                lrcTtmlFileId = r.fileId || null;
+              } else {
+                lrcGroupMsgId = r.groupMsgId;
+                lrcFileId = r.fileId || null;
+              }
             } catch (lrcErr) {
               console.warn('[TG-Bot] 歌词发送失败 (非致命):', lrcErr.message);
+            }
+          }
+          // 附加歌词文件（与主文件同目录，如 .lrc + .ttml 并存）
+          if (extraLyricsFiles?.length && lrcFilePath) {
+            const dir = path.dirname(lrcFilePath);
+            for (const ext of extraLyricsFiles) {
+              try {
+                const fpath = path.join(dir, ext.filename);
+                if (!fs.existsSync(fpath)) continue;
+                const r = await sendOneLyric(fpath, ext.filename, sendResult.groupMsgId);
+                if (ext.filename.endsWith('.ttml')) {
+                  lrcTtmlGroupMsgId = r.groupMsgId;
+                  lrcTtmlFileId = r.fileId || null;
+                } else {
+                  lrcGroupMsgId = r.groupMsgId;
+                  lrcFileId = r.fileId || null;
+                }
+              } catch (extraErr) {
+                console.warn('[TG-Bot] 附加歌词发送失败 (非致命):', extraErr.message);
+              }
             }
           }
 
@@ -1963,6 +2204,10 @@ ${artistTag} ${titleTag} ${albumTag}`);
             audioFileId: sendResult.fileId || null,
             lrcFileId: lrcFileId,
             lrcGroupMsgId: lrcGroupMsgId,
+            lyricsFiles: {
+              lrc: (lrcFileId || lrcGroupMsgId) ? { fileId: lrcFileId, groupMsgId: lrcGroupMsgId } : undefined,
+              ttml: (lrcTtmlFileId || lrcTtmlGroupMsgId) ? { fileId: lrcTtmlFileId, groupMsgId: lrcTtmlGroupMsgId } : undefined
+            },
             artist,
             title,
             album,
@@ -2016,7 +2261,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
 // ==================== 多选单曲批量下载 (专辑曲目勾选) ====================
 // 逐首下载/命中缓存秒传归档到频道，最后一次性统一复制到用户私聊
-async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, quality = 'Lossless', needLrc = true, isZip = false) {
+async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, quality = 'Lossless', needLrc = true, isZip = false, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const tracks = (albumData.tracks || []).filter(t => trackIds.has(String(t.id)));
@@ -2122,8 +2367,11 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
                 coverUrl: details.coverUrl,
                 durationInMillis: details.durationInMillis
               },
-              saveLrc: needLrc,
-              embedLyrics: true,
+              saveLrc: saveLyricsFormats.length > 0,
+              embedLyrics: embedLyricsMode !== 'off',
+              lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
+              saveLyricsFormats,
+              translateLyrics: needTranslate || false,
               zip: Boolean(isZip),
               noUpload: true
             };
@@ -2332,7 +2580,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
 // ==================== 艺人全专辑批量转存 (站长专属) ====================
 // 勾选的专辑逐张处理：群聊已缓存的直接跳过并收录消息，未缓存的下载归档；全部就绪后统一推送到私聊
-async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality = 'Lossless', needLrc = true, deliveryMode = 'zip') {
+async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality = 'Lossless', needLrc = true, deliveryMode = 'zip', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   // 服务端硬鉴权：仅站长可一键批量下载歌手全专辑
@@ -2418,7 +2666,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
             return;
           }
           try {
-            const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: prefix });
+            const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: prefix, needTranslate, embedLyricsMode, saveLyricsFormats });
             if (res && res.ok) {
               if (res.allGroupMsgIds?.length) allMsgIds.push(...res.allGroupMsgIds);
               else if (res.zipFileId) fileIdSends.push({ kind: 'doc', fileId: res.zipFileId, name: res.albumName });
@@ -2535,8 +2783,85 @@ async function pushAlbumMsgsToPrivate(chatId, msgIds) {
   }
 }
 
+// 仅下载歌词（专辑）：不发音频，整辑每首只取歌词文件推送（LRC/TTML/both）
+async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want, needTranslate = false) {
+  const userLang = getUserLang(chatId);
+  const isEn = userLang === 'en';
+  const wantFormats = want === 'both' ? ['lrc', 'ttml'] : [want];
+  const tracks = albumData.tracks || [];
+  const typeLabel = albumData.isPlaylist === true ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
+  await tgCall('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: isEn
+      ? `⏳ <b>Fetching ${typeLabel.toLowerCase()} lyrics only (${tracks.length} tracks)...</b>`
+      : `⏳ <b>正在获取整张${typeLabel}的歌词文件（${tracks.length} 首，无需下载音频）...</b>`,
+    parse_mode: 'HTML'
+  });
+
+  const okFiles = [];
+  const failList = [];
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i];
+    const attr = t.attributes || {};
+    const title = attr.name || 'Unknown';
+    const artist = attr.artistName || albumData.artistName || '';
+    try {
+      const payload = {
+        adamId: t.id,
+        quality: 'AAC',
+        meta: { title, artist, album: albumData.name || '' },
+        lyricsOnly: true,
+        saveLyricsFormats: wantFormats,
+        translateLyrics: Boolean(needTranslate),
+        noUpload: true
+      };
+      const res = await fetch(CLOUD_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await res.json();
+      if (data.status !== 'ok' || !data.data?.lyricsFiles?.length) {
+        failList.push(`${i + 1}. ${title}（无歌词）`);
+        continue;
+      }
+      for (const f of data.data.lyricsFiles) {
+        const fpath = `/tmp/am_lyr_only_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${f.filename.split('.').pop()}`;
+        fs.writeFileSync(fpath, f.content, 'utf8');
+        await unifiedSendMedia({
+          chatId,
+          filePath: fpath,
+          fileName: f.filename,
+          caption: safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`),
+          isAudio: false,
+          isZip: false
+        });
+        try { fs.rmSync(fpath, { force: true }); } catch {}
+        okFiles.push(f.filename);
+      }
+    } catch (err) {
+      console.warn(`[TG-Bot] 仅歌词 ${title} 失败:`, err.message);
+      failList.push(`${i + 1}. ${title}（${err.message}）`);
+    }
+  }
+
+  const failNote = failList.length
+    ? `\n❌ ${isEn ? 'Skipped' : '未收录'} ${failList.length} 首：\n${failList.slice(0, 12).join('\n')}${failList.length > 12 ? `\n…等 ${failList.length} 首` : ''}`
+    : '';
+  await tgCall('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text: isEn
+      ? `🎉 <b>${typeLabel} lyrics delivered!</b> (${okFiles.length} files)${failNote}`
+      : `🎉 <b>整张${typeLabel}歌词已推送！</b>（${okFiles.length} 个文件，未下载音频）${failNote}`,
+    parse_mode: 'HTML'
+  });
+}
+
 // 单张专辑下载入口：命中缓存秒传直发 -> 配额检查 -> 入队 -> transferAlbumCore 下载归档 -> 统一推送私聊
-async function handleAlbumDownload(chatId, messageId, albumData, quality, needLrc, deliveryMode) {
+async function handleAlbumDownload(chatId, messageId, albumData, quality, needLrc, deliveryMode, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const albumId = albumData.albumId;
@@ -2655,7 +2980,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
     { chatId, messageId, type: 'album', name: albumData.name },
     async () => {
       try {
-        const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: '' });
+        const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: '', needTranslate, embedLyricsMode, saveLyricsFormats });
         if (!res || !res.ok) return;
         await pushAlbumMsgsToPrivate(chatId, res.allGroupMsgIds);
 
@@ -2708,7 +3033,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
 
 // 全辑转存核心：(下载 -> 频道归档 -> 写入缓存)，不负责私聊推送，由调用方决定何时统一 copyMessages。
 // progressPrefix 用于批量场景在进度消息前标注 [i/N] 专辑名。
-async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '' }) {
+async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [] }) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const albumId = albumData.albumId;
@@ -2753,8 +3078,11 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
               },
               batchId: batchId,
               isLastTrack: false,
-              saveLrc: needLrc,
-              embedLyrics: true,
+              saveLrc: saveLyricsFormats.length > 0,
+              embedLyrics: embedLyricsMode !== 'off',
+              lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
+              saveLyricsFormats,
+              translateLyrics: needTranslate || false,
               noUpload: true
             };
 
@@ -2971,8 +3299,11 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
                 coverUrl: albumData.coverUrl
               },
               isLastTrack: false,
-              saveLrc: needLrc,
-              embedLyrics: true,
+              saveLrc: saveLyricsFormats.length > 0,
+              embedLyrics: embedLyricsMode !== 'off',
+              lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
+              saveLyricsFormats,
+              translateLyrics: needTranslate || false,
               noUpload: true
             };
 
@@ -3861,6 +4192,8 @@ ${quotaText}
           albumData,
           quality: 'Lossless',
           needLrc: true,
+          embedLyricsMode: 'lrc',
+          saveLyricsFormats: [],
           deliveryMode: 'zip',
           lang: userLang,
           createdAt: Date.now()
@@ -3900,6 +4233,8 @@ ${quotaText}
         details,
         quality: 'Lossless',
         needLrc: true,
+        embedLyricsMode: 'lrc',
+        saveLyricsFormats: [],
         isZip: false,
         backAlbumId: parsed.albumId || null,
         lang: userLang,
@@ -4038,7 +4373,7 @@ ${quotaText}
           return;
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleArtistAlbumsDownload(chatId, messageId, artistId)
+        handleArtistAlbumsDownload(chatId, messageId, artistId, 'Lossless', true, 'zip', session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [])
           .catch(e => console.error('[TG-Bot] 全专辑批量转存任务出错:', e.message))
           .finally(() => {
             selection.clear();
@@ -4085,6 +4420,8 @@ ${quotaText}
           albumData,
           quality: 'Lossless',
           needLrc: true,
+          embedLyricsMode: 'lrc',
+          saveLyricsFormats: [],
           deliveryMode: 'zip',
           lang: userLang,
           backArtistId: artistId,
@@ -4125,6 +4462,8 @@ ${quotaText}
           details,
           quality: 'Lossless',
           needLrc: true,
+          embedLyricsMode: 'lrc',
+          saveLyricsFormats: [],
           isZip: false,
           backAlbumId,
           lang: userLang,
@@ -4203,7 +4542,7 @@ ${quotaText}
           return;
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleMultiTrackDownload(chatId, messageId, albumData, selection, 'Lossless', true, false)
+        handleMultiTrackDownload(chatId, messageId, albumData, selection, 'Lossless', true, false, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [])
           .catch(e => console.error('[TG-Bot] 多选单曲批量转存任务出错:', e.message))
           .finally(() => userSessions.delete(sessionKey));
         return;
@@ -4243,7 +4582,7 @@ ${quotaText}
         try { albumData = await fetchAlbumDetails(albumId); } catch {}
       }
       if (albumData) {
-        const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null);
+        const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || []);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4289,7 +4628,7 @@ ${quotaText}
     if (session.isAlbum) {
       if (data.startsWith('aq:')) {
         session.quality = data.split(':')[1];
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4303,7 +4642,7 @@ ${quotaText}
 
       if (data.startsWith('afmt:')) {
         session.deliveryMode = data.split(':')[1];
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4315,9 +4654,50 @@ ${quotaText}
         return;
       }
 
-      if (data.startsWith('alrc:')) {
-        session.needLrc = data.split(':')[1] === '1';
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null);
+      if (data.startsWith('aefmt:')) {
+        const parts = data.split(':');
+        session.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(parts[1]) ? parts[1] : 'lrc';
+        session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats?.length > 0);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: card.text,
+          parse_mode: 'HTML',
+          reply_markup: card.reply_markup
+        });
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        return;
+      }
+
+      if (data.startsWith('aesave:')) {
+        const parts = data.split(':');
+        const fmt = parts[1];
+        const cur = session.saveLyricsFormats || [];
+        session.saveLyricsFormats = cur.includes(fmt) ? cur.filter((f) => f !== fmt) : [...cur, fmt];
+        session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats.length > 0);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: card.text,
+          parse_mode: 'HTML',
+          reply_markup: card.reply_markup
+        });
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        return;
+      }
+
+      if (data.startsWith('alyronly:')) {
+        const parts = data.split(':');
+        const want = parts[1]; // 'lrc' | 'ttml' | 'both'
+        await handleAlbumLyricsOnlyDownload(chatId, messageId, session.albumData, want, session.needTranslate);
+        return;
+      }
+
+      if (data.startsWith('atlrc:')) {
+        session.needTranslate = data.split(':')[1] === '1';
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4353,7 +4733,7 @@ ${quotaText}
         }
         session.downloading = true;
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleAlbumDownload(chatId, messageId, session.albumData, session.quality, session.needLrc, session.deliveryMode)
+        handleAlbumDownload(chatId, messageId, session.albumData, session.quality, session.needLrc, session.deliveryMode, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats)
           .catch(e => console.error('[TG-Bot] 专辑转存任务出错:', e.message))
           .finally(() => userSessions.delete(sessionKey));
         return;
@@ -4363,7 +4743,7 @@ ${quotaText}
     // 单曲相关回调
     if (data.startsWith('q:')) {
       session.quality = data.split(':')[1];
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4377,7 +4757,7 @@ ${quotaText}
 
     if (data.startsWith('fmt:')) {
       session.isZip = data.split(':')[1] === 'zip';
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4389,9 +4769,50 @@ ${quotaText}
       return;
     }
 
-    if (data.startsWith('lrc:')) {
-      session.needLrc = data.split(':')[1] === '1';
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId);
+    if (data.startsWith('efmt:')) {
+      const parts = data.split(':');
+      session.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(parts[1]) ? parts[1] : 'lrc';
+      session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats?.length > 0);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
+      });
+      await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      return;
+    }
+
+    if (data.startsWith('esave:')) {
+      const parts = data.split(':');
+      const fmt = parts[1];
+      const cur = session.saveLyricsFormats || [];
+      session.saveLyricsFormats = cur.includes(fmt) ? cur.filter((f) => f !== fmt) : [...cur, fmt];
+      session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats.length > 0);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
+      });
+      await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      return;
+    }
+
+    if (data.startsWith('lyronly:')) {
+      const parts = data.split(':');
+      const want = parts[1]; // 'lrc' | 'ttml' | 'both'
+      await handleLyricsOnlyDownload(chatId, messageId, session.details, want, session.needTranslate);
+      return;
+    }
+
+    if (data.startsWith('tlrc:')) {
+      session.needTranslate = data.split(':')[1] === '1';
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4415,7 +4836,7 @@ ${quotaText}
       }
       session.downloading = true;
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-      handleDownload(chatId, messageId, session.details, session.quality, session.needLrc, session.isZip)
+      handleDownload(chatId, messageId, session.details, session.quality, session.needLrc, session.isZip, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats)
         .catch(e => console.error('[TG-Bot] 单曲转存任务出错:', e.message))
         .finally(() => userSessions.delete(sessionKey));
       return;

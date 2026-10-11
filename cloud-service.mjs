@@ -49,6 +49,11 @@ const HOST = process.env.CLOUD_HOST || '127.0.0.1';
 const HOOK_BASE = process.env.HOOK_BASE || 'http://127.0.0.1:31408';
 const WRAPPER_BASE = process.env.WRAPPER_BASE || 'http://127.0.0.1:12340';
 
+// CENC/M4P 老歌 webplayback 回退解密链：ffmpeg 拉加密 fMP4 -> Widevine 换 Key -> cenc-tool 解密
+const WV_PY = process.env.WV_PY || '/home/ubuntu/am-hook/tools/wv_env/bin/python';
+const WV_KEY_SCRIPT = process.env.WV_KEY_SCRIPT || '/home/ubuntu/am-hook/tools/wv/get_wv_key.py';
+const CENC_TOOL_PATH = process.env.CENC_TOOL_PATH || '/home/ubuntu/am-hook/target/release/cenc-tool';
+
 // 繁简字转换字典 (OpenCC 词表)
 let t2sMap = {};
 try {
@@ -475,6 +480,91 @@ function parseLyrics(ttmlContent) {
   };
 }
 
+/* ==================== 官方翻译 → 双语 LRC ==================== */
+
+// TTML 的 <translations><translation xml:lang="zh-Hans"><text for="L1">译文</text>...
+// 通过 itunes:key 与原文 <p> 一一对齐。译文可含 <span ttm:role="x-bg">(和声)</span> 背景和声，剥离生成干净中文。
+function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
+  if (!ttmlContent || typeof ttmlContent !== 'string' || !ttmlContent.trim()) {
+    return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
+  }
+
+  // 原文已是中文：跳过翻译，直接返回 null 让上层降级为单语原文
+  const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
+  if (rootLang.startsWith('zh')) return null;
+
+  // 1. 提取翻译块：优先目标语言（zh-Hans），退回任意 language、排除自动生成
+  let translationBlock = '';
+  const translationRegex = /<translation\b[^>]*xml:lang=["']([^"']+)["'][^>]*>([\s\S]*?)<\/translation>/gi;
+  const allTranslations = [];
+  let tMatch;
+  while ((tMatch = translationRegex.exec(ttmlContent)) !== null) {
+    const lang = (tMatch[1] || '').toLowerCase();
+    const auto = /\bautomaticallyCreated=["'](true|1)["']/i.test(tMatch[0]);
+    const body = tMatch[2];
+    allTranslations.push({ lang, auto, body });
+    const langBase = lang.split('-')[0];
+    const wantBase = targetLang.split('-')[0];
+    if (!translationBlock && lang === targetLang.toLowerCase() && !auto) {
+      translationBlock = body;
+    } else if (!translationBlock && langBase === wantBase && !auto) {
+      translationBlock = body;
+    }
+  }
+  if (!translationBlock) {
+    // 退回首个非自动翻译
+    const fallback = allTranslations.find((t) => !t.auto) || allTranslations[0];
+    translationBlock = fallback ? fallback.body : '';
+  }
+  if (!translationBlock) {
+    // 无翻译：返回原文的单语解析结果（优雅降级）
+    return null;
+  }
+
+  // 2. 建立 for=KEY -> 译文文本 映射（剥离背景和声 span，仅保留正文）
+  const transMap = {};
+  const textRegex = /<text\b[^>]*for=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
+  let textMatch;
+  while ((textMatch = textRegex.exec(translationBlock)) !== null) {
+    const key = textMatch[1];
+    const raw = textMatch[2]
+      .replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '') // 剥离背景和声
+      .replace(/<[^>]+>/g, '');
+    const text = unescapeXml(raw).trim();
+    if (key && text) transMap[key] = text;
+  }
+
+  // 3. 遍历原文 <p begin itunes:key>，按时间戳生成 原文 + 译文 双行
+  const pRegex = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
+  const lrcLines = [];
+  let pMatch;
+  while ((pMatch = pRegex.exec(ttmlContent)) !== null) {
+    const pAttrs = pMatch[1] || '';
+    const body = unescapeXml(pMatch[2].replace(/<[^>]+>/g, '')).trim();
+    if (!body) continue;
+    const beginMatch = pAttrs.match(/\bbegin=["']([^"']+)["']/i);
+    const keyMatch = pAttrs.match(/\bitunes:key=["']([^"']+)["']/i);
+    if (!beginMatch) continue;
+    const seconds = parseTimeToSeconds(beginMatch[1]);
+    const ts = formatLrcTimestamp(seconds);
+    lrcLines.push(`${ts} ${body}`);
+    if (keyMatch && transMap[keyMatch[1]]) {
+      lrcLines.push(`${ts} ${transMap[keyMatch[1]]}`);
+    }
+  }
+
+  if (lrcLines.length === 0) {
+    return null;
+  }
+  return {
+    hasLyrics: true,
+    isDynamic: true,
+    lrc: lrcLines.join('\n'),
+    plain: lrcLines.join('\n'),
+    ttml: ttmlContent
+  };
+}
+
 /* ==================== 原生 MP4 标签注入 ==================== */
 
 function createDataAtom(type, flags, payload) {
@@ -559,6 +649,7 @@ function tagMp4(mp4Bytes, tags) {
   const dv = new DataView(mp4Bytes.buffer, mp4Bytes.byteOffset, mp4Bytes.byteLength);
   let moovOffset = -1;
   let moovSize = 0;
+  let mdatOffset = -1;
   let offset = 0;
   while (offset + 8 <= mp4Bytes.length) {
     const size = dv.getUint32(offset, false);
@@ -566,7 +657,11 @@ function tagMp4(mp4Bytes, tags) {
     if (type === 'moov') {
       moovOffset = offset;
       moovSize = size;
-      break;
+      if (mdatOffset !== -1) break;
+    }
+    if (type === 'mdat') {
+      mdatOffset = offset;
+      if (moovOffset !== -1) break;
     }
     if (size === 0) break;
     offset += size;
@@ -629,6 +724,49 @@ function tagMp4(mp4Bytes, tags) {
   finalMp4.set(mp4Bytes.subarray(0, moovOffset), 0);
   finalMp4.set(newMoov, moovOffset);
   finalMp4.set(mp4Bytes.subarray(moovOffset + moovSize), moovOffset + newMoovSize);
+
+  // ⚠️ moov 增大（注入 udta/meta/ilst）后，若 mdat 位于 moov 之后，整个 mdat 的
+  // 文件偏移会后移 delta 字节；stco/co64 记录的是绝对文件偏移，必须同步 +delta，
+  // 否则播放器/ffmpeg 按旧偏移读到错误字节流（典型症状：开头能放、随即卡死/杂音）。
+  // 普通 HLS fMP4 路径 stbl 为空不受影响；cenc-tool 输出的 progressive MP4 必须有此修补。
+  const moovDelta = newMoovSize - moovSize;
+  if (moovDelta !== 0 && mdatOffset > moovOffset) {
+    const fdv = new DataView(finalMp4.buffer, finalMp4.byteOffset, finalMp4.byteLength);
+    const patchStco = (q, end) => {
+      while (q + 8 <= end) {
+        const size = fdv.getUint32(q, false);
+        const type = String.fromCharCode(...finalMp4.subarray(q + 4, q + 8));
+        if (type === 'stco' || type === 'co64') {
+          const entryCount = fdv.getUint32(q + 12, false);
+          const entrySize = type === 'co64' ? 8 : 4;
+          const base = q + 16;
+          for (let i = 0; i < entryCount; i++) {
+            const at = base + i * entrySize;
+            if (entrySize === 4) {
+              fdv.setUint32(at, fdv.getUint32(at, false) + moovDelta, false);
+            } else {
+              fdv.setBigUint64(at, fdv.getBigUint64(at, false) + BigInt(moovDelta), false);
+            }
+          }
+        }
+        if (size === 0) break;
+        q += size;
+      }
+    };
+    // 递归遍历 moov 子树，修补所有 stbl 下的 stco/co64
+    const walk = (q, end) => {
+      while (q + 8 <= end) {
+        const size = fdv.getUint32(q, false);
+        const type = String.fromCharCode(...finalMp4.subarray(q + 4, q + 8));
+        if (type === 'stbl') patchStco(q + 8, q + size);
+        else if (type === 'moov' || type === 'trak' || type === 'mdia' || type === 'minf') walk(q + 8, q + size);
+        if (size === 0) break;
+        q += size;
+      }
+    };
+    walk(moovOffset + 8, moovOffset + newMoovSize);
+  }
+
   return finalMp4;
 }
 
@@ -672,6 +810,71 @@ function sanitizeFilename(name, maxBytes = 120) {
   return cleaned || 'track';
 }
 
+/* ==================== CENC fMP4 重组 ==================== */
+
+/**
+ * 从 Apple webplayback 的 HLS 拉取并重组为标准 fragmented MP4（含 init moov）。
+ *
+ * 为何不能直接用 ffmpeg -c copy：该 m3u8 把 init segment 放在
+ * `#EXT-X-MAP:URI="xxx.mp4",BYTERANGE="1247@0"` 里，媒体分片全是
+ * `#EXT-X-BYTERANGE`；ffmpeg 的 HLS demuxer 在 -c copy 输出裸 MP4 时
+ * 会丢弃 EXT-X-MAP 的 init moov，产物只剩 ftyp+mdat，无法被 cenc-tool 解析。
+ * 故这里手动按 byterange 拼接：init（moov）+ 各 moof/mdat 分片。
+ *
+ * @param {string} m3u8Url webplayback 返回的 media playlist URL
+ * @param {string} encOut  输出加密 fMP4 的本地路径
+ */
+async function fetchCencFmp4(m3u8Url, encOut) {
+  const base = m3u8Url.replace(/[^/]+$/, '');
+  const plRes = await fetch(m3u8Url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!plRes.ok) throw new Error(`拉取 HLS playlist 失败: HTTP ${plRes.status}`);
+  const playlist = await plRes.text();
+
+  let initUri = null, initRange = null;
+  let pendingRange = null;
+  const segments = [];
+  for (const rawLine of playlist.split('\n')) {
+    const line = rawLine.trim();
+    if (line.startsWith('#EXT-X-MAP:')) {
+      const uriM = line.match(/URI="([^"]+)"/);
+      if (uriM) initUri = uriM[1];
+      const rM = line.match(/BYTERANGE="(\d+)@(\d+)"/);
+      if (rM) initRange = { offset: Number(rM[2]), length: Number(rM[1]) };
+    } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+      const rM = line.match(/#EXT-X-BYTERANGE:(\d+)@(\d+)/);
+      if (rM) pendingRange = { offset: Number(rM[2]), length: Number(rM[1]) };
+    } else if (line && !line.startsWith('#')) {
+      segments.push({ uri: line, range: pendingRange });
+      pendingRange = null;
+    }
+  }
+  if (!initUri || !initRange) throw new Error('HLS 缺少 EXT-X-MAP 初始化段');
+
+  const fetchRange = async (uri, range) => {
+    const full = uri.startsWith('http') ? uri : base + uri;
+    const headers = { 'User-Agent': 'Mozilla/5.0' };
+    if (range) headers.Range = `bytes=${range.offset}-${range.offset + range.length - 1}`;
+    const res = await fetch(full, { headers, signal: AbortSignal.timeout(60000) });
+    if (!res.ok && res.status !== 206) throw new Error(`拉取分片失败: HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // 服务端忽略 Range 时会返回整个文件，按需截取
+    if (range && buf.length > range.length) {
+      return buf.subarray(range.offset, range.offset + range.length);
+    }
+    return buf;
+  };
+
+  const parts = [await fetchRange(initUri, initRange)];
+  for (const seg of segments) {
+    parts.push(await fetchRange(seg.uri, seg.range));
+  }
+  await fs.promises.writeFile(encOut, Buffer.concat(parts));
+  return segments.length;
+}
+
 /* ==================== 核心转存处理 ==================== */
 
 async function processTransfer(body) {
@@ -686,6 +889,7 @@ async function processTransfer(body) {
     saveLyricsFile,
     embedLyrics = true,
     lyricsFormat = 'lrc',
+    translateLyrics = false,
     folderId,
     token,
     batchId,
@@ -829,7 +1033,14 @@ async function processTransfer(body) {
     ? Boolean(saveLyricsFile) 
     : Boolean(saveLrc);
   const shouldEmbedLyrics = Boolean(embedLyrics);
+  const shouldTranslateLyrics = Boolean(translateLyrics);
   const chosenLyricsFormat = (lyricsFormat || 'lrc').toLowerCase() === 'ttml' ? 'ttml' : 'lrc';
+  // 外置歌词多格式：saveLyricsFormats 数组（'lrc'/'ttml' 可同时出现），缺省用主格式
+  const saveLyricsFormats = Array.isArray(body.saveLyricsFormats) && body.saveLyricsFormats.length
+    ? body.saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml')
+    : (shouldSaveLyricsFile ? [chosenLyricsFormat] : []);
+  // 仅下载歌词：跳过音频拉流/解密/标签注入，只产出歌词文件
+  const lyricsOnly = Boolean(body.lyricsOnly);
 
   let audioHookUrl = directHookUrl;
   let chosenFormatName = '';
@@ -841,7 +1052,7 @@ async function processTransfer(body) {
     const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: AbortSignal.timeout(30000) });
     if (!parseRes.ok) {
       const parseErr = await parseRes.json().catch(() => ({}));
-      // master m3u8 解析不出变体（wrapper 返回 M4P 单文件 + accessKey）：改用 /webplayback 拿标准 HLS（CENC key 内嵌）
+      // master m3u8 解析不出变体（wrapper 返回 M4P 单文件 + accessKey）：改用 /webplayback 拿标准 HLS
       if (parseErr.msg?.includes('No variants') || parseErr.msg?.includes('failed to get m3u8')) {
         try {
           const wpRes = await fetch(`${WRAPPER_BASE}/webplayback?adamId=${adamId}`, { signal: AbortSignal.timeout(15000) });
@@ -850,9 +1061,9 @@ async function processTransfer(body) {
             const wpUrl = wpData?.data?.m3u8;
             if (wpUrl && wpUrl.includes('.m3u8')) {
               webplaybackM3u8 = wpUrl;
-              // webplayback 为标准 HLS（CENC key 内嵌），实际音质为 AAC 256kbps 上限（Apple 端格式限制）
+              // webplayback 为 ISO-23001-7 (CENC) 抽样加密 HLS，音质为 AAC 256kbps 上限（Apple 端格式限制）
               chosenFormatName = 'AAC (webplayback)';
-              console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback 标准 HLS 拉流: ${adamId}`);
+              console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback CENC HLS 拉流+解密: ${adamId}`);
             }
           }
         } catch (e) {
@@ -910,47 +1121,69 @@ async function processTransfer(body) {
   const tasks = [];
 
   // 音频抓取
-  const fetchAudio = async () => {
+  let fetchAudio = async () => {
     if (webplaybackM3u8) {
-      // M4P 单文件回退：ffmpeg 直接下载并解密 webplayback 标准 HLS（CENC key 内嵌于 m3u8，无需 wrapper /key）
+      // M4P 单文件 / CENC 老歌回退：webplayback 的 HLS 采用 ISO-23001-7 (CENC) 抽样加密，
+      // m3u8 里 EXT-X-KEY 的 base64 只是 KID（密钥编号），并非解密密钥；
+      // 必须通过 Widevine CDM 向 wrapper-lite /license 换取真实 Content Key，再用 cenc-tool 解密。
       const rnd = Math.random().toString(36).slice(2, 8);
-      const tmpOut = `/tmp/am_wp_${Date.now()}_${rnd}.m4a`;
+      const encOut = `/tmp/am_wp_${Date.now()}_${rnd}.enc.mp4`; // 重组后的加密 fMP4
+      const decOut = `/tmp/am_wp_${Date.now()}_${rnd}.m4a`;     // cenc-tool 解密后的标准 m4a
       try {
-        await execFileAsync('ffmpeg', [
-          '-y', '-v', 'error',
-          '-allowed_extensions', 'ALL',
-          '-user_agent', 'Mozilla/5.0',
-          '-i', webplaybackM3u8,
-          '-c', 'copy',
-          tmpOut
-        ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+        // 1. 从 HLS 按 byterange 重组加密 fMP4（含 init moov，ffmpeg -c copy 会丢）
+        await fetchCencFmp4(webplaybackM3u8, encOut);
 
-        // 验证音频流是否真实解密（检测 CENC/DRM 未解密导致的静音/损坏）
+        // 2. Widevine CDM 换取真实 Content Key（python 脚本，约 0.5s）
+        let contentKey = '';
         try {
-          await execFileAsync('ffmpeg', [
-            '-v', 'error',
-            '-xerror',
-            '-i', tmpOut,
-            '-t', '1',
-            '-f', 'null', '-'
-          ], { timeout: 15000 });
-        } catch (checkErr) {
-          throw new Error('此歌曲为 Apple Music 早期旧版加密资源 (M4P/CENC)，无可用解密密钥，暂无法转存');
+          const { stdout } = await execFileAsync(WV_PY, [WV_KEY_SCRIPT, String(adamId)], {
+            timeout: 30000,
+            maxBuffer: 1024 * 1024
+          });
+          contentKey = stdout.trim();
+        } catch (keyErr) {
+          throw new Error(`获取解密密钥失败: ${(keyErr.stderr || keyErr.message || '').toString().trim().slice(0, 200)}`);
+        }
+        if (!/^[0-9a-fA-F]{32}$/.test(contentKey)) {
+          throw new Error('获取解密密钥失败: 返回的密钥格式非法');
         }
 
-        return new Uint8Array(await fs.promises.readFile(tmpOut));
+        // 3. cenc-tool 用真实 Key 解密为标准 m4a
+        await execFileAsync(CENC_TOOL_PATH, [encOut, contentKey, decOut], {
+          timeout: 120000,
+          maxBuffer: 10 * 1024 * 1024
+        });
+
+        // 4. 兜底校验：确保解密后音频可解码（防止任何残留密文交付）
+        try {
+          await execFileAsync('ffmpeg', [
+            '-v', 'error', '-xerror',
+            '-i', decOut,
+            '-t', '1', '-f', 'null', '-'
+          ], { timeout: 15000 });
+        } catch (checkErr) {
+          throw new Error('此歌曲解密校验失败，暂无法转存');
+        }
+
+        return new Uint8Array(await fs.promises.readFile(decOut));
       } finally {
-        try { await fs.promises.unlink(tmpOut); } catch {}
+        try { await fs.promises.unlink(encOut); } catch {}
+        try { await fs.promises.unlink(decOut); } catch {}
       }
     }
     const aRes = await fetch(targetAudioUrl, { signal: AbortSignal.timeout(300000) });
     if (!aRes.ok) throw new Error(`获取音频流失败: HTTP ${aRes.status}`);
     return new Uint8Array(await aRes.arrayBuffer());
   };
+  // 仅下载歌词模式：跳过音频与封面拉流，避免浪费资源
+  if (lyricsOnly) {
+    fetchAudio = async () => new Uint8Array(0);
+  }
   tasks.push(fetchAudio());
 
   // 封面图抓取 (优先命中内存缓存，杜绝 Apple CDN 批量请求抖动导致封面丢失)
   const fetchCover = async () => {
+    if (lyricsOnly) return null;
     if (!meta.coverUrl) return null;
     const now = Date.now();
     const cached = coverCache.get(meta.coverUrl);
@@ -973,7 +1206,7 @@ async function processTransfer(body) {
   };
   tasks.push(fetchCover());
 
-  // 歌词抓取与多格式/降级解析
+  // 歌词抓取与多格式/降级解析（translateLyrics 时带 language=zh-Hans-CN 拉取官方中文翻译）
   const fetchLyricsData = async () => {
     if (passedLyrics !== undefined && passedLyrics !== null) {
       if (typeof passedLyrics === 'string' && passedLyrics.trim()) {
@@ -983,9 +1216,14 @@ async function processTransfer(body) {
     }
     if (!adamId) return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     try {
-      const lRes = await fetch(`${HOOK_BASE}/lyrics/${adamId}`, { signal: AbortSignal.timeout(5000) });
+      const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${shouldTranslateLyrics ? '?language=zh-Hans-CN' : ''}`;
+      const lRes = await fetch(lyricsUrl, { signal: AbortSignal.timeout(5000) });
       if (lRes.ok) {
         const rawTtml = await lRes.text();
+        if (shouldTranslateLyrics) {
+          const bilingual = buildBilingualLrc(rawTtml, 'zh-Hans-CN');
+          if (bilingual) return bilingual;
+        }
         return parseLyrics(rawTtml);
       }
     } catch (e) {
@@ -1070,16 +1308,77 @@ async function processTransfer(body) {
     if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
   }
 
-  // 计算内嵌歌词（支持不内嵌，无动态歌词自动降级为纯文本内嵌）
+  // 计算内嵌歌词（支持不内嵌，无动态歌词自动降级为纯文本内嵌；chosenLyricsFormat==='ttml' 时内嵌 TTML 原文）
   let embedLyricsText = '';
-  if (shouldEmbedLyrics && lyricsData.hasLyrics) {
-    embedLyricsText = lyricsData.isDynamic ? lyricsData.lrc : lyricsData.plain;
+  if (shouldEmbedLyrics && lyricsData.hasLyrics && !lyricsOnly) {
+    if (chosenLyricsFormat === 'ttml' && lyricsData.ttml) {
+      embedLyricsText = lyricsData.ttml;
+    } else {
+      embedLyricsText = lyricsData.isDynamic ? lyricsData.lrc : lyricsData.plain;
+    }
   }
 
   // 3. 标签注入
   const cleanTitle = sanitizeFilename(meta.title || 'Unknown Title');
   const cleanArtist = sanitizeFilename(meta.artist || 'Unknown Artist');
   const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
+
+  // 准备外挂独立歌词文件 (支持多格式：主文件 + extraLyrics 附加格式)
+  const buildLyricsFile = (fmt) => {
+    if (fmt === 'ttml' && lyricsData.ttml) {
+      return {
+        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.ttml`,
+        content: lyricsData.ttml,
+        mime: 'application/xml;charset=utf-8'
+      };
+    }
+    if (fmt === 'lrc' && lyricsData.lrc) {
+      return {
+        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.lrc`,
+        content: lyricsData.lrc,
+        mime: 'text/plain;charset=utf-8'
+      };
+    }
+    return null;
+  };
+
+  let lyricsFilename = null;
+  let lyricsContent = null;
+  let lyricsMime = 'text/plain;charset=utf-8';
+  /** 额外外置歌词文件（与主文件同时交付，如 .lrc + .ttml 并存） */
+  const extraLyrics = [];
+  if (lyricsData.hasLyrics) {
+    // 主文件 = 用户首选格式
+    const primary = buildLyricsFile(saveLyricsFormats[0] || chosenLyricsFormat) || buildLyricsFile(chosenLyricsFormat);
+    if (primary) {
+      lyricsFilename = primary.filename;
+      lyricsContent = primary.content;
+      lyricsMime = primary.mime;
+    }
+    // 额外文件 = saveLyricsFormats 中其余格式
+    const extraFmts = saveLyricsFormats.slice(1);
+    for (const fmt of extraFmts) {
+      const f = buildLyricsFile(fmt);
+      if (f && f.filename !== lyricsFilename) extraLyrics.push(f);
+    }
+  }
+
+  // 仅下载歌词早退：跳过音频标签注入/解碎片/上传，只返回歌词文件产物（音频拉流已在入口跳过）
+  if (lyricsOnly) {
+    const lyricsFiles = [];
+    if (lyricsFilename && lyricsContent) lyricsFiles.push({ filename: lyricsFilename, content: lyricsContent, mime: lyricsMime });
+    for (const f of extraLyrics) lyricsFiles.push({ filename: f.filename, content: f.content, mime: f.mime });
+    if (!lyricsFiles.length) {
+      throw new Error('无歌词可下载（纯音乐或地区无歌词资源）');
+    }
+    return {
+      lyricsOnly: true,
+      lyricsFiles,
+      artist: meta.artist || '',
+      title: meta.title || '',
+      album: meta.album || ''
+    };
+  }
 
   const taggedMp4Buf = tagMp4(rawAudioBuf, {
     title: meta.title || '',
@@ -1106,22 +1405,6 @@ async function processTransfer(body) {
   const tDefrag = performance.now();
   console.log(`[Cloud-Transfer] 容器解碎片完成 (${((tDefrag - tTag) / 1000).toFixed(3)}s, 标准 M4A faststart 封装)`);
 
-  // 准备外挂独立歌词文件 (若曲目完全没有歌词，则自动不保存任何歌词文件)
-  let lyricsFilename = null;
-  let lyricsContent = null;
-  let lyricsMime = 'text/plain;charset=utf-8';
-  if (shouldSaveLyricsFile && lyricsData.hasLyrics) {
-    if (chosenLyricsFormat === 'ttml' && lyricsData.ttml) {
-      lyricsFilename = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.ttml`;
-      lyricsContent = lyricsData.ttml;
-      lyricsMime = 'application/xml;charset=utf-8';
-    } else if (lyricsData.lrc) {
-      lyricsFilename = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.lrc`;
-      lyricsContent = lyricsData.lrc;
-      lyricsMime = 'text/plain;charset=utf-8';
-    }
-  }
-
   // 4. 上传模式判定 (ZIP 打包上传 或 直接文件流上传)
   // 4.1 批处理会话模式 (支持全辑归集为单 .zip 压缩包)
   if (batchId) {
@@ -1143,6 +1426,11 @@ async function processTransfer(body) {
     if (finalLyricsName && lyricsContent) {
       fs.writeFileSync(path.join(sessionDir, finalLyricsName), lyricsContent, 'utf8');
       console.log(`[Cloud-Transfer] 缓存歌词: ${finalLyricsName} 到 session: ${batchId}`);
+    }
+    for (const extra of extraLyrics) {
+      const extraName = finalLyricsName && extra.filename === lyricsFilename ? finalLyricsName : `${meta.trackNumber ? String(meta.trackNumber).padStart(2, '0') + '. ' : ''}${extra.filename}`;
+      fs.writeFileSync(path.join(sessionDir, extraName), extra.content, 'utf8');
+      console.log(`[Cloud-Transfer] 缓存歌词(附加): ${extraName} 到 session: ${batchId}`);
     }
 
     // 若非最后一首曲目，缓存后快速返回，不浪费上传时间
@@ -1233,6 +1521,10 @@ async function processTransfer(body) {
     if (lyricsFilename && lyricsContent) {
       fs.writeFileSync(path.join(singleDir, lyricsFilename), lyricsContent, 'utf8');
     }
+    for (const extra of extraLyrics) {
+      if (extra.filename === lyricsFilename) continue;
+      fs.writeFileSync(path.join(singleDir, extra.filename), extra.content, 'utf8');
+    }
 
     const finalZipName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.zip`;
     const zipFilePath = `${singleDir}.zip`;
@@ -1308,6 +1600,10 @@ async function processTransfer(body) {
       lrcFilePath = path.join(targetDir, lyricsFilename);
       fs.writeFileSync(lrcFilePath, lyricsContent, 'utf8');
     }
+    for (const extra of extraLyrics) {
+      if (extra.filename === lyricsFilename) continue;
+      fs.writeFileSync(path.join(targetDir, extra.filename), extra.content, 'utf8');
+    }
 
     let thumbFilePath = null;
     if (coverBuf && coverBuf.length > 0) {
@@ -1342,6 +1638,7 @@ async function processTransfer(body) {
       thumbFilePath,
       fileName: standardM4aName,
       lyricsFileName: lyricsFilename,
+      extraLyricsFiles: extraLyrics.map((f) => ({ filename: f.filename, mime: f.mime })),
       fileSize: finalAudioBuf.length,
       artist: meta.artist || '',
       title: meta.title || '',
@@ -1378,7 +1675,7 @@ async function processTransfer(body) {
   const currentParentFolder = resultData.parentFolder || folderId;
   const currentGuestToken = resultData.guestToken || token;
 
-  // 5. 可选: 上传独立歌词文件到同一文件夹
+  // 5. 可选: 上传独立歌词文件到同一文件夹（主文件 + 附加格式）
   if (lyricsFilename && lyricsContent) {
     try {
       const lrcForm = new FormData();
@@ -1390,6 +1687,19 @@ async function processTransfer(body) {
       console.log(`[Cloud-Transfer] 同步上传独立歌词: ${lyricsFilename}`);
     } catch (e) {
       console.warn('[Cloud-Transfer] 歌词上传异常:', e.message);
+    }
+  }
+  for (const extra of extraLyrics) {
+    if (extra.filename === lyricsFilename) continue;
+    try {
+      const extraForm = new FormData();
+      extraForm.append('file', new Blob([extra.content], { type: extra.mime }), extra.filename);
+      if (currentParentFolder) extraForm.append('folderId', currentParentFolder);
+      if (currentGuestToken) extraForm.append('token', currentGuestToken);
+      await fetch(upUrl, { method: 'POST', body: extraForm, signal: AbortSignal.timeout(10000) });
+      console.log(`[Cloud-Transfer] 同步上传独立歌词(附加): ${extra.filename}`);
+    } catch (e) {
+      console.warn('[Cloud-Transfer] 附加歌词上传异常:', e.message);
     }
   }
 

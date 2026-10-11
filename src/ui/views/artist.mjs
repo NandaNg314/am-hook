@@ -533,17 +533,26 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     discoModal?.close();
 
     const quality = $('disco-quality-select')?.value || 'Lossless';
-    const embedLyrics = $('disco-embed-lyrics')?.checked ?? true;
-    const saveLyrics = $('disco-save-lyrics')?.checked ?? true;
+    const lyricsFormat = $('disco-lyrics-format')?.value || 'lrc';
+    const embedLyrics = lyricsFormat !== 'off';
+    const saveFormats = [];
+    if ($('disco-save-lrc')?.checked) saveFormats.push('lrc');
+    if ($('disco-save-ttml')?.checked) saveFormats.push('ttml');
+    const translateLyrics = $('disco-translate-lyrics')?.checked ?? false;
     const includeFull = $('disco-include-full')?.checked ?? true;
     const includeLive = $('disco-include-live')?.checked ?? true;
     const includeSingles = $('disco-include-singles')?.checked ?? true;
     const includeCompilations = $('disco-include-compilations')?.checked ?? false;
 
-    runDiscographyTransfer({ quality, embedLyrics, saveLyrics, includeFull, includeLive, includeSingles, includeCompilations });
+    localStorage.setItem('am_lyrics_fmt', lyricsFormat);
+    localStorage.setItem('am_save_lrc', String(saveFormats.includes('lrc')));
+    localStorage.setItem('am_save_ttml', String(saveFormats.includes('ttml')));
+    localStorage.setItem('am_translate_lyr', String(translateLyrics));
+
+    runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics, includeFull, includeLive, includeSingles, includeCompilations });
   });
 
-  async function runDiscographyTransfer({ quality, embedLyrics, saveLyrics, includeFull, includeLive, includeSingles, includeCompilations }) {
+  async function runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, includeFull, includeLive, includeSingles, includeCompilations }) {
     if (!artist) return;
 
     // 前置配额低水位检查：剩余配额极低时直接拦截，避免白跑全量检索与逐首下载
@@ -707,8 +716,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
                 coverUrl
               },
               embedLyrics,
-              saveLyricsFile: saveLyrics,
-              lyricsFormat: 'lrc'
+              lyricsFormat: (lyricsFormat === 'ttml' || lyricsFormat === 'lrc') ? lyricsFormat : 'lrc',
+              saveLyricsFormats: saveFormats.length ? saveFormats : undefined,
+              saveLrc: saveFormats.length > 0,
+              translateLyrics
             }),
             signal: sig
           });
