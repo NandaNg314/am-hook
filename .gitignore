@@ -36,3 +36,9 @@ PROJECT_MEMORY.md
 /run_*.sh
 /test_*.sh
 /verify_*.mjs
+
+# Playwright MCP 验收缓存（截图/快照/控制台日志，属本地临时产物）
+.playwright-mcp/
+
+# 一次性临时修复脚本，尚未固化为正式工具
+/scripts/fix_broken_m4a.py

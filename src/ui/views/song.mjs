@@ -1,5 +1,13 @@
 // 歌曲页（/https://music.apple.com/{cc}/song/{slug}/{id}），由 app.mjs 挂载
 import { createActions, targetOf, normalizeArtistName, toSimplified } from './actions.mjs';
+import {
+  tagMp4,
+  fetchLyricsData as fetchLyricsDataShared,
+  fetchSongMeta,
+  downloadDecryptedTrack,
+  saveBlob,
+  saveTextFile,
+} from './local-download.mjs';
 
 const { detectMode, artistNodes, qualityBadge, qualityIcon, formatTime } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
@@ -111,7 +119,29 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (lrcOn) saveFormats.push('lrc');
     if (ttmlOn) saveFormats.push('ttml');
     const translateOn = document.querySelector('#translate-lyrics-toggle') ? document.querySelector('#translate-lyrics-toggle').checked : (localStorage.getItem('am_translate_lyr') === 'true');
-    return { embedMode, saveFormats, translateOn };
+    const rubyOn = document.querySelector('#ruby-lyrics-toggle') ? document.querySelector('#ruby-lyrics-toggle').checked : (localStorage.getItem('am_ruby_lyr') === 'true');
+    const rubyMode = document.querySelector('#ruby-mode-select') ? document.querySelector('#ruby-mode-select').value : (localStorage.getItem('am_ruby_mode') || 'roman');
+    return { embedMode, saveFormats, translateOn, rubyOn, rubyMode };
+  }
+
+  const rubyLyricsToggle = $('ruby-lyrics-toggle');
+  const rubyLyricsLabel = $('ruby-lyrics-label');
+  const rubyModeSelect = $('ruby-mode-select');
+  if (rubyLyricsToggle) {
+    if (localStorage.getItem('am_ruby_lyr') !== null) {
+      rubyLyricsToggle.checked = localStorage.getItem('am_ruby_lyr') === 'true';
+    }
+    rubyLyricsToggle.addEventListener('change', () => {
+      localStorage.setItem('am_ruby_lyr', String(rubyLyricsToggle.checked));
+    });
+  }
+  if (rubyModeSelect) {
+    if (localStorage.getItem('am_ruby_mode') !== null) {
+      rubyModeSelect.value = localStorage.getItem('am_ruby_mode');
+    }
+    rubyModeSelect.addEventListener('change', () => {
+      localStorage.setItem('am_ruby_mode', rubyModeSelect.value);
+    });
   }
 
   const translateLyricsToggle = $('translate-lyrics-toggle');
@@ -299,360 +329,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   }
 
-  /* ---------- 纯净 MP4 元数据与同步歌词内嵌 ---------- */
-  function createDataAtom(type, flags, payload) {
-    // MP4 fourcc 必须精确 4 字节，非 ASCII (如 \xa9) 必须用 charCodeAt 保证单字节
-    const typeBytes = Uint8Array.from(type, (c) => c.charCodeAt(0));
-    const dataHeader = new Uint8Array(16);
-    const dataView = new DataView(dataHeader.buffer);
-    const dataSize = 16 + payload.length;
-    dataView.setUint32(0, dataSize, false);
-    dataHeader.set(new TextEncoder().encode('data'), 4);
-    dataView.setUint32(8, flags, false);
-    dataView.setUint32(12, 0, false);
-
-    const atomSize = 8 + dataSize;
-    const atomHeader = new Uint8Array(8);
-    new DataView(atomHeader.buffer).setUint32(0, atomSize, false);
-    atomHeader.set(typeBytes, 4);
-
-    const res = new Uint8Array(atomSize);
-    res.set(atomHeader, 0);
-    res.set(dataHeader, 8);
-    res.set(payload, 24);
-    return res;
-  }
-
-  function createTextAtom(name, text) {
-    if (!text) return new Uint8Array(0);
-    return createDataAtom(name, 1, new TextEncoder().encode(String(text)));
-  }
-
-  function createTrackAtom(trackNum, totalTracks = 0) {
-    if (!trackNum) return new Uint8Array(0);
-    const buf = new Uint8Array(8);
-    const v = new DataView(buf.buffer);
-    v.setUint16(2, Number(trackNum) || 0, false);
-    v.setUint16(4, Number(totalTracks) || 0, false);
-    return createDataAtom('trkn', 0, buf);
-  }
-
-  function createDiscAtom(discNum, totalDiscs = 0) {
-    if (!discNum) return new Uint8Array(0);
-    const buf = new Uint8Array(6);
-    const v = new DataView(buf.buffer);
-    v.setUint16(2, Number(discNum) || 0, false);
-    v.setUint16(4, Number(totalDiscs) || 0, false);
-    return createDataAtom('disk', 0, buf);
-  }
-
-  function createCoverAtom(imageBuf) {
-    if (!imageBuf || !imageBuf.length) return new Uint8Array(0);
-    const isPng = imageBuf[0] === 0x89 && imageBuf[1] === 0x50 && imageBuf[2] === 0x4e && imageBuf[3] === 0x47;
-    const flag = isPng ? 14 : 13;
-    return createDataAtom('covr', flag, imageBuf);
-  }
-
-  function tagMp4(mp4Bytes, tags) {
-    const atoms = [];
-    if (tags.title) atoms.push(createTextAtom('\xa9nam', tags.title));
-    if (tags.artist) atoms.push(createTextAtom('\xa9ART', tags.artist));
-    if (tags.album) atoms.push(createTextAtom('\xa9alb', tags.album));
-    if (tags.albumArtist) atoms.push(createTextAtom('aART', tags.albumArtist));
-    if (tags.date) atoms.push(createTextAtom('\xa9day', String(tags.date)));
-    if (tags.genre) atoms.push(createTextAtom('\xa9gen', tags.genre));
-    if (tags.composer) atoms.push(createTextAtom('\xa9wrt', tags.composer));
-    if (tags.copyright) atoms.push(createTextAtom('cprt', tags.copyright));
-    if (tags.lyrics) atoms.push(createTextAtom('\xa9lyr', tags.lyrics));
-    if (tags.trackNumber) atoms.push(createTrackAtom(tags.trackNumber, tags.totalTracks || 0));
-    if (tags.discNumber) atoms.push(createDiscAtom(tags.discNumber, tags.totalDiscs || 0));
-    if (tags.cover) atoms.push(createCoverAtom(tags.cover));
-
-    const totalPayloadLen = atoms.reduce((sum, a) => sum + a.length, 0);
-    if (totalPayloadLen === 0) return mp4Bytes;
-
-    const ilstSize = 8 + totalPayloadLen;
-    const fullNewIlst = new Uint8Array(ilstSize);
-    new DataView(fullNewIlst.buffer).setUint32(0, ilstSize, false);
-    fullNewIlst.set(new TextEncoder().encode('ilst'), 4);
-    let pos = 8;
-    for (const a of atoms) {
-      fullNewIlst.set(a, pos);
-      pos += a.length;
-    }
-
-    const dv = new DataView(mp4Bytes.buffer, mp4Bytes.byteOffset, mp4Bytes.byteLength);
-    let moovOffset = -1;
-    let moovSize = 0;
-    let mdatOffset = -1;
-    let offset = 0;
-    while (offset + 8 <= mp4Bytes.length) {
-      let size = dv.getUint32(offset, false);
-      const type = String.fromCharCode(...mp4Bytes.subarray(offset + 4, offset + 8));
-      if (type === 'moov') {
-        moovOffset = offset;
-        moovSize = size;
-      } else if (type === 'mdat') {
-        if (mdatOffset === -1) mdatOffset = offset;
-      }
-      if (size === 1) {
-        if (offset + 16 <= mp4Bytes.length) {
-          size = Number(dv.getBigUint64(offset + 8, false));
-        } else break;
-      }
-      if (size === 0) break;
-      offset += size;
-    }
-    if (moovOffset === -1) return mp4Bytes;
-
-    const moovBytes = mp4Bytes.subarray(moovOffset, moovOffset + moovSize);
-    let udtaOffset = -1;
-    let udtaSize = 0;
-    let uOffset = 8;
-    const mdv = new DataView(moovBytes.buffer, moovBytes.byteOffset, moovBytes.byteLength);
-    while (uOffset + 8 <= moovBytes.length) {
-      const size = mdv.getUint32(uOffset, false);
-      const type = String.fromCharCode(...moovBytes.subarray(uOffset + 4, uOffset + 8));
-      if (type === 'udta') {
-        udtaOffset = uOffset;
-        udtaSize = size;
-        break;
-      }
-      if (size === 0) break;
-      uOffset += size;
-    }
-
-    // 标准 iTunes Metadata Handler (33 字节，所有播放器与系统属性读取器均强制要求)
-    const hdlrBox = new Uint8Array([
-      0x00, 0x00, 0x00, 0x21, // size: 33
-      0x68, 0x64, 0x6c, 0x72, // 'hdlr'
-      0x00, 0x00, 0x00, 0x00, // version & flags
-      0x00, 0x00, 0x00, 0x00, // predefined
-      0x6d, 0x64, 0x69, 0x72, // handler type: 'mdir'
-      0x61, 0x70, 0x70, 0x6c, // handler subtype: 'appl'
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-      0x00                     // name
-    ]);
-
-    const metaSize = 12 + hdlrBox.length + fullNewIlst.length;
-    const metaBox = new Uint8Array(metaSize);
-    new DataView(metaBox.buffer).setUint32(0, metaSize, false);
-    metaBox.set(new TextEncoder().encode('meta'), 4);
-    metaBox.set(hdlrBox, 12);
-    metaBox.set(fullNewIlst, 12 + hdlrBox.length);
-
-    const udtaTotal = 8 + metaBox.length;
-    const finalUdta = new Uint8Array(udtaTotal);
-    new DataView(finalUdta.buffer).setUint32(0, udtaTotal, false);
-    finalUdta.set(new TextEncoder().encode('udta'), 4);
-    finalUdta.set(metaBox, 8);
-
-    const newMoovSize = (udtaOffset === -1 ? moovSize : moovSize - udtaSize) + finalUdta.length;
-    const newMoov = new Uint8Array(newMoovSize);
-    const moovBeforeUdta = udtaOffset === -1 ? moovBytes : moovBytes.subarray(0, udtaOffset);
-    const moovAfterUdta = udtaOffset === -1 ? new Uint8Array(0) : moovBytes.subarray(udtaOffset + udtaSize);
-
-    newMoov.set(moovBeforeUdta, 0);
-    newMoov.set(finalUdta, moovBeforeUdta.length);
-    newMoov.set(moovAfterUdta, moovBeforeUdta.length + finalUdta.length);
-    new DataView(newMoov.buffer).setUint32(0, newMoovSize, false);
-
-    const delta = newMoovSize - moovSize;
-
-    // 当 moov 位于 mdat 之前时，moov 扩容 delta 字节导致 mdat 整体后移 delta 字节，
-    // 必须同步修正 moov 内所有 stco / co64 chunk offset
-    if (delta !== 0 && mdatOffset !== -1 && mdatOffset > moovOffset) {
-      const patchView = new DataView(newMoov.buffer, newMoov.byteOffset, newMoov.byteLength);
-      for (let i = 0; i <= newMoov.length - 16; i++) {
-        const type = String.fromCharCode(...newMoov.subarray(i + 4, i + 8));
-        if (type === 'stco') {
-          const boxSize = patchView.getUint32(i, false);
-          const entryCount = patchView.getUint32(i + 12, false);
-          if (boxSize === 16 + entryCount * 4) {
-            let pos = i + 16;
-            for (let e = 0; e < entryCount; e++) {
-              const oldOff = patchView.getUint32(pos, false);
-              patchView.setUint32(pos, oldOff + delta, false);
-              pos += 4;
-            }
-          }
-        } else if (type === 'co64') {
-          const boxSize = patchView.getUint32(i, false);
-          const entryCount = patchView.getUint32(i + 12, false);
-          if (boxSize === 16 + entryCount * 8) {
-            let pos = i + 16;
-            for (let e = 0; e < entryCount; e++) {
-              const oldOff = patchView.getBigUint64(pos, false);
-              patchView.setBigUint64(pos, oldOff + BigInt(delta), false);
-              pos += 8;
-            }
-          }
-        }
-      }
-    }
-
-    const finalMp4 = new Uint8Array(mp4Bytes.length - moovSize + newMoovSize);
-    finalMp4.set(mp4Bytes.subarray(0, moovOffset), 0);
-    finalMp4.set(newMoov, moovOffset);
-    finalMp4.set(mp4Bytes.subarray(moovOffset + moovSize), moovOffset + newMoovSize);
-    return finalMp4;
-  }
-
-  function parseTimeToSeconds(timeStr) {
-    if (!timeStr) return 0;
-    const str = timeStr.trim().replace(/s$/i, '');
-    if (str.includes(':')) {
-      const parts = str.split(':');
-      if (parts.length === 3) return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-      if (parts.length === 2) return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-    }
-    return parseFloat(str) || 0;
-  }
-
-  function formatLrcTimestamp(seconds) {
-    const safeSec = Math.max(0, seconds);
-    const m = Math.floor(safeSec / 60);
-    const s = (safeSec % 60).toFixed(2);
-    return `[${String(m).padStart(2, '0')}:${s.padStart(5, '0')}]`;
-  }
-
-  function ttmlToLrc(ttmlContent) {
-    if (!ttmlContent || typeof ttmlContent !== 'string') return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
-    let cleaned = ttmlContent;
-    cleaned = cleaned.replace(/<div[^>]*type=["']translation["'][^>]*>[\s\S]*?<\/div>/gi, '');
-    cleaned = cleaned.replace(/<span[^>]*ttm:role=["']x-translation["'][^>]*>[\s\S]*?<\/span>/gi, '');
-    cleaned = cleaned.replace(/<span[^>]*ttm:role=["']x-roman["'][^>]*>[\s\S]*?<\/span>/gi, '');
-    cleaned = cleaned.replace(/<span[^>]*type=["']pronunciation["'][^>]*>[\s\S]*?<\/span>/gi, '');
-    cleaned = cleaned.replace(/<span[^>]*\bpronunciation=["']([^"']*)["'][^>]*>([\s\S]*?)<\/span>/gi, (match, pron, innerText) => {
-      const rawText = innerText.replace(/<[^>]+>/g, '').trim();
-      if (!rawText) return '';
-      if (rawText.toLowerCase() === pron.trim().toLowerCase() || (/^[a-zA-Z\s'-]+$/.test(rawText) && pron)) return '';
-      return innerText;
-    });
-
-    const pRegex = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
-    const timedLines = [];
-    const plainLines = [];
-    let match;
-    while ((match = pRegex.exec(cleaned)) !== null) {
-      const pAttrs = match[1] || '';
-      let text = match[2].replace(/<[^>]+>/g, '');
-      text = text
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'")
-        .trim();
-      if (!text) continue;
-      plainLines.push(text);
-      const beginMatch = pAttrs.match(/\bbegin=["']([^"']+)["']/i);
-      if (beginMatch) {
-        const sec = parseTimeToSeconds(beginMatch[1]);
-        timedLines.push(`${formatLrcTimestamp(sec)} ${text}`);
-      }
-    }
-    if (plainLines.length === 0) {
-      return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
-    }
-    const isDynamic = timedLines.length > 0;
-    const lrc = isDynamic ? timedLines.join('\n') : plainLines.join('\n');
-    const plain = plainLines.join('\n');
-    return { hasLyrics: true, isDynamic, lrc, plain, ttml: ttmlContent };
-  }
-
-  // 官方翻译 → 双语 LRC（同时间戳两行：原文 + 译文）。译文按 itunes:key 与 <text for> 对齐。
-  function ttmlToBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
-    if (!ttmlContent || typeof ttmlContent !== 'string') return null;
-    // 原文已是中文：无需翻译
-    const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
-    if (rootLang.startsWith('zh')) return null;
-
-    const unescape = (s) => s
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
-
-    // 1. 选翻译块（优先目标语言且非自动生成）
-    const all = [];
-    const tRe = /<translation\b[^>]*xml:lang=["']([^"']+)["'][^>]*>([\s\S]*?)<\/translation>/gi;
-    let tm;
-    while ((tm = tRe.exec(ttmlContent)) !== null) {
-      all.push({ lang: (tm[1] || '').toLowerCase(), auto: /\bautomaticallyCreated=["'](true|1)["']/i.test(tm[0]), body: tm[2] });
-    }
-    const wantBase = targetLang.split('-')[0];
-    let block = '';
-    const pick = all.find((t) => t.lang === targetLang.toLowerCase() && !t.auto)
-      || all.find((t) => t.lang.split('-')[0] === wantBase && !t.auto)
-      || all.find((t) => !t.auto) || all[0];
-    if (pick) block = pick.body;
-    if (!block) return null;
-
-    // 2. for=KEY -> 译文（剥离背景和声 x-bg）
-    const transMap = {};
-    const textRe = /<text\b[^>]*for=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
-    let xm;
-    while ((xm = textRe.exec(block)) !== null) {
-      const key = xm[1];
-      const txt = unescape(xm[2].replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '').replace(/<[^>]+>/g, '')).trim();
-      if (key && txt) transMap[key] = txt;
-    }
-
-    // 3. 原文行 + 译文行（同时间戳）
-    const pRe = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
-    const lines = [];
-    let pm;
-    while ((pm = pRe.exec(ttmlContent)) !== null) {
-      const attrs = pm[1] || '';
-      const body = unescape(pm[2].replace(/<[^>]+>/g, '')).trim();
-      if (!body) continue;
-      const beginMatch = attrs.match(/\bbegin=["']([^"']+)["']/i);
-      const keyMatch = attrs.match(/\bitunes:key=["']([^"']+)["']/i);
-      if (!beginMatch) continue;
-      const ts = formatLrcTimestamp(parseTimeToSeconds(beginMatch[1]));
-      lines.push(`${ts} ${body}`);
-      if (keyMatch && transMap[keyMatch[1]]) lines.push(`${ts} ${transMap[keyMatch[1]]}`);
-    }
-    if (!lines.length) return null;
-    return { hasLyrics: true, isDynamic: true, lrc: lines.join('\n'), plain: lines.join('\n'), ttml: ttmlContent };
-  }
-
-  async function fetchLyricsData(trackId, translate = false) {
-    try {
-      const url = `/lyrics/${trackId}${translate ? '?language=zh-Hans-CN' : ''}`;
-      const res = await fetch(url);
-      if (!res.ok) return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
-      const rawTtml = await res.text();
-      if (translate) {
-        const bilingual = ttmlToBilingualLrc(rawTtml, 'zh-Hans-CN');
-        if (bilingual) return bilingual;
-      }
-      const parsed = ttmlToLrc(rawTtml);
-      if (parsed.hasLyrics && meta.isChinese) {
-        if (parsed.lrc) parsed.lrc = toSimplified(parsed.lrc);
-        if (parsed.plain) parsed.plain = toSimplified(parsed.plain);
-        if (parsed.ttml) parsed.ttml = toSimplified(parsed.ttml);
-      }
-      return parsed;
-    } catch (err) {
-      console.warn('fetchLyricsData failed:', err);
-      return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
-    }
-  }
-
+  /* ---------- 纯净 MP4 元数据与歌词内嵌 ----------
+   * 实现已抽到 ./local-download.mjs，供 song/album/playlist/artist 四视图共用，
+   * 避免各页各写一份导致「只有单曲页才有标签」这类分叉（本次修复的核心）。
+   */
   function downloadLyricsFile(content, ext, artist, title) {
     if (!content || !content.trim()) return;
     const cleanArtist = safeName(normalizeArtistName(artist || ''));
     const cleanTitle = safeName(toSimplified(title || adamId || 'Track'));
     const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.${ext}`;
-    const blob = new Blob([content], { type: ext === 'ttml' ? 'application/xml;charset=utf-8' : 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
-    a.style.display = 'none';
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    saveTextFile(content, fileName, ext === 'ttml' ? 'application/xml;charset=utf-8' : 'text/plain;charset=utf-8');
   }
 
   /* ---------- Gofile 临时网盘上传 ---------- */
@@ -752,6 +438,20 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const gofileChecked = document.querySelector('#gofile-toggle')?.checked ?? false;
     const isGofile = mode === 'gofile' || (mode !== 'local' && gofileChecked);
 
+    // ⚠️ 元数据就绪保障：本机下载的标签注入完全依赖 meta，而 meta 由 loadMeta() 异步获取，
+    // 与 loadVariants() 并行发起（后者先返回并渲染出下载按钮）。若用户在元数据落定前点击下载，
+    // tagMp4 收到的字段全为 undefined → atoms 为空 → 静默返回原文件，产物零标签。
+    // 服务端路径（Gofile/TG）自行按 adamId 查元数据，故无此问题。此处必须等待一次。
+    if (!isGofile) {
+      const ready = await ensureMetaReady();
+      if (!ready) {
+        toast('⚠️ 元数据获取失败，无法写入歌曲标签，已取消下载');
+        downloads.delete(id);
+        showDownload(id);
+        return;
+      }
+    }
+
     const job = { ctl: new AbortController(), done: 0, total: 0, statusText: '' };
     downloads.set(id, job);
     showDownload(id);
@@ -828,6 +528,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             saveLrc: shouldSaveLyricsFile,
             saveLyricsFormats: (lyrOpts.saveFormats.length ? lyrOpts.saveFormats : (shouldSaveLyricsFile ? [lyricsFormat === 'ttml' ? 'ttml' : 'lrc'] : [])),
             translateLyrics: shouldTranslateLyrics,
+            ruby: Boolean(lyrOpts.rubyOn),
+            rubyMode: lyrOpts.rubyMode || 'roman',
             zip: zipChecked
           }),
           signal: job.ctl.signal
@@ -852,100 +554,36 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
     try {
       await disposeSaved();
-      const track = await AmDecrypt.openTrack(v.m3u8Url, job.ctl.signal);
-      job.total = track.size;
-      showDownload(id);
-      const result = await AmDecrypt.download(track, {
-        signal: job.ctl.signal,
-        onProgress: (done) => { job.done = done; showDownload(id); },
-        onDefrag: () => { job.defrag = true; showDownload(id); },
-      });
+      const lyrOpts = getLyricsOptions();
+      const saveFormats = lyrOpts.saveFormats;
 
       // 遵循规范：音频为标准 .m4a 封装
       const cleanArtist = safeName(normalizeArtistName(meta.artist || 'Unknown Artist'));
       const cleanTitle = safeName(toSimplified(meta.title || adamId || 'Track'));
       const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
 
-      const lyrOpts = getLyricsOptions();
-      const lyricsFormat = lyrOpts.embedMode;
-      const shouldEmbedLyrics = lyrOpts.embedMode !== 'off';
-      const shouldSaveLyricsFile = lyrOpts.saveFormats.length > 0;
-      const shouldTranslateLyrics = lyrOpts.translateOn;
-      const saveFormats = lyrOpts.saveFormats;
+      job.statusText = '正在解密并内嵌官方元数据与歌词...';
+      showDownload(id);
 
-      let finalFile = result.file;
-      let lyricsData = null;
-      try {
-        job.statusText = '正在内嵌官方元数据与歌词...';
-        showDownload(id);
-        toast('正在内嵌官方元数据、高清封面与歌词...');
-        const coverUrl = meta.artwork
-          ? meta.artwork.replace('600x600', '1400x1400')
-          : (meta.resource?.attributes?.artwork?.url
-              ? meta.resource.attributes.artwork.url.replace('{w}', '1400').replace('{h}', '1400').replace('{c}', 'bb').replace('{f}', 'jpg')
-              : '');
+      // 解密 + 标签/封面/歌词注入统一由共享模块完成（与批量下载同一实现，杜绝分叉）
+      const dl = await downloadDecryptedTrack({
+        variant: v,
+        meta,
+        m3u8Url: v.m3u8Url,
+        trackId: adamId,
+        lyricsOpts: lyrOpts,
+        simplify: toSimplified,
+        signal: job.ctl.signal,
+        onProgress: (done, total) => { job.done = done; job.total = total; showDownload(id); },
+        onDefrag: () => { job.defrag = true; showDownload(id); },
+      });
 
-        const fetchCoverBuf = async () => {
-          if (coverUrl) {
-            try {
-              const res = await fetch(coverUrl);
-              if (res.ok) return await res.arrayBuffer();
-            } catch (err) {
-              console.warn('1400x1400 cover fetch failed, trying standard:', err);
-            }
-          }
-          if (meta.artwork) {
-            try {
-              const res = await fetch(meta.artwork);
-              if (res.ok) return await res.arrayBuffer();
-            } catch (err) {
-              console.warn('Fallback cover fetch failed:', err);
-            }
-          }
-          return null;
-        };
+      if (!dl.tagged) toast('⚠️ 未能写入歌曲标签（元数据缺失），文件已下载');
 
-        const [lyrRes, coverBuf] = await Promise.all([
-          fetchLyricsData(adamId, shouldTranslateLyrics),
-          fetchCoverBuf(),
-        ]);
-        lyricsData = lyrRes;
-
-        let embedLrcText = '';
-        if (shouldEmbedLyrics && lyricsData && lyricsData.hasLyrics) {
-          // 内嵌格式由 lyricsFormat 决定：LRC/纯文本 或 TTML 原文（落后于 TG 端的正交维度）
-          if (lyricsFormat === 'ttml' && lyricsData.ttml) {
-            embedLrcText = lyricsData.ttml;
-          } else {
-            embedLrcText = lyricsData.isDynamic ? lyricsData.lrc : lyricsData.plain;
-          }
-        }
-
-        const rawBuf = await result.file.arrayBuffer();
-        const taggedBytes = tagMp4(new Uint8Array(rawBuf), {
-          title: toSimplified(meta.title),
-          artist: normalizeArtistName(meta.artist),
-          album: toSimplified(meta.album),
-          albumArtist: normalizeArtistName(meta.albumArtist || (meta.artists && meta.artists[0]?.name) || meta.artist),
-          date: meta.releaseDate,
-          genre: meta.genre,
-          composer: normalizeArtistName(meta.composer),
-          copyright: meta.copyright || meta.resource?.attributes?.copyright,
-          trackNumber: meta.trackNumber || meta.resource?.attributes?.trackNumber,
-          totalTracks: meta.totalTracks,
-          discNumber: meta.discNumber || meta.resource?.attributes?.discNumber,
-          totalDiscs: meta.totalDiscs || 1,
-          lyrics: embedLrcText,
-          cover: coverBuf ? new Uint8Array(coverBuf) : null,
-        });
-        finalFile = new Blob([taggedBytes], { type: 'audio/mp4' });
-      } catch (tagErr) {
-        console.error('Tagging error:', tagErr);
-      }
-
-      saveResult({ file: finalFile, dispose: result.dispose }, standardM4aName);
+      saveResult({ file: dl.blob, dispose: dl.dispose }, standardM4aName);
 
       // 可选保存独立外挂歌词文件（按外置格式数组多格式保存；无歌词则跳过）
+      const lyricsData = dl.lyricsData;
       if (saveFormats.length && lyricsData && lyricsData.hasLyrics) {
         for (const fmt of saveFormats) {
           if (fmt === 'ttml' && lyricsData.ttml) {
@@ -956,7 +594,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         }
       }
 
-      toast(t('dl.done', { size: formatSize(finalFile.size || result.size) }));
+      toast(t('dl.done', { size: formatSize(dl.size) }));
     } catch (err) {
       const msg = (err && err.message) || String(err);
       if (err && err.name === 'AbortError') toast(t('dl.cancelled'));
@@ -1152,7 +790,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           toast('正在获取歌词...');
           const o = getLyricsOptions();
           const translateOn = o.translateOn;
-          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese);
+          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese, (s) => s, {
+            ruby: Boolean(o.rubyOn),
+            rubyMode: o.rubyMode || 'roman',
+          });
           if (!data || !data.hasLyrics) { toast('暂无歌词或此曲为纯音乐'); return; }
           // 优先按外置格式数组下载；未选外置则按当前内嵌格式下载一个
           const fmts = o.saveFormats.length ? o.saveFormats : [(o.embedMode === 'ttml' && data.ttml) ? 'ttml' : 'lrc'];
@@ -1318,110 +959,15 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
   }
 
-  // 经服务端 /amp 代理请求 amp-api 的 songs 资源，智能根据歌曲语言与用户偏好返回最原生、最高质量的元数据
+  // 经服务端 /amp 代理请求 amp-api 元数据；实现见 ./local-download.mjs（四视图共用）
   async function lookupMeta() {
-    const preferredStorefront = (window.AmI18n?.storefront || '').toLowerCase();
-    const candidateRegions = [...new Set([preferredStorefront, country, 'jp', 'cn', 'us'].filter((c) => /^[a-z]{2}$/.test(c)))];
-
-    let rawSong = null;
-    let resolvedCountry = country || 'us';
-
-    for (const cc of candidateRegions) {
-      try {
-        const url = new URL(`/amp/v1/catalog/${cc}/songs/${adamId}`, location.origin);
-        url.searchParams.set('include', 'albums,artists');
-        const l = await AmI18n.catalogLang(cc);
-        if (l) url.searchParams.set('l', l);
-        let res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (res.status === 400 && url.searchParams.has('l')) {
-          url.searchParams.delete('l');
-          res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        }
-        if (!res.ok) continue;
-        const song = (await res.json()).data?.[0];
-        if (song?.attributes) {
-          rawSong = song;
-          resolvedCountry = cc;
-          break;
-        }
-      } catch {}
+    try {
+      return (await fetchSongMeta(adamId, { country, simplify: toSimplified })) || {};
+    } catch (err) {
+      console.warn('[am-hook] 元数据查询失败:', err);
+      return {};
     }
-
-    if (!rawSong) return {};
-
-    const attr = rawSong.attributes;
-    const audioLocale = (attr.audioLocale || '').toLowerCase();
-    const genreList = attr.genreNames || [];
-    const isJapanese = audioLocale === 'ja' || genreList.some((g) => /j-pop|japanese|anime|アニメ/i.test(g));
-    const isChinese = audioLocale.startsWith('zh') || /[\u4e00-\u9fa5]/.test((attr.name || '') + (attr.artistName || ''));
-
-    // 1. 日文歌逻辑：像日区（JP storefront）一样，保持日文原貌（假名/日文汉字），绝不要欧美区罗马音
-    if (isJapanese && resolvedCountry !== 'jp') {
-      try {
-        const jpUrl = new URL(`/amp/v1/catalog/jp/songs/${adamId}`, location.origin);
-        jpUrl.searchParams.set('include', 'albums,artists');
-        jpUrl.searchParams.set('l', 'ja');
-        const jpRes = await fetch(jpUrl, { signal: AbortSignal.timeout(6000) });
-        if (jpRes.ok) {
-          const jpSong = (await jpRes.json()).data?.[0];
-          if (jpSong?.attributes) {
-            rawSong = jpSong;
-            resolvedCountry = 'jp';
-          }
-        }
-      } catch {}
-    }
-    // 2. 中文歌逻辑：优先向 cn 区或传入 zh-Hans-CN 获得简体中文官方元数据
-    else if (isChinese) {
-      try {
-        const cnTarget = resolvedCountry === 'us' ? 'cn' : resolvedCountry;
-        const cnUrl = new URL(`/amp/v1/catalog/${cnTarget}/songs/${adamId}`, location.origin);
-        cnUrl.searchParams.set('include', 'albums,artists');
-        cnUrl.searchParams.set('l', 'zh-Hans-CN');
-        const cnRes = await fetch(cnUrl, { signal: AbortSignal.timeout(6000) });
-        if (cnRes.ok) {
-          const cnSong = (await cnRes.json()).data?.[0];
-          if (cnSong?.attributes) {
-            rawSong = cnSong;
-          }
-        }
-      } catch {}
-    }
-
-    const a = rawSong.attributes;
-    const albumAttr = rawSong.relationships?.albums?.data?.[0]?.attributes;
-    const simplifyIfChinese = (str) => (isChinese ? toSimplified(str || '') : (str || ''));
-
-    return {
-      country: resolvedCountry,
-      audioLocale,
-      isJapanese,
-      isChinese,
-      title: simplifyIfChinese(a.name || ''),
-      artist: normalizeArtistName(a.artistName || ''),
-      album: simplifyIfChinese(a.albumName || ''),
-      albumArtist: normalizeArtistName(a.albumArtistName || albumAttr?.artistName || a.artistName || ''),
-      albumId: rawSong.relationships?.albums?.data?.[0]?.id || '',
-      trackNumber: a.trackNumber || 1,
-      totalTracks: albumAttr?.trackCount || 0,
-      discNumber: a.discNumber || 1,
-      totalDiscs: 1,
-      composer: normalizeArtistName(a.composerName || ''),
-      copyright: simplifyIfChinese(albumAttr?.copyright || ''),
-      artists: (rawSong.relationships?.artists?.data || []).filter((r) => r.attributes?.name).map((r) => ({
-        name: normalizeArtistName(r.attributes.name),
-        href: artistPath(r, resolvedCountry),
-      })),
-      artwork: a.artwork?.url ? a.artwork.url.replace('{w}', 600).replace('{h}', 600).replace('{c}', 'bb').replace('{f}', 'jpg') : '',
-      genre: a.genreNames?.[0] || '',
-      releaseDate: a.releaseDate || '',
-      durationMs: a.durationInMillis,
-      explicit: a.contentRating === 'explicit',
-      url: a.url || '',
-      resource: rawSong,
-    };
   }
-
   /** 艺人资源 → 本站艺人页路径 */
   function artistPath(resource, cc) {
     const m = (resource.attributes?.url || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/artist\/([^/?#]+)\/(\d+)/i);
@@ -1459,14 +1005,22 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   let metaSeq = 0;
+  /** 进行中的元数据加载 Promise：下载前据此等待元数据就绪（见 ensureMetaReady） */
+  let metaPromise = null;
 
   async function loadMeta() {
     // 快速切换语言时只采用最后一次请求的结果；离开页面后不再改标题
     const seq = ++metaSeq;
     const result = await lookupMeta();
-    if (seq !== metaSeq || signal.aborted) return;
+    if (seq !== metaSeq || signal.aborted) return metaLoaded;
     // 切换语言后重新获取失败时保留已有信息
-    if (metaLoaded && !result.title) return;
+    if (metaLoaded && !result.title) return true;
+    // ⚠️ 查询失败（result 为空对象）时不得置 metaLoaded = true，否则下载会误判"元数据已就绪"
+    // 并写入零标签文件（原 bug：状态污染使 ensureMetaReady 拿到假阳性）
+    if (!result || !result.title) {
+      if (!metaLoaded) toast('⚠️ 歌曲元数据获取失败，下载可能缺失标签信息');
+      return metaLoaded;
+    }
     meta = result;
     metaLoaded = true;
     renderMeta();
@@ -1474,10 +1028,39 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (translateLyricsLabel) {
       translateLyricsLabel.style.display = meta.isChinese ? 'none' : 'inline-flex';
     }
+    // 注音仅对日文歌有意义（Apple 只提供 ja-Latn 罗马音）
+    if (rubyLyricsLabel) {
+      const isJa = Boolean(meta.isJapanese) ||
+        /[\u3040-\u309F\u30A0-\u30FF]/.test(`${meta.title || ''}${meta.artist || ''}${meta.album || ''}`) ||
+        /j-pop|anime|japanese|アニメ/i.test(meta.genre || '');
+      rubyLyricsLabel.style.display = isJa ? 'inline-flex' : 'none';
+    }
     libraryToggle.refresh();
     favoriteToggle.refresh();
     playlistBtn.disabled = !meta.resource;
     if (rows.size) renderVariants(); // 下载文件名需要歌名
+    return true;
+  }
+
+  /** 触发一次元数据加载并记录其在途 Promise（重复调用复用同一次请求） */
+  function kickMeta() {
+    const p = loadMeta();
+    metaPromise = p;
+    return p;
+  }
+
+  /**
+   * 下载前的元数据就绪保障：本机下载的标签注入完全依赖 meta。
+   * metaLoaded 已为真则直接放行；否则等待在途/新发起的加载（带超时兜底，避免网络悬挂卡死下载）。
+   * 返回 true 表示元数据可用。
+   */
+  async function ensureMetaReady() {
+    if (metaLoaded && meta.title) return true;
+    const wait = (metaPromise || kickMeta()).catch(() => false);
+    const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 15000));
+    const outcome = await Promise.race([wait, timeout]);
+    if (outcome === 'timeout') console.warn('[am-hook] 元数据等待超时，继续下载');
+    return !!(metaLoaded && meta.title);
   }
 
   $('reparse').addEventListener('click', loadVariants);
@@ -1492,7 +1075,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     closeMenu(false);
     if (!metaLoaded) document.title = t('song.pageTitle');
     renderMeta();
-    if (adamId) loadMeta();
+    if (adamId) kickMeta();
     if (variants.length) {
       variants.forEach((v) => { v.info = describe(v); });
       renderVariants();
@@ -1503,7 +1086,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   if (!adamId) {
     showAlert('error', () => t('song.badId'));
   } else {
-    loadMeta();
+    kickMeta();
     loadVariants();
     AmDecrypt.collectGarbage();
   }

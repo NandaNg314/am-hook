@@ -70,6 +70,8 @@ pub async fn view_asset_handler(
         "library-playlist.mjs" => (JS, include_bytes!("ui/views/library-playlist.mjs")),
         // 资料库的对话框、歌单封面拼图、导入与导出（导航与各页面共用）
         "library-ui.mjs" => (JS, include_bytes!("ui/views/library-ui.mjs")),
+        // 本机（浏览器端）下载共享逻辑：解密 + m4a 标签/封面/歌词注入（四个视图共用）
+        "local-download.mjs" => (JS, include_bytes!("ui/views/local-download.mjs")),
         _ => return json_response(StatusCode::NOT_FOUND, json!({ "code": 1, "msg": "Not found" })),
     };
     static_response(&headers, content_type, body)

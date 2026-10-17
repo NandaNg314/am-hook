@@ -1,6 +1,7 @@
 // 歌单页（/https://music.apple.com/{cc}/playlist/{slug}/pl.{id}），由 app.mjs 挂载
 import { createActions, playable, targetOf, localPath, normalizeArtistName, toSimplified } from './actions.mjs';
 import { createDetailHeader } from './detail-header.mjs';
+import { downloadDecryptedTrack, saveBlob, saveTextFile, fetchSongMeta } from './local-download.mjs';
 
 const { formatTime, qualityIcon } = window.AmHook;
 const { AmDecrypt, AmI18n } = window;
@@ -402,6 +403,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const batchSaveLrc = $('batch-save-lrc');
   const batchSaveTtml = $('batch-save-ttml');
   const batchTranslateLyrics = $('batch-translate-lyrics');
+  const batchRubyLyrics = $('batch-ruby-lyrics');
+  const batchRubyMode = $('batch-ruby-mode');
 
   if (batchLyricsFormat && localStorage.getItem('am_lyrics_fmt')) {
     batchLyricsFormat.value = localStorage.getItem('am_lyrics_fmt');
@@ -414,6 +417,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
   if (batchTranslateLyrics && localStorage.getItem('am_translate_lyr') !== null) {
     batchTranslateLyrics.checked = localStorage.getItem('am_translate_lyr') === 'true';
+  }
+  if (batchRubyLyrics && localStorage.getItem('am_ruby_lyr') !== null) {
+    batchRubyLyrics.checked = localStorage.getItem('am_ruby_lyr') === 'true';
+  }
+  if (batchRubyMode && localStorage.getItem('am_ruby_mode') !== null) {
+    batchRubyMode.value = localStorage.getItem('am_ruby_mode');
   }
 
   const batchCard = $('batch-card');
@@ -489,67 +498,25 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (batchSaveLrc?.checked) saveFormats.push('lrc');
     if (batchSaveTtml?.checked) saveFormats.push('ttml');
     const translateLyrics = batchTranslateLyrics ? batchTranslateLyrics.checked : false;
+    const ruby = batchRubyLyrics ? batchRubyLyrics.checked : false;
+    const rubyMode = batchRubyMode ? batchRubyMode.value : 'roman';
     const isZip = batchZipPack ? batchZipPack.checked : true;
 
     localStorage.setItem('am_lyrics_fmt', lyricsFormat);
     localStorage.setItem('am_save_lrc', String(batchSaveLrc?.checked || false));
     localStorage.setItem('am_save_ttml', String(batchSaveTtml?.checked || false));
     localStorage.setItem('am_translate_lyr', String(translateLyrics));
+    localStorage.setItem('am_ruby_lyr', String(ruby));
+    localStorage.setItem('am_ruby_mode', rubyMode);
 
     if (currentBatchMode === 'gofile') {
-      runBatchGofile(q, embedLyrics, saveFormats, lyricsFormat, isZip, translateLyrics);
+      runBatchGofile(q, embedLyrics, saveFormats, lyricsFormat, isZip, translateLyrics, ruby, rubyMode);
     } else {
-      runBatchLocal(q, embedLyrics, saveFormats, lyricsFormat, translateLyrics);
+      runBatchLocal(q, embedLyrics, saveFormats, lyricsFormat, translateLyrics, ruby, rubyMode);
     }
   });
 
-  // 官方翻译 → 双语 LRC（同时间戳两行）。译文按 itunes:key 与 <text for> 对齐；中文原文返回 null。
-  function ttmlToBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
-    if (!ttmlContent || typeof ttmlContent !== 'string') return null;
-    const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
-    if (rootLang.startsWith('zh')) return null;
-    const unescape = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
-    const all = [];
-    const tRe = /<translation\b[^>]*xml:lang=["']([^"']+)["'][^>]*>([\s\S]*?)<\/translation>/gi;
-    let tm;
-    while ((tm = tRe.exec(ttmlContent)) !== null) {
-      all.push({ lang: (tm[1] || '').toLowerCase(), auto: /\bautomaticallyCreated=["'](true|1)["']/i.test(tm[0]), body: tm[2] });
-    }
-    const wantBase = targetLang.split('-')[0];
-    const pick = all.find((x) => x.lang === targetLang.toLowerCase() && !x.auto)
-      || all.find((x) => x.lang.split('-')[0] === wantBase && !x.auto)
-      || all.find((x) => !x.auto) || all[0];
-    if (!pick) return null;
-    const transMap = {};
-    const textRe = /<text\b[^>]*for=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
-    let xm;
-    while ((xm = textRe.exec(pick.body)) !== null) {
-      const key = xm[1];
-      const txt = unescape(xm[2].replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '').replace(/<[^>]+>/g, '')).trim();
-      if (key && txt) transMap[key] = txt;
-    }
-    const pRe = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
-    const lines = [];
-    let pm;
-    while ((pm = pRe.exec(ttmlContent)) !== null) {
-      const attrs = pm[1] || '';
-      const body = unescape(pm[2].replace(/<[^>]+>/g, '')).trim();
-      if (!body) continue;
-      const bm = attrs.match(/\bbegin=["']([^"']+)["']/i);
-      const km = attrs.match(/\bitunes:key=["']([^"']+)["']/i);
-      if (!bm) continue;
-      const parts = bm[1].replace(/s$/i, '').split(':').map(Number);
-      const sec = parts.length === 2 ? parts[0] * 60 + parts[1] : (parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : (parts[0] || 0));
-      const mm = Math.floor(sec / 60);
-      const ss = (sec % 60).toFixed(2);
-      const ts = `[${String(mm).padStart(2, '0')}:${ss.padStart(5, '0')}]`;
-      lines.push(`${ts} ${body}`);
-      if (km && transMap[km[1]]) lines.push(`${ts} ${transMap[km[1]]}`);
-    }
-    return lines.length ? lines.join('\n') : null;
-  }
-
-  async function runBatchGofile(quality, embedLyrics, saveFormats, lyricsFormat, isZip = true, translateLyrics = false) {
+  async function runBatchGofile(quality, embedLyrics, saveFormats, lyricsFormat, isZip = true, translateLyrics = false, ruby = false, rubyMode = 'roman') {
     if (!tracks.length) return;
 
     // 前置配额预检查：剩余配额不足以覆盖整单曲目时直接拦截，避免逐首打到撞墙浪费服务器资源
@@ -625,7 +592,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             lyricsFormat: (lyricsFormat === 'ttml' || lyricsFormat === 'lrc') ? lyricsFormat : 'lrc',
             saveLyricsFormats: saveFormats.length ? saveFormats : undefined,
             saveLrc: saveFormats.length > 0,
-            translateLyrics
+            translateLyrics,
+            ruby,
+            rubyMode
           }),
           signal: batchSig
         });
@@ -737,7 +706,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
   }
 
-  async function runBatchLocal(quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false) {
+  async function runBatchLocal(quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, ruby = false, rubyMode = 'roman') {
     if (!tracks.length) return;
 
     // 本机批量下载同样消耗 VPS 出站带宽，预先扣除整批配额；不足直接拦截
@@ -766,7 +735,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (batchCard) batchCard.hidden = false;
     if (batchStatusTitle) batchStatusTitle.textContent = `📥 正在批量下载《${plName}》到本机...`;
     if (batchProgressFill) batchProgressFill.style.width = '0%';
-
+    let okCount = 0;
+    let failCount = 0;
     for (let i = 0; i < tracks.length; i++) {
       if (batchSig.aborted) break;
       const t = tracks[i];
@@ -774,13 +744,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const songTitle = attr.name || '未知曲目';
       const pct = Math.floor((i / tracks.length) * 100);
       if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
-      if (batchStatusDetail) batchStatusDetail.textContent = `(${i + 1}/${tracks.length}) 正在下载《${songTitle}》...`;
+      if (batchStatusDetail) batchStatusDetail.textContent = `(${i + 1}/${tracks.length}) 正在解密下载《${songTitle}》...`;
 
       try {
         const parseRes = await fetch(`/parse/song/${t.id}`, { signal: batchSig });
         const parseData = await parseRes.json();
         const variants = parseData.variants || [];
-        if (!variants.length) continue;
+        if (!variants.length) {
+          failCount++;
+          continue;
+        }
 
         let selected = variants.find(v => v.codecs === 'alac') || variants[0];
         if (quality === 'Hi-Res') {
@@ -791,79 +764,73 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           selected = variants.find(v => v.codecs && v.codecs.includes('mp4a')) || variants[0];
         }
 
+        // 曲目 M4A 名称：优先用逐曲元数据（含华语名补全），失败退回歌单/曲目字段
         const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
-        const audioUrl = `${location.origin}/${base}${selected.file_uri}`;
-        const normArtist = normalizeArtistName(attr.artistName || '');
-        const normTitle = toSimplified(songTitle);
-        const cleanArtist = normArtist.replace(/[\\/:*?"<>|]+/g, '_').trim();
-        const cleanTitle = normTitle.replace(/[\\/:*?"<>|]+/g, '_').trim();
-        const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
-
-        const a = document.createElement('a');
-        a.href = audioUrl;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-
-        // 可选下载独立外挂歌词文件（按 saveFormats 多格式；无歌词则跳过）
-        if (saveFormats.length) {
-          try {
-            const lRes = await fetch(`/lyrics/${t.id}${translateLyrics ? '?language=zh-Hans-CN' : ''}`, { signal: batchSig });
-            if (lRes.ok) {
-              const rawTtml = await lRes.text();
-              const parsed = rawTtml && rawTtml.trim()
-                ? (translateLyrics ? ttmlToBilingualLrc(rawTtml) : null)
-                : null;
-              const pending = [];
-              // .lrc：优先双语（翻译开启时），否则普通 LRC 解析
-              if (saveFormats.includes('lrc')) {
-                let lrcContent = parsed;
-                if (!lrcContent) {
-                  const pRegex = /<p[^>]*\bbegin=["']([^"']+)["'][^>]*>([\s\S]*?)<\/p>/gi;
-                  const lines = [];
-                  let m;
-                  while ((m = pRegex.exec(rawTtml)) !== null) {
-                    const sec = parseFloat(m[1].replace(/s$/i, '')) || 0;
-                    const min = Math.floor(sec / 60);
-                    const s = (sec % 60).toFixed(2);
-                    const timeTag = `[${String(min).padStart(2, '0')}:${s.padStart(5, '0')}]`;
-                    const text = m[2].replace(/<[^>]+>/g, '').trim();
-                    if (text) lines.push(`${timeTag} ${text}`);
-                  }
-                  lrcContent = lines.length > 0 ? lines.join('\n') : rawTtml.replace(/<[^>]+>/g, '').trim();
-                }
-                if (lrcContent && lrcContent.trim()) pending.push({ ext: 'lrc', content: toSimplified(lrcContent) });
-              }
-              // .ttml：原始 TTML 文件
-              if (saveFormats.includes('ttml') && rawTtml.trim()) {
-                pending.push({ ext: 'ttml', content: toSimplified(rawTtml) });
-              }
-              for (const f of pending) {
-                const lBlob = new Blob([f.content], { type: 'text/plain;charset=utf-8' });
-                const lUrl = URL.createObjectURL(lBlob);
-                const la = document.createElement('a');
-                la.href = lUrl;
-                la.download = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.${f.ext}`;
-                document.body.appendChild(la);
-                la.click();
-                la.remove();
-                setTimeout(() => URL.revokeObjectURL(lUrl), 8000);
-              }
-            }
-          } catch {}
+        const m3u8Url = base + selected.uri;
+        let songMeta = null;
+        try {
+          songMeta = await fetchSongMeta(t.id, { country, simplify: toSimplified });
+        } catch {}
+        if (!songMeta) {
+          songMeta = {
+            title: toSimplified(songTitle),
+            artist: normalizeArtistName(attr.artistName || ''),
+            album: toSimplified(attr.albumName || ''),
+            albumArtist: normalizeArtistName(attr.artistName || ''),
+            trackNumber: attr.trackNumber,
+            totalTracks: tracks.length,
+            discNumber: attr.discNumber || 1,
+            totalDiscs: 1,
+            artwork: attr.artwork?.url
+              ? attr.artwork.url.replace('{w}', 600).replace('{h}', 600).replace('{c}', 'bb').replace('{f}', 'jpg')
+              : '',
+            isChinese: false,
+          };
         }
 
+        const normArtist = normalizeArtistName(songMeta.artist || attr.artistName || '');
+        const cleanArtist = normArtist.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        const cleanTitle = toSimplified(songMeta.title || songTitle).replace(/[\\/:*?"<>|]+/g, '_').trim();
+
+        const fileName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
+
+        // 浏览器端解密 + 标签/封面/歌词注入（与单曲页同一实现）
+        const dl = await downloadDecryptedTrack({
+          variant: selected,
+          meta: songMeta,
+          m3u8Url,
+          trackId: t.id,
+          lyricsOpts: { embedMode: lyricsFormat, saveFormats, translateOn: translateLyrics, rubyOn: ruby, rubyMode },
+          simplify: toSimplified,
+          signal: batchSig,
+        });
+
+        saveBlob(dl.blob, fileName);
+
+        // 可选保存独立外挂歌词文件（按 saveFormats 多格式；无歌词则跳过）
+        const lyricsData = dl.lyricsData;
+        if (saveFormats.length && lyricsData && lyricsData.hasLyrics) {
+          const stem = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}`;
+          if (saveFormats.includes('lrc') && lyricsData.lrc) {
+            saveTextFile(lyricsData.lrc, `${stem}.lrc`);
+          }
+          if (saveFormats.includes('ttml') && lyricsData.ttml) {
+            saveTextFile(lyricsData.ttml, `${stem}.ttml`, 'application/xml;charset=utf-8');
+          }
+        }
+
+        okCount++;
         await new Promise(r => setTimeout(r, 1200));
       } catch (err) {
         if (batchSig.aborted) break;
+        failCount++;
         console.warn(`[Batch DL] 下载《${songTitle}》失败:`, err.message);
       }
     }
 
     if (batchProgressFill) batchProgressFill.style.width = '100%';
     setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
-    toast(batchSig.aborted ? '已取消批量下载' : '🎉 歌单批量下载完成！');
+    toast(batchSig.aborted ? '已取消批量下载' : (failCount > 0 ? `歌单下载完成：成功 ${okCount} 首，失败 ${failCount} 首` : '🎉 歌单批量下载完成！'));
   }
 
   if (!playlistId) {
