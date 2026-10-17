@@ -423,10 +423,178 @@ function unescapeXml(str) {
     .replace(/&apos;/g, "'");
 }
 
+/**
+ * Apple 的日文歌词正文里混入了康熙部首码位（U+2E80–U+2FFF）：「⼆⼈」实为「二人」、「⾔」实为「言」。
+ * 这些不是正常汉字，多数播放器会渲染成方块，NFKC 归一化后等价还原。
+ * 只处理：康熙部首 (2E80–2FFF) / 兼容汉字 (F900–FAFF) / 全角 ASCII (FF01–FF5E) / 半全角片假名 (FF61–FF9F)。
+ * ⚠️ 不可整段处理 U+FF00–FFEF：其中 U+FFA0–FFDC 是半角谚文，NFKC 会拆成组合字母，正文出现就会乱码。
+ */
+function normalizeLyricGlyphs(str) {
+  if (!str) return str;
+  return str.replace(/[\u2E80-\u2FFF\uF900-\uFAFF\uFF01-\uFF5E\uFF61-\uFF9F]/g, (ch) => ch.normalize('NFKC'));
+}
+
+/* ==================== 注音（罗马音 / 假名）==================== */
+
+/**
+ * 罗马音 → 平假名（用于「注音」开关的假名模式；Apple 只提供罗马音，假名由这里反推）
+ *
+ * ⚠️ 本函数在 `cloud-service.mjs` 与 `src/ui/views/local-download.mjs` 各有一份**完全相同**的副本
+ *    （浏览器端不能 import 服务端文件，只能复制）。**改一边必须同步改另一边**，
+ *    两份分叉会导致 TG 与网页端对同一首歌产出不同的假名。
+ *
+ * 转换策略：
+ *  1. 三字母（拗音 / shi chi tsu she che je fa fi fe fo）→ 两字母 → 单位元音，逐级回退
+ *  2. n 后接元音或 y 时读「ん」（shinjuku → しんじゅく），否则 n 后接辅音仍为「ん」
+ *  3. 促音（kko → っこ）：同辅音双写，排除 n（nn 表示拨音）
+ *  4. **无法完整识别的词整词回退为原始罗马音**，绝不产出「wひ」「jえt」这类半成品
+ */
+function romanToHiragana(roman) {
+  if (!roman) return '';
+  // 三字母优先于两字母（否则 sh/ny/j 等前缀会抢占）
+  const TRIPLE = {
+    kya: 'きゃ', kyu: 'きゅ', kyo: 'きょ', gya: 'ぎゃ', gyu: 'ぎゅ', gyo: 'ぎょ',
+    sha: 'しゃ', shu: 'しゅ', sho: 'しょ', sya: 'しゃ', syu: 'しゅ', syo: 'しょ',
+    ja: 'じゃ', ju: 'じゅ', jo: 'じょ', jya: 'じゃ', jyu: 'じゅ', jyo: 'じょ',
+    cha: 'ちゃ', chu: 'ちゅ', cho: 'ちょ', tya: 'ちゃ', tyu: 'ちゅ', tyo: 'ちょ',
+    nya: 'にゃ', nyu: 'にゅ', nyo: 'にょ', hya: 'ひゃ', hyu: 'ひゅ', hyo: 'ひょ',
+    bya: 'びゃ', byu: 'びゅ', byo: 'びょ', pya: 'ぴゃ', pyu: 'ぴゅ', pyo: 'ぴょ',
+    mya: 'みゃ', myu: 'みゅ', myo: 'みょ', rya: 'りゃ', ryu: 'りゅ', ryo: 'りょ',
+    dya: 'ぢゃ', dyu: 'ぢゅ', dyo: 'ぢょ',
+    // n + 拗音 / n + j（shinjuku → しんじゅく），必须早于两字母 nj / ja
+    nja: 'んじゃ', nju: 'んじゅ', njo: 'んじょ',
+    nji: 'んじ', nje: 'んじぇ',
+    // nn 表拨音而非促音
+    nna: 'んな', nni: 'んに', nnu: 'んぬ', nne: 'んね', nno: 'んの',
+    // 三字母基本音节（否则会先撞上两字母的 sh/ch/ts 前缀而落空）
+    shi: 'し', chi: 'ち', tsu: 'つ', she: 'しぇ', che: 'ちぇ', je: 'じぇ',
+    fa: 'ふぁ', fi: 'ふぃ', fe: 'ふぇ', fo: 'ふぉ',
+    dhi: 'でぃ', dhu: 'でゅ',
+  };
+  const PAIR = {
+    ka: 'か', ki: 'き', ku: 'く', ke: 'け', ko: 'こ', ga: 'が', gi: 'ぎ', gu: 'ぐ', ge: 'げ', go: 'ご',
+    sa: 'さ', si: 'し', su: 'す', se: 'せ', so: 'そ', za: 'ざ', zi: 'じ', ji: 'じ', zu: 'ず', ze: 'ぜ', zo: 'ぞ',
+    ta: 'た', ti: 'ち', tu: 'つ', te: 'て', to: 'と', da: 'だ', di: 'ぢ', du: 'づ', de: 'で', do: 'ど',
+    na: 'な', ni: 'に', nu: 'ぬ', ne: 'ね', no: 'の', ha: 'は', hi: 'ひ', hu: 'ふ', fu: 'ふ', he: 'へ', ho: 'ほ',
+    ba: 'ば', bi: 'び', bu: 'ぶ', be: 'べ', bo: 'ぼ', pa: 'ぱ', pi: 'ぴ', pu: 'ぷ', pe: 'ぺ', po: 'ぽ',
+    ma: 'ま', mi: 'み', mu: 'む', me: 'め', mo: 'も', ya: 'や', yu: 'ゆ', yo: 'よ',
+    ra: 'ら', ri: 'り', ru: 'る', re: 'れ', ro: 'ろ', wa: 'わ', wo: 'を',
+    va: 'ゔぁ', vi: 'ゔぃ', vu: 'ゔ', ve: 'ゔぇ', vo: 'ゔぉ',
+    wi: 'うぃ', we: 'うぇ',
+    // 外来语两字母写法（fe 等三字母表同名项在此也需保留，否则 fensu → ふえんす）
+    fa: 'ふぁ', fi: 'ふぃ', fe: 'ふぇ', fo: 'ふぉ',
+  };
+  const SINGLE = { a: 'あ', i: 'い', u: 'う', e: 'え', o: 'お', n: 'ん' };
+  // 单个辅音字母（法语词 fensu、德语词 等罗马音里偶尔出现的非日语音节）的近似转写，
+  // 保证假名模式下**不残留拉丁字母**
+  const LONE = {
+    k: 'く', g: 'ぐ', s: 'す', z: 'ず', j: 'じ', t: 'と', d: 'ど',
+    h: 'ふ', f: 'ふ', b: 'ぶ', p: 'ぷ', m: 'む', y: 'い', r: 'る', w: 'う',
+    c: 'く', v: 'ゔ', l: 'る', q: 'く', x: 'く',
+  };
+  const isVowel = (c) => 'aiueo'.includes(c);
+  const isConsonant = (c) => c >= 'a' && c <= 'z' && !isVowel(c) && c !== 'n';
+
+  /** 转换单个纯字母片段；返回 { text, complete }。complete=false 表示有字母没转成假名 */
+  const convertChunk = (s) => {
+    const out = [];
+    let i = 0;
+    let complete = true;
+    while (i < s.length) {
+      const ch = s[i];
+      // 促音：同辅音双写（kko → っこ），n 双写表示拨音不算促音
+      if (ch !== 'n' && isConsonant(ch) && s[i + 1] === ch) {
+        out.push('っ');
+        i += 1;
+        continue;
+      }
+      // n 结尾，或 n 后接辅音（非 y/j）→ ん；n + y/j 能构成拗音时才合并（konya → こにゃ、shinjuku → しんじゅく）
+      if (ch === 'n') {
+        const next = s[i + 1];
+        const mergesWithN = (next === 'y' || next === 'j') && TRIPLE[s.slice(i, i + 3)];
+        if (next === undefined || (next !== 'y' && next !== 'j' && !isVowel(next)) || ((next === 'y' || next === 'j') && !mergesWithN)) {
+          out.push('ん');
+          i += 1;
+          continue;
+        }
+      }
+      const tri = s.slice(i, i + 3);
+      if (TRIPLE[tri]) { out.push(TRIPLE[tri]); i += 3; continue; }
+      const pair = s.slice(i, i + 2);
+      if (PAIR[pair]) { out.push(PAIR[pair]); i += 2; continue; }
+      if (SINGLE[ch]) { out.push(SINGLE[ch]); i += 1; continue; }
+      // 兜底：单字母近似，不让拉丁字母漏进假名行
+      complete = false;
+      out.push(LONE[ch] || ch);
+      i += 1;
+    }
+    return { text: out.join(''), complete };
+  };
+
+  // 按拉丁字母段切分，空格 / 标点 / 数字原样保留。
+  // 转换失败的字母按单字母近似兜底（fensu → ふぇんす），保证假名行不残留拉丁字母。
+  return String(roman)
+    .split(/([a-z]+)/i)
+    .map((part) => (/[a-z]/i.test(part) ? convertChunk(part.toLowerCase()).text : part))
+    .join('')
+    .replace(/ー+/g, 'ー');
+}
+
+/** 从 TTML 的 <transliterations> 里按 itunes:key 提取罗马音行（逐词 span 拼成整行） */
+function extractTransliterationMap(ttmlContent) {
+  const blockMatch = ttmlContent.match(/<transliterations\b[^>]*>([\s\S]*?)<\/transliterations>/i);
+  if (!blockMatch) return null;
+  // 优先 ja-Latn（日语罗马音）；英文歌若有其他音译则不采用，避免给英文歌乱注音
+  const latinMatch = blockMatch[1].match(/<transliteration\b[^>]*xml:lang=["']ja-Latn["'][^>]*>([\s\S]*?)<\/transliteration>/i);
+  if (!latinMatch) return null;
+  const map = {};
+  const textRegex = /<text\b[^>]*for=["']([^"']+)["'][^>]*>([\s\S]*?)<\/text>/gi;
+  let m;
+  while ((m = textRegex.exec(latinMatch[1])) !== null) {
+    const body = unescapeXml(m[2].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+    if (m[1] && body) map[m[1]] = body;
+  }
+  return Object.keys(map).length ? map : null;
+}
+
+/**
+ * 注音 LRC：在每个原文行下方插入同时间戳的注音行。
+ * mode = 'roman'（罗马音，Apple 原样）| 'kana'（平假名，由罗马音反推）
+ * 每行输出顺序固定为「原文 / 注音 / 译文」，保证不同歌之间排版一致可预期。
+ */
+function annotateLyricLines(ttmlContent, baseLines, mode = 'roman') {
+  if (!ttmlContent || !Array.isArray(baseLines) || !baseLines.length) return null;
+  const transMap = extractTransliterationMap(ttmlContent);
+  if (!transMap) return null;
+  const out = [];
+  let injected = 0;
+  for (const line of baseLines) {
+    const prefix = line.time ? `${line.time} ` : '';
+    out.push(`${prefix}${line.text}`);
+    // ⚠️ 只有带 itunes:key 的行才能对齐罗马音。纯文本降级路径的 key 为 ''，
+    //    此处若不加判断会命中 transMap[''] 的残留值，把同一句注音重复灌进每一行。
+    const roman = line.key ? transMap[line.key] : '';
+    if (roman) {
+      const plainBody = String(line.text || '').replace(/\s+/g, '').toLowerCase();
+      let note = '';
+      if (roman.replace(/\s+/g, '').toLowerCase() !== plainBody) {
+        note = mode === 'kana' ? romanToHiragana(roman) : roman;
+      }
+      if (note) {
+        out.push(`${prefix}${note}`);
+        injected += 1;
+      }
+    }
+    if (line.translation) out.push(`${prefix}${line.translation}`);
+  }
+  return injected ? out : null;
+}
+
 function parseLyrics(ttmlContent) {
   if (!ttmlContent || typeof ttmlContent !== 'string' || !ttmlContent.trim()) {
     return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
   }
+  ttmlContent = normalizeLyricGlyphs(ttmlContent);
 
   let cleaned = ttmlContent;
   // 1. 剥离所有翻译块与注音标签
@@ -445,6 +613,7 @@ function parseLyrics(ttmlContent) {
   const pRegex = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
   const timedLines = [];
   const plainLines = [];
+  const structLines = [];
   let match;
 
   while ((match = pRegex.exec(cleaned)) !== null) {
@@ -456,9 +625,12 @@ function parseLyrics(ttmlContent) {
     plainLines.push(body);
 
     const beginMatch = pAttrs.match(/\bbegin=["']([^"']+)["']/i);
+    const keyMatch = pAttrs.match(/\bitunes:key=["']([^"']+)["']/i);
     if (beginMatch) {
       const seconds = parseTimeToSeconds(beginMatch[1]);
-      timedLines.push(`${formatLrcTimestamp(seconds)} ${body}`);
+      const ts = formatLrcTimestamp(seconds);
+      timedLines.push(`${ts} ${body}`);
+      structLines.push({ key: keyMatch ? keyMatch[1] : '', time: ts, text: body, translation: '' });
     }
   }
 
@@ -476,7 +648,8 @@ function parseLyrics(ttmlContent) {
     isDynamic,
     lrc,
     plain,
-    ttml: ttmlContent
+    ttml: ttmlContent,
+    lines: structLines
   };
 }
 
@@ -488,6 +661,7 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   if (!ttmlContent || typeof ttmlContent !== 'string' || !ttmlContent.trim()) {
     return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
   }
+  ttmlContent = normalizeLyricGlyphs(ttmlContent);
 
   // 原文已是中文：跳过翻译，直接返回 null 让上层降级为单语原文
   const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
@@ -537,6 +711,7 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   // 3. 遍历原文 <p begin itunes:key>，按时间戳生成 原文 + 译文 双行
   const pRegex = /<p([^>]*)>([\s\S]*?)<\/p>/gi;
   const lrcLines = [];
+  const structLines = [];
   let pMatch;
   while ((pMatch = pRegex.exec(ttmlContent)) !== null) {
     const pAttrs = pMatch[1] || '';
@@ -547,21 +722,32 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
     if (!beginMatch) continue;
     const seconds = parseTimeToSeconds(beginMatch[1]);
     const ts = formatLrcTimestamp(seconds);
+    const key = keyMatch ? keyMatch[1] : '';
+    const translation = key && transMap[key] ? transMap[key] : '';
     lrcLines.push(`${ts} ${body}`);
-    if (keyMatch && transMap[keyMatch[1]]) {
-      lrcLines.push(`${ts} ${transMap[keyMatch[1]]}`);
+    if (translation) {
+      lrcLines.push(`${ts} ${translation}`);
     }
+    structLines.push({ key, time: ts, text: body, translation });
   }
 
   if (lrcLines.length === 0) {
     return null;
   }
+  // plain 语义与 parseLyrics 保持一致：**去时间戳的纯文本行**（原文+译文，不含注音）。
+  // 之前误用 lrcLines.join('\n')（带时间戳的整段 LRC），会让调用方把时间戳当正文重复处理。
+  const plainLines = [];
+  for (const l of structLines) {
+    if (l.text) plainLines.push(l.text);
+    if (l.translation) plainLines.push(l.translation);
+  }
   return {
     hasLyrics: true,
     isDynamic: true,
     lrc: lrcLines.join('\n'),
-    plain: lrcLines.join('\n'),
-    ttml: ttmlContent
+    plain: plainLines.join('\n'),
+    ttml: ttmlContent,
+    lines: structLines
   };
 }
 
@@ -890,6 +1076,8 @@ async function processTransfer(body) {
     embedLyrics = true,
     lyricsFormat = 'lrc',
     translateLyrics = false,
+    ruby = false,
+    rubyMode = 'roman',
     folderId,
     token,
     batchId,
@@ -1034,6 +1222,9 @@ async function processTransfer(body) {
     : Boolean(saveLrc);
   const shouldEmbedLyrics = Boolean(embedLyrics);
   const shouldTranslateLyrics = Boolean(translateLyrics);
+  // 注音：日文歌的罗马音（roman，Apple 原样）或平假名（kana，由罗马音反推）附加在原文行下
+  const shouldRuby = Boolean(ruby);
+  const chosenRubyMode = String(rubyMode || 'roman').toLowerCase() === 'kana' ? 'kana' : 'roman';
   const chosenLyricsFormat = (lyricsFormat || 'lrc').toLowerCase() === 'ttml' ? 'ttml' : 'lrc';
   // 外置歌词多格式：saveLyricsFormats 数组（'lrc'/'ttml' 可同时出现），缺省用主格式
   const saveLyricsFormats = Array.isArray(body.saveLyricsFormats) && body.saveLyricsFormats.length
@@ -1044,6 +1235,8 @@ async function processTransfer(body) {
 
   let audioHookUrl = directHookUrl;
   let chosenFormatName = '';
+  // 音质回退说明：请求杜比但该曲目无杜比版本时记录，随结果返回给前端 / TG
+  let qualityFallback = '';
 
   // 1. 如果没有直接传 hookFileUrl，通过 127.0.0.1:31408/parse/song/{adamId} 获取
   let webplaybackM3u8 = null; // 当 master 为 M4P 单文件时，回退 /webplayback 标准 HLS
@@ -1091,6 +1284,10 @@ async function processTransfer(body) {
       } else if (qLower.includes('atmos') || qLower.includes('ec-3') || qLower.includes('ec3')) {
         selected = variants.find(v => (v.codecs && v.codecs.includes('ec-3')) || (v.group_id && v.group_id.includes('atmos'))) ||
                    variants.find(v => v.codecs === 'alac');
+        // 该曲目无杜比版本时回退 ALAC：记下来，避免专辑批量时静默降级
+        if (selected && !(selected.codecs && selected.codecs.includes('ec-3')) && !(selected.group_id && selected.group_id.includes('atmos'))) {
+          qualityFallback = '该曲目无杜比全景声版本，已回退为无损 ALAC';
+        }
       } else if (qLower.includes('aac')) {
         selected = variants.find(v => (v.codecs && v.codecs.includes('mp4a')) || (v.group_id && v.group_id.includes('256'))) || variants[0];
       } else {
@@ -1206,25 +1403,50 @@ async function processTransfer(body) {
   };
   tasks.push(fetchCover());
 
-  // 歌词抓取与多格式/降级解析（translateLyrics 时带 language=zh-Hans-CN 拉取官方中文翻译）
+  // 歌词抓取与多格式/降级解析（translateLyrics / ruby 时带 language=zh-Hans-CN 拉取官方翻译与罗马音）
+  /** 给已解析的歌词附加注音行；无罗马音（非日文歌）时原样返回，静默跳过 */
+  const applyRuby = (parsed) => {
+    if (!shouldRuby || !parsed || !parsed.hasLyrics) return parsed;
+    try {
+      const lines = parsed.lines && parsed.lines.length ? parsed.lines : [];
+      // 无结构化行（纯文本歌词）时按原文行切分，保持可读顺序
+      const baseLines = lines.length
+        ? lines
+        : String(parsed.lrc || parsed.plain || '').split('\n').filter(Boolean).map((raw) => {
+            const m = raw.match(/^(\[[^\]]+\])\s*(.*)$/);
+            return m ? { key: '', time: m[1], text: m[2], translation: '' } : { key: '', time: '', text: raw, translation: '' };
+          });
+      const annotated = annotateLyricLines(parsed.ttml, baseLines, chosenRubyMode);
+      if (!annotated) return parsed; // 该曲无罗马音：保持原文
+      const body = annotated.join('\n');
+      // rubyApplied 让后续的简繁转换跳过（注音行交错，逐行转换会破坏上下行对齐）
+      return { ...parsed, lrc: body, plain: body, rubyApplied: true };
+    } catch (e) {
+      console.warn('[Cloud-Transfer] 注音生成失败，降级为原文:', e.message);
+      return parsed;
+    }
+  };
+
   const fetchLyricsData = async () => {
     if (passedLyrics !== undefined && passedLyrics !== null) {
       if (typeof passedLyrics === 'string' && passedLyrics.trim()) {
-        return parseLyrics(passedLyrics);
+        return applyRuby(parseLyrics(passedLyrics));
       }
       return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     }
     if (!adamId) return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     try {
-      const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${shouldTranslateLyrics ? '?language=zh-Hans-CN' : ''}`;
+      const needsMeta = shouldTranslateLyrics || shouldRuby;
+      const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${needsMeta ? '?language=zh-Hans-CN' : ''}`;
       const lRes = await fetch(lyricsUrl, { signal: AbortSignal.timeout(5000) });
       if (lRes.ok) {
         const rawTtml = await lRes.text();
+        let base = null;
         if (shouldTranslateLyrics) {
-          const bilingual = buildBilingualLrc(rawTtml, 'zh-Hans-CN');
-          if (bilingual) return bilingual;
+          base = buildBilingualLrc(rawTtml, 'zh-Hans-CN');
         }
-        return parseLyrics(rawTtml);
+        if (!base) base = parseLyrics(rawTtml);
+        return applyRuby(base);
       }
     } catch (e) {
       console.warn('[Cloud-Transfer] 歌词抓取失败:', e.message);
@@ -1303,9 +1525,15 @@ async function processTransfer(body) {
   if (meta.genre) meta.genre = toSimplifiedChinese(meta.genre);
   if (meta.copyright) meta.copyright = toSimplifiedChinese(meta.copyright);
   if (lyricsData.hasLyrics) {
-    if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
-    if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
-    if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
+    // ⚠️ 注音模式下 lrc 是「原文 / 罗马音 / 译文」逐行交错，罗马音行不含假名，
+    //    逐行过 toSimplifiedChinese 会把罗马音行拆成单字，且与原文行的假名判定不一致，
+    //    导致上下行最终被转换成不同的字形体系。此时整体跳过简繁转换（日文歌本来也不需要）。
+    const hasRuby = shouldRuby && lyricsData.rubyApplied;
+    if (!hasRuby) {
+      if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
+      if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
+      if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
+    }
   }
 
   // 计算内嵌歌词（支持不内嵌，无动态歌词自动降级为纯文本内嵌；chosenLyricsFormat==='ttml' 时内嵌 TTML 原文）
@@ -1441,6 +1669,7 @@ async function processTransfer(body) {
         queued: true,
         fileName: finalM4aName,
         qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
         elapsedMs: Math.round(tEnd - t0)
       };
     }
@@ -1466,6 +1695,7 @@ async function processTransfer(body) {
         totalFiles: files.length,
         album: meta.album || '',
         qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
         elapsedMs: Math.round(tEnd - t0)
       };
     }
@@ -1503,6 +1733,7 @@ async function processTransfer(body) {
         isZip: true,
         totalFiles: files.length,
         qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
         elapsedMs: Math.round(tEnd - t0)
       };
     } finally {
@@ -1547,6 +1778,7 @@ async function processTransfer(body) {
         album: meta.album || '',
         albumArtist: meta.albumArtist || '',
         qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
         duration: meta.durationInMillis ? Math.round(meta.durationInMillis / 1000) : 0,
         elapsedMs: Math.round(tEnd - t0)
       };
@@ -1580,6 +1812,7 @@ async function processTransfer(body) {
         fileName: finalZipName,
         isZip: true,
         qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
         elapsedMs: Math.round(tEnd - t0)
       };
     } finally {
@@ -1645,6 +1878,7 @@ async function processTransfer(body) {
       album: meta.album || '',
       albumArtist: meta.albumArtist || '',
       qualityName: chosenFormatName,
+      qualityFallback: qualityFallback || undefined,
       duration: meta.durationInMillis ? Math.round(meta.durationInMillis / 1000) : 0,
       coverUrl: meta.coverUrl || '',
       elapsedMs: Math.round(tEnd - t0)
@@ -1713,6 +1947,7 @@ async function processTransfer(body) {
     fileId: resultData.fileId,
     fileName: standardM4aName,
     qualityName: chosenFormatName,
+    qualityFallback: qualityFallback || undefined,
     elapsedMs: Math.round(tEnd - t0)
   };
 }

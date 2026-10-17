@@ -59,6 +59,14 @@
               <input type="checkbox" id="translate-lyrics-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
               <span>🇨🇳 中文翻译</span>
             </label>
+            <label id="ruby-lyrics-label" style="display:none;align-items:center;gap:4px;font-size:12px;color:var(--text);cursor:pointer;user-select:none;" title="在每句日文下方附加注音（Apple Music 官方罗马音；可选平假名）">
+              <input type="checkbox" id="ruby-lyrics-toggle" style="accent-color:#fa2d48;width:14px;height:14px;cursor:pointer;">
+              <span>あ 注音</span>
+              <select id="ruby-mode-select" style="padding:1px 6px;border-radius:6px;background:var(--surface-3);border:1px solid var(--line);color:var(--text);font-size:11px;outline:none;cursor:pointer;" title="罗马音或平假名">
+                <option value="roman" selected>罗马音</option>
+                <option value="kana">平假名</option>
+              </select>
+            </label>
           </div>
 
           <div style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:16px;background:var(--surface-2);border:1px solid var(--line);">

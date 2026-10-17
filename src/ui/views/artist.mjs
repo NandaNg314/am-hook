@@ -539,6 +539,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if ($('disco-save-lrc')?.checked) saveFormats.push('lrc');
     if ($('disco-save-ttml')?.checked) saveFormats.push('ttml');
     const translateLyrics = $('disco-translate-lyrics')?.checked ?? false;
+    const ruby = $('disco-ruby-lyrics')?.checked ?? false;
+    const rubyMode = $('disco-ruby-mode')?.value || 'roman';
     const includeFull = $('disco-include-full')?.checked ?? true;
     const includeLive = $('disco-include-live')?.checked ?? true;
     const includeSingles = $('disco-include-singles')?.checked ?? true;
@@ -548,11 +550,13 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     localStorage.setItem('am_save_lrc', String(saveFormats.includes('lrc')));
     localStorage.setItem('am_save_ttml', String(saveFormats.includes('ttml')));
     localStorage.setItem('am_translate_lyr', String(translateLyrics));
+    localStorage.setItem('am_ruby_lyr', String(ruby));
+    localStorage.setItem('am_ruby_mode', rubyMode);
 
-    runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics, includeFull, includeLive, includeSingles, includeCompilations });
+    runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics, ruby, rubyMode, includeFull, includeLive, includeSingles, includeCompilations });
   });
 
-  async function runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, includeFull, includeLive, includeSingles, includeCompilations }) {
+  async function runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, ruby = false, rubyMode = 'roman', includeFull, includeLive, includeSingles, includeCompilations }) {
     if (!artist) return;
 
     // 前置配额低水位检查：剩余配额极低时直接拦截，避免白跑全量检索与逐首下载
@@ -719,7 +723,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               lyricsFormat: (lyricsFormat === 'ttml' || lyricsFormat === 'lrc') ? lyricsFormat : 'lrc',
               saveLyricsFormats: saveFormats.length ? saveFormats : undefined,
               saveLrc: saveFormats.length > 0,
-              translateLyrics
+              translateLyrics,
+              ruby,
+              rubyMode
             }),
             signal: sig
           });
