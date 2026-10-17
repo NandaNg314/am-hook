@@ -1474,7 +1474,7 @@ function cleanStaleUserSessions() {
 setInterval(cleanStaleUserSessions, 15 * 60 * 1000);
 
 // ==================== 卡片构建器 ====================
-function buildSongCard(details, selectedQuality = 'Lossless', needLrc = true, isZip = false, lang = 'zh', backAlbumId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+function buildSongCard(details, selectedQuality = 'Lossless', needLrc = true, isZip = false, lang = 'zh', backAlbumId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   // embedLyricsMode: 'lrc' | 'ttml' | 'off'（内嵌 ©lyr；off = 不内嵌）
   // saveLyricsFormats: [] | ['lrc'] | ['ttml'] | ['lrc','ttml']（外置歌词文件，可 0~2 个）
   const embedMode = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
@@ -1566,6 +1566,20 @@ ${isCached ? '\n⚡ <b>状态：群组已归档，点击将秒速直发！</b>' 
     }
   ]);
 
+  // 注音（日文歌词罗马音/平假名）：中文翻译是「译文」，注音是「读音」，两者可叠加
+  inlineKeyboard.push([
+    {
+      text: isEn
+        ? `あ Ruby (${rubyMode === 'kana' ? 'Hiragana' : 'Romaji'}): ${needRuby ? 'Yes ✅' : 'No ❌'}`
+        : `あ 注音 (${rubyMode === 'kana' ? '平假名' : '罗马音'}): ${needRuby ? '需要 ✅' : '不需要 ❌'}`,
+      callback_data: `ruby:${needRuby ? '0' : '1'}:${details.songId}`
+    },
+    {
+      text: rubyMode === 'kana' ? 'あ→Aa' : 'Aa→あ',
+      callback_data: `rubym:${rubyMode === 'kana' ? 'roman' : 'kana'}:${details.songId}`
+    }
+  ]);
+
   // 仅下载歌词：不发音频，直接推歌词文件（LRC/TTML/两者），用于自行补歌词场景
   inlineKeyboard.push([
     { text: `🎵 ${isEn ? 'Lyrics Only' : '仅歌词'}: LRC`, callback_data: `lyronly:lrc:${details.songId}` },
@@ -1606,7 +1620,7 @@ ${isCached ? '\n⚡ <b>状态：群组已归档，点击将秒速直发！</b>' 
   return { text, reply_markup: { inline_keyboard: inlineKeyboard } };
 }
 
-function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true, deliveryMode = 'zip', lang = 'zh', isOwner = false, backArtistId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true, deliveryMode = 'zip', lang = 'zh', isOwner = false, backArtistId = null, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   // embedLyricsMode: 'lrc' | 'ttml' | 'off'; saveLyricsFormats: [] | ['lrc'] | ['ttml'] | ['lrc','ttml']
   const embedMode = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
   const saveFormats = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
@@ -1634,10 +1648,22 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
 
   const inlineKeyboard = [];
 
+  // 音质选择：与单曲卡一致的四档（Lossless / Hi-Res / Dolby Atmos / AAC）
+  // 专辑内可能存在不支持某音质的曲目，服务端选流时会自动降级到 alac，不会失败
   inlineKeyboard.push([
     {
       text: `🎧 ${isEn ? 'Lossless' : '无损 Lossless'} ${selectedQuality === 'Lossless' ? '✅' : ''}`,
       callback_data: `aq:Lossless:${albumData.albumId}`
+    },
+    {
+      text: `💎 ${isEn ? 'Hi-Res' : '高解析 Hi-Res'} ${selectedQuality === 'Hi-Res' ? '✅' : ''}`,
+      callback_data: `aq:Hi-Res:${albumData.albumId}`
+    }
+  ]);
+  inlineKeyboard.push([
+    {
+      text: `🌌 ${isEn ? 'Dolby Atmos' : '杜比全景声'} ${selectedQuality === 'Atmos' ? '✅' : ''}`,
+      callback_data: `aq:Atmos:${albumData.albumId}`
     },
     {
       text: `⚡ AAC 256k ${selectedQuality === 'AAC' ? '✅' : ''}`,
@@ -1673,6 +1699,20 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
           ? `🇨🇳 Chinese Translation: ${needTranslate ? 'Yes ✅' : 'No ❌'}`
           : `🇨🇳 中文翻译歌词: ${needTranslate ? '需要 ✅' : '不需要 ❌'}`,
         callback_data: `atlrc:${needTranslate ? '0' : '1'}:${albumData.albumId}`
+      }
+    ]);
+
+    // 注音（日文歌词罗马音/平假名）
+    inlineKeyboard.push([
+      {
+        text: isEn
+          ? `あ Ruby (${rubyMode === 'kana' ? 'Hiragana' : 'Romaji'}): ${needRuby ? 'Yes ✅' : 'No ❌'}`
+          : `あ 注音 (${rubyMode === 'kana' ? '平假名' : '罗马音'}): ${needRuby ? '需要 ✅' : '不需要 ❌'}`,
+        callback_data: `aruby:${needRuby ? '0' : '1'}:${albumData.albumId}`
+      },
+      {
+        text: rubyMode === 'kana' ? 'あ→Aa' : 'Aa→あ',
+        callback_data: `arubym:${rubyMode === 'kana' ? 'roman' : 'kana'}:${albumData.albumId}`
       }
     ]);
 
@@ -1727,7 +1767,7 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
 // ==================== 单曲下载、归档与直发 ====================
 
 // 仅下载歌词（单曲）：不发音频，按需向 cloud-service 取 LRC/TTML 歌词文件并推送给用户
-async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTranslate = false) {
+async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTranslate = false, needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const wantFormats = want === 'both' ? ['lrc', 'ttml'] : [want];
@@ -1747,6 +1787,8 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
       lyricsOnly: true,
       saveLyricsFormats: wantFormats,
       translateLyrics: Boolean(needTranslate),
+      ruby: Boolean(needRuby),
+      rubyMode: rubyMode || 'roman',
       noUpload: true
     };
     const res = await fetch(CLOUD_API, {
@@ -1863,7 +1905,7 @@ async function ensureLyricsFiles(cacheKey, cached, wantFormats, details) {
   return results;
 }
 
-async function handleDownload(chatId, messageId, details, quality, needLrc, isZip, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+async function handleDownload(chatId, messageId, details, quality, needLrc, isZip, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const songId = details.songId;
@@ -2041,6 +2083,8 @@ ${artistTag} ${titleTag} ${albumTag}`);
         lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
         saveLyricsFormats,
         translateLyrics: needTranslate || false,
+        ruby: needRuby || false,
+        rubyMode: rubyMode || 'roman',
         zip: Boolean(isZip),
         noUpload: true
       };
@@ -2068,7 +2112,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
         return;
       }
 
-      const { isZip: resIsZip, zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, extraLyricsFiles, fileSize, artist, title, album, qualityName, duration } = transferResult;
+      const { isZip: resIsZip, zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, extraLyricsFiles, fileSize, artist, title, album, qualityName, duration, qualityFallback } = transferResult;
 
       // 上传归档至指定的授权群组/频道并推送到私聊
       await tgCall('editMessageText', {
@@ -2093,7 +2137,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 👤 ${isEn ? 'Artist:' : '歌手：'}${escapeHtml(artist)}
 💿 ${isEn ? 'Album:' : '专辑：'}${escapeHtml(album)}
 🎧 ${isEn ? 'Format:' : '规格：'}${escapeHtml(qualityName || quality)}
-
+${qualityFallback ? `⚠️ ${escapeHtml(qualityFallback)}\n` : ''}
 ${artistTag} ${titleTag} ${albumTag} #ZIP`);
 
           sendResult = await unifiedSendMedia({
@@ -2261,7 +2305,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
 // ==================== 多选单曲批量下载 (专辑曲目勾选) ====================
 // 逐首下载/命中缓存秒传归档到频道，最后一次性统一复制到用户私聊
-async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, quality = 'Lossless', needLrc = true, isZip = false, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, quality = 'Lossless', needLrc = true, isZip = false, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const tracks = (albumData.tracks || []).filter(t => trackIds.has(String(t.id)));
@@ -2372,6 +2416,8 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
               translateLyrics: needTranslate || false,
+              ruby: needRuby || false,
+              rubyMode: rubyMode || 'roman',
               zip: Boolean(isZip),
               noUpload: true
             };
@@ -2400,7 +2446,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
             continue;
           }
 
-          const { zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, artist, title, album, qualityName, duration } = transferResult;
+          const { zipFilePath, zipFileName, audioFilePath, lrcFilePath, thumbFilePath, fileName, lyricsFileName, artist, title, album, qualityName, duration, qualityFallback } = transferResult;
           downloadedFilePaths.push({ zipFilePath, audioFilePath, lrcFilePath, thumbFilePath });
           const artistTag = sanitizeHashtag(artist);
           const titleTag = sanitizeHashtag(title);
@@ -2413,7 +2459,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
 👤 ${isEn ? 'Artist:' : '歌手：'}${escapeHtml(artist)}
 💿 ${isEn ? 'Album:' : '专辑：'}${escapeHtml(album)}
 🎧 ${isEn ? 'Format:' : '规格：'}${escapeHtml(qualityName || quality)}
-
+${qualityFallback ? `⚠️ ${escapeHtml(qualityFallback)}\n` : ''}
 ${artistTag} ${titleTag} ${albumTag} #ZIP`);
             sendResult = await unifiedSendMedia({
               chatId,
@@ -2580,7 +2626,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
 // ==================== 艺人全专辑批量转存 (站长专属) ====================
 // 勾选的专辑逐张处理：群聊已缓存的直接跳过并收录消息，未缓存的下载归档；全部就绪后统一推送到私聊
-async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality = 'Lossless', needLrc = true, deliveryMode = 'zip', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality = 'Lossless', needLrc = true, deliveryMode = 'zip', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   // 服务端硬鉴权：仅站长可一键批量下载歌手全专辑
@@ -2666,7 +2712,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
             return;
           }
           try {
-            const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: prefix, needTranslate, embedLyricsMode, saveLyricsFormats });
+            const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: prefix, needTranslate, embedLyricsMode, saveLyricsFormats, needRuby, rubyMode });
             if (res && res.ok) {
               if (res.allGroupMsgIds?.length) allMsgIds.push(...res.allGroupMsgIds);
               else if (res.zipFileId) fileIdSends.push({ kind: 'doc', fileId: res.zipFileId, name: res.albumName });
@@ -2784,7 +2830,7 @@ async function pushAlbumMsgsToPrivate(chatId, msgIds) {
 }
 
 // 仅下载歌词（专辑）：不发音频，整辑每首只取歌词文件推送（LRC/TTML/both）
-async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want, needTranslate = false) {
+async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want, needTranslate = false, needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const wantFormats = want === 'both' ? ['lrc', 'ttml'] : [want];
@@ -2814,6 +2860,8 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
         lyricsOnly: true,
         saveLyricsFormats: wantFormats,
         translateLyrics: Boolean(needTranslate),
+        ruby: Boolean(needRuby),
+        rubyMode: rubyMode || 'roman',
         noUpload: true
       };
       const res = await fetch(CLOUD_API, {
@@ -2861,7 +2909,7 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
 }
 
 // 单张专辑下载入口：命中缓存秒传直发 -> 配额检查 -> 入队 -> transferAlbumCore 下载归档 -> 统一推送私聊
-async function handleAlbumDownload(chatId, messageId, albumData, quality, needLrc, deliveryMode, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = []) {
+async function handleAlbumDownload(chatId, messageId, albumData, quality, needLrc, deliveryMode, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const albumId = albumData.albumId;
@@ -2980,7 +3028,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
     { chatId, messageId, type: 'album', name: albumData.name },
     async () => {
       try {
-        const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: '', needTranslate, embedLyricsMode, saveLyricsFormats });
+        const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: '', needTranslate, embedLyricsMode, saveLyricsFormats, needRuby, rubyMode });
         if (!res || !res.ok) return;
         await pushAlbumMsgsToPrivate(chatId, res.allGroupMsgIds);
 
@@ -3033,7 +3081,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
 
 // 全辑转存核心：(下载 -> 频道归档 -> 写入缓存)，不负责私聊推送，由调用方决定何时统一 copyMessages。
 // progressPrefix 用于批量场景在进度消息前标注 [i/N] 专辑名。
-async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [] }) {
+async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman' }) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   const albumId = albumData.albumId;
@@ -3083,6 +3131,8 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
               translateLyrics: needTranslate || false,
+              ruby: needRuby || false,
+              rubyMode: rubyMode || 'roman',
               noUpload: true
             };
 
@@ -3304,6 +3354,8 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
               translateLyrics: needTranslate || false,
+              ruby: needRuby || false,
+              rubyMode: rubyMode || 'roman',
               noUpload: true
             };
 
@@ -4535,7 +4587,7 @@ ${quotaText}
           return;
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleArtistAlbumsDownload(chatId, messageId, artistId, 'Lossless', true, 'zip', session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [])
+        handleArtistAlbumsDownload(chatId, messageId, artistId, 'Lossless', true, 'zip', session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman')
           .catch(e => console.error('[TG-Bot] 全专辑批量转存任务出错:', e.message))
           .finally(() => {
             selection.clear();
@@ -4704,7 +4756,7 @@ ${quotaText}
           return;
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleMultiTrackDownload(chatId, messageId, albumData, selection, 'Lossless', true, false, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [])
+        handleMultiTrackDownload(chatId, messageId, albumData, selection, 'Lossless', true, false, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman')
           .catch(e => console.error('[TG-Bot] 多选单曲批量转存任务出错:', e.message))
           .finally(() => userSessions.delete(sessionKey));
         return;
@@ -4744,7 +4796,7 @@ ${quotaText}
         try { albumData = await fetchAlbumDetails(albumId); } catch {}
       }
       if (albumData) {
-        const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || []);
+        const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman');
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4790,7 +4842,7 @@ ${quotaText}
     if (session.isAlbum) {
       if (data.startsWith('aq:')) {
         session.quality = data.split(':')[1];
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4804,7 +4856,7 @@ ${quotaText}
 
       if (data.startsWith('afmt:')) {
         session.deliveryMode = data.split(':')[1];
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4820,7 +4872,7 @@ ${quotaText}
         const parts = data.split(':');
         session.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(parts[1]) ? parts[1] : 'lrc';
         session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats?.length > 0);
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4838,7 +4890,7 @@ ${quotaText}
         const cur = session.saveLyricsFormats || [];
         session.saveLyricsFormats = cur.includes(fmt) ? cur.filter((f) => f !== fmt) : [...cur, fmt];
         session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats.length > 0);
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4853,13 +4905,13 @@ ${quotaText}
       if (data.startsWith('alyronly:')) {
         const parts = data.split(':');
         const want = parts[1]; // 'lrc' | 'ttml' | 'both'
-        await handleAlbumLyricsOnlyDownload(chatId, messageId, session.albumData, want, session.needTranslate);
+        await handleAlbumLyricsOnlyDownload(chatId, messageId, session.albumData, want, session.needTranslate, session.needRuby, session.rubyMode);
         return;
       }
 
       if (data.startsWith('atlrc:')) {
         session.needTranslate = data.split(':')[1] === '1';
-        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -4868,6 +4920,40 @@ ${quotaText}
           reply_markup: card.reply_markup
         });
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        return;
+      }
+
+      if (data.startsWith('aruby:')) {
+        session.needRuby = data.split(':')[1] === '1';
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: card.text,
+          parse_mode: 'HTML',
+          reply_markup: card.reply_markup
+        });
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: session.needRuby ? '✅ 已开启注音（仅日文歌曲生效）' : '已关闭注音'
+        });
+        return;
+      }
+
+      if (data.startsWith('arubym:')) {
+        session.rubyMode = data.split(':')[1] === 'kana' ? 'kana' : 'roman';
+        const card = buildAlbumCard(session.albumData, session.quality, session.needLrc, session.deliveryMode, userLang, isOwner, session.backArtistId || null, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: card.text,
+          parse_mode: 'HTML',
+          reply_markup: card.reply_markup
+        });
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: session.rubyMode === 'kana' ? '注音模式：平假名' : '注音模式：罗马音'
+        });
         return;
       }
 
@@ -4895,7 +4981,7 @@ ${quotaText}
         }
         session.downloading = true;
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleAlbumDownload(chatId, messageId, session.albumData, session.quality, session.needLrc, session.deliveryMode, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats)
+        handleAlbumDownload(chatId, messageId, session.albumData, session.quality, session.needLrc, session.deliveryMode, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode)
           .catch(e => console.error('[TG-Bot] 专辑转存任务出错:', e.message))
           .finally(() => userSessions.delete(sessionKey));
         return;
@@ -4905,7 +4991,7 @@ ${quotaText}
     // 单曲相关回调
     if (data.startsWith('q:')) {
       session.quality = data.split(':')[1];
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4919,7 +5005,7 @@ ${quotaText}
 
     if (data.startsWith('fmt:')) {
       session.isZip = data.split(':')[1] === 'zip';
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4935,7 +5021,7 @@ ${quotaText}
       const parts = data.split(':');
       session.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(parts[1]) ? parts[1] : 'lrc';
       session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats?.length > 0);
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4953,7 +5039,7 @@ ${quotaText}
       const cur = session.saveLyricsFormats || [];
       session.saveLyricsFormats = cur.includes(fmt) ? cur.filter((f) => f !== fmt) : [...cur, fmt];
       session.needLrc = session.embedLyricsMode !== 'off' || (session.saveLyricsFormats.length > 0);
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4968,13 +5054,13 @@ ${quotaText}
     if (data.startsWith('lyronly:')) {
       const parts = data.split(':');
       const want = parts[1]; // 'lrc' | 'ttml' | 'both'
-      await handleLyricsOnlyDownload(chatId, messageId, session.details, want, session.needTranslate);
+      await handleLyricsOnlyDownload(chatId, messageId, session.details, want, session.needTranslate, session.needRuby, session.rubyMode);
       return;
     }
 
     if (data.startsWith('tlrc:')) {
       session.needTranslate = data.split(':')[1] === '1';
-      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats);
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4983,6 +5069,40 @@ ${quotaText}
         reply_markup: card.reply_markup
       });
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      return;
+    }
+
+    if (data.startsWith('ruby:')) {
+      session.needRuby = data.split(':')[1] === '1';
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
+      });
+      await tgCall('answerCallbackQuery', {
+        callback_query_id: cb.id,
+        text: session.needRuby ? '✅ 已开启注音（仅日文歌曲生效）' : '已关闭注音'
+      });
+      return;
+    }
+
+    if (data.startsWith('rubym:')) {
+      session.rubyMode = data.split(':')[1] === 'kana' ? 'kana' : 'roman';
+      const card = buildSongCard(session.details, session.quality, session.needLrc, session.isZip, userLang, session.backAlbumId, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
+      });
+      await tgCall('answerCallbackQuery', {
+        callback_query_id: cb.id,
+        text: session.rubyMode === 'kana' ? '注音模式：平假名' : '注音模式：罗马音'
+      });
       return;
     }
 
@@ -4998,7 +5118,7 @@ ${quotaText}
       }
       session.downloading = true;
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-      handleDownload(chatId, messageId, session.details, session.quality, session.needLrc, session.isZip, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats)
+      handleDownload(chatId, messageId, session.details, session.quality, session.needLrc, session.isZip, session.needTranslate, session.embedLyricsMode, session.saveLyricsFormats, session.needRuby, session.rubyMode)
         .catch(e => console.error('[TG-Bot] 单曲转存任务出错:', e.message))
         .finally(() => userSessions.delete(sessionKey));
       return;
