@@ -1761,7 +1761,8 @@ async function processTransfer(body) {
     if (!parseRes.ok) {
       const parseErr = await parseRes.json().catch(() => ({}));
       // master m3u8 解析不出变体（wrapper 返回 M4P 单文件 + accessKey）：改用 /webplayback 拿标准 HLS
-      if (parseErr.msg?.includes('No variants') || parseErr.msg?.includes('failed to get m3u8')) {
+      // 注意：`failed to get m3u8` 已被 src/ui.rs 改写成中文提示，此处只按实际可命中的 msg 判断
+      if (parseErr.msg?.includes('No variants')) {
         try {
           const wpRes = await fetch(`${WRAPPER_BASE}/webplayback?adamId=${adamId}`, { signal: AbortSignal.timeout(15000) });
           if (wpRes.ok) {
@@ -1771,7 +1772,13 @@ async function processTransfer(body) {
               webplaybackM3u8 = wpUrl;
               // webplayback 为 ISO-23001-7 (CENC) 抽样加密 HLS，音质为 AAC 256kbps 上限（Apple 端格式限制）
               chosenFormatName = 'AAC (webplayback)';
-              console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback CENC HLS 拉流+解密: ${adamId}`);
+              // 用户要的是 ALAC/Hi-Res/杜比但该曲只有 M4P 单文件（无变体可选）时，明确告知降级，
+              // 与「杜比无版本回退 ALAC」保持一致，避免用户以为拿到的是无损
+              const wantsLossless = !/aac/i.test(quality || '');
+              if (wantsLossless) {
+                qualityFallback = '该曲目仅提供 AAC 256k 单文件源（无无损/Hi-Res 版本），已回退为 AAC (webplayback)';
+              }
+              console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback CENC HLS 拉流+解密: ${adamId}（请求音质 ${quality}）`);
             }
           }
         } catch (e) {
@@ -1779,10 +1786,12 @@ async function processTransfer(body) {
         }
       }
       if (!webplaybackM3u8) {
-        if (parseErr.msg === 'failed to get m3u8' || parseErr.msg?.includes('无资源') || parseErr.msg?.includes('无版权') || parseRes.status === 404 || parseRes.status === 500) {
+        // `failed to get m3u8` 在 ui.rs 会被改写成中文提示，故一并匹配中文关键词
+        const rawMsg = parseErr.msg || '';
+        if (rawMsg === 'failed to get m3u8' || rawMsg.includes('无资源') || rawMsg.includes('无版权') || rawMsg.includes('无资源或未上架') || parseRes.status === 404 || parseRes.status === 500) {
           throw new Error('此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
         }
-        throw new Error(`解析歌曲失败: ${parseErr.msg || 'HTTP ' + parseRes.status}`);
+        throw new Error(`解析歌曲失败: ${rawMsg || 'HTTP ' + parseRes.status}`);
       }
     } else {
       const parseData = await parseRes.json();
