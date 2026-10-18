@@ -655,6 +655,26 @@ function parseLyrics(ttmlContent) {
 
 /* ==================== 官方翻译 → 双语 LRC ==================== */
 
+// Apple 的译文块按 <span> 逐词切分，词与词之间留有真实的空格文本节点。英文里这些空格有意义，
+// 中文里却是噪音：「徘徊过 多少 橱窗 住 过 多少 旅 馆」正确写法是「徘徊过多少橱窗住过多少旅馆」。
+// 只删除「两侧都是全角 CJK」的空格，中英混排（如「love 你」）与纯英文均原样保留。
+const CJK_RE = /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/;
+function collapseCjkSpaces(str) {
+  const trimmed = String(str || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return '';
+  let out = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === ' ') {
+      const prev = out.slice(-1);
+      const next = trimmed[i + 1] || '';
+      if (prev && next && CJK_RE.test(prev) && CJK_RE.test(next)) continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 // TTML 的 <translations><translation xml:lang="zh-Hans"><text for="L1">译文</text>...
 // 通过 itunes:key 与原文 <p> 一一对齐。译文可含 <span ttm:role="x-bg">(和声)</span> 背景和声，剥离生成干净中文。
 function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
@@ -663,9 +683,20 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   }
   ttmlContent = normalizeLyricGlyphs(ttmlContent);
 
-  // 原文已是中文：跳过翻译，直接返回 null 让上层降级为单语原文
-  const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
-  if (rootLang.startsWith('zh')) return null;
+  // 旧逻辑只要原文语种以 `zh` 开头就整首跳过翻译，但粤语/台语歌词的 xml:lang 是 zh-Hant，
+  // 此时 Apple 返回的译文块正是用户勾选「翻译」时要的繁→简对照（type="replacement"）。
+  // 结果粤语歌开翻译后仍拿到纯繁体，看起来像「翻译失效」。
+  // 现在只在原文语种与目标语种完全一致（zh-Hant→zh-Hant、en→en）时才跳过，
+  // 其余情形（zh-Hant→zh-Hans、en→zh-Hans…）一律按翻译块处理。
+  const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase().replace(/_/g, '-');
+  const target = targetLang.toLowerCase().replace(/_/g, '-');
+  const script = (lang) => lang.split('-')[1] || '';
+  // 原文就是目标语种本身（zh-Hant→zh-Hant、en→en、zh-Hans→zh-Hans-CN）：没有可对照的差异，降级单语
+  if (rootLang && rootLang === target) return null;
+  // 中文之间只有繁体/简体（script 子标签）不同才值得对照，同写法则跳过
+  if (rootLang.startsWith('zh') && target.startsWith('zh') && script(rootLang) === script(target)) return null;
+  // 中文原文不翻成外语
+  if (rootLang.startsWith('zh') && !target.startsWith('zh')) return null;
 
   // 1. 提取翻译块：优先目标语言（zh-Hans），退回任意 language、排除自动生成
   let translationBlock = '';
@@ -704,7 +735,7 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
     const raw = textMatch[2]
       .replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '') // 剥离背景和声
       .replace(/<[^>]+>/g, '');
-    const text = unescapeXml(raw).trim();
+    const text = collapseCjkSpaces(unescapeXml(raw));
     if (key && text) transMap[key] = text;
   }
 
@@ -2013,7 +2044,10 @@ async function processTransfer(body) {
     //    逐行过 toSimplifiedChinese 会把罗马音行拆成单字，且与原文行的假名判定不一致，
     //    导致上下行最终被转换成不同的字形体系。此时整体跳过简繁转换（日文歌本来也不需要）。
     const hasRuby = shouldRuby && lyricsData.rubyApplied;
-    if (!hasRuby) {
+    // ⚠️ 双语繁简对照（原文繁体 + 译文简体）时同样必须跳过：整体转简体会把原文行也转成简体，
+    //    结果变成「简体 + 简体」两行重复，繁简对照彻底消失。
+    const isZhPair = shouldTranslateLyrics && lyricsData.lines?.some((l) => l.translation);
+    if (!hasRuby && !isZhPair) {
       if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
       if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
       if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
