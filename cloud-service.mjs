@@ -1283,6 +1283,9 @@ function stripBitrateBox(dst) {
   dst.copy(out, 0, 0, hit);
   dst.copy(out, hit, hit + btrtSize, dst.length);
   for (const c of chain) {
+    // 跳过被删除的 btrt 自身：它的头部位置已被尾部数据覆盖，
+    // 再写一次 size 会把搬过来的下一个 box（stts）的 size 字段清零。
+    if (c.pos >= hit && c.pos < hit + btrtSize) continue;
     if (c.size === 0) continue;
     if (c.hdr === 16) out.writeBigUInt64BE(BigInt(c.size + delta), c.pos + 8);
     else out.writeUInt32BE(c.size + delta, c.pos);
