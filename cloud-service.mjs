@@ -1334,6 +1334,76 @@ function stripBitrateBox(dst) {
  * 彻底解决 Android ExoPlayer / MediaCodec / 椒盐音乐 等播放器报 "编码错误" (无法识别 moof 分片) 的问题
  * ⚠️ ffmpeg 会丢掉 E-AC-3 的 `dec3` JOC 尾部字节（Atmos 标志），必须用 `restoreAtmosDec3` 补回。
  */
+/**
+ * 解碎片产物自检。
+ *
+ * 必需满足：
+ *  1. `moov` 存在且顶层没有 `moof`（分片未消除 → Android/椒盐音乐报「编码错误」）
+ *  2. 音频轨 `stbl` 五子盒齐全（`stsd`/`stts`/`stsc`/`stsz`/`stco` 或 `co64`）
+ *  3. `stsz` 的 sample_count > 0
+ *
+ * 返回 null 表示通过，否则返回问题描述字符串。
+ */
+function validateDefragged(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+
+  const topKinds = [];
+  let p = 0;
+  while (p + 8 <= b.length) {
+    let size = b.readUInt32BE(p);
+    const kind = b.toString('latin1', p + 4, p + 8);
+    let hdr = 8;
+    if (size === 1) { size = Number(b.readBigUInt64BE(p + 8)); hdr = 16; }
+    else if (size === 0) size = b.length - p;
+    if (size < hdr || p + size > b.length) break;
+    topKinds.push(kind);
+    p += size;
+  }
+
+  if (!topKinds.includes('moov')) return '缺少 moov';
+  if (topKinds.includes('moof')) return '仍残留 moof 分片';
+  if (!topKinds.includes('mdat')) return '缺少 mdat';
+
+  // 找第一个音频轨的 stbl
+  const moovEl = b.indexOf(Buffer.from('moov', 'latin1'));
+  const stblEl = b.indexOf(Buffer.from('stbl', 'latin1'), moovEl);
+  if (stblEl < 4) return '未找到 stbl';
+
+  const stblPos = stblEl - 4;
+  const stblSize = b.readUInt32BE(stblPos);
+  if (stblSize < 8 || stblPos + stblSize > b.length) return 'stbl 尺寸非法';
+
+  const kids = new Set();
+  let sizes = null;
+  let q = stblPos + 8;
+  while (q + 8 <= stblPos + stblSize) {
+    let size = b.readUInt32BE(q);
+    const kind = b.toString('latin1', q + 4, q + 8);
+    let hdr = 8;
+    if (size === 1) { size = Number(b.readBigUInt64BE(q + 8)); hdr = 16; }
+    else if (size === 0) size = (stblPos + stblSize) - q;
+    if (size < hdr) return `stbl 内 ${kind} 尺寸非法`;
+    kids.add(kind);
+    if (kind === 'stsz') sizes = { pos: q, size };
+    q += size;
+  }
+
+  for (const need of ['stsd', 'stts', 'stsc', 'stsz']) {
+    if (!kids.has(need)) return `stbl 缺少 ${need}`;
+  }
+  if (!kids.has('stco') && !kids.has('co64')) return 'stbl 缺少 stco/co64';
+
+  if (sizes) {
+    // stsz: 8B 头 + 4B version/flags + 4B sample_size + 4B sample_count
+    if (sizes.size >= 20) {
+      const count = b.readUInt32BE(sizes.pos + 16);
+      if (count === 0) return 'stsz sample_count 为 0';
+    }
+  }
+
+  return null;
+}
+
 async function defragMp4Buffer(inputBuf, codecHint = null) {
   const rnd = Math.random().toString(36).slice(2, 8);
   const tmpIn = `/tmp/am_defrag_in_${Date.now()}_${rnd}.m4a`;
@@ -1384,10 +1454,17 @@ async function defragMp4Buffer(inputBuf, codecHint = null) {
     } catch (e) {
       console.warn('[Cloud-Transfer] 剥除 btrt 失败 (非致命):', e.message);
     }
+    // 产物自检：必须已消除 moof 分片、且 stbl 五子盒齐全，否则宁可报错也不外发坏文件
+    const problem = validateDefragged(outBuf);
+    if (problem) {
+      throw new Error(`解碎片产物结构异常（${problem}），拒绝交付损坏文件`);
+    }
     return new Uint8Array(outBuf);
   } catch (err) {
-    console.warn('[Cloud-Transfer] ffmpeg 解碎片重封装异常，回退原始缓冲:', err.message);
-    return inputBuf;
+    // 绝不静默回退：未解碎片的分片 MP4 在多数播放器上表现为「文件损坏」，
+    // 静默交付比直接失败更糟（用户拿到坏文件却以为是资源问题）。
+    console.error('[Cloud-Transfer] ffmpeg 解碎片重封装失败:', err.message);
+    throw new Error(`音频容器解碎片失败: ${err.message}`);
   } finally {
     try { await fs.promises.unlink(tmpIn); } catch {}
     try { await fs.promises.unlink(tmpOut); } catch {}
