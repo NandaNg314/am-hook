@@ -123,6 +123,14 @@ impl Atom {
         Atom { kind: *kind, body: Body::Tree { head, children } }
     }
 
+    /// A tree from already-encoded child boxes, without re-parsing. The fixed
+    /// fields of a container that is not normally expanded (like the audio
+    /// fields of an `ec-3` sample entry) go in `head`.
+    pub fn with_encoded_children(kind: &FourCC, head: Vec<u8>, encoded: &[u8]) -> Result<Atom> {
+        let children = spans(encoded, 0, encoded.len())?.iter().map(|s| Atom::from_span(encoded, s)).collect::<Result<Vec<_>>>()?;
+        Ok(Atom { kind: *kind, body: Body::Tree { head, children } })
+    }
+
     pub fn from_span(data: &[u8], s: &Span) -> Result<Atom> {
         let payload = &data[s.payload()];
         match container_head(&s.kind, payload) {

@@ -756,13 +756,15 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
 function createDataAtom(type, flags, payload) {
   // MP4 fourcc 必须精确 4 字节，非 ASCII (如 \xa9) 必须用 charCodeAt 保证单字节
   const typeBytes = Uint8Array.from(type, c => c.charCodeAt(0));
-  const dataHeader = new Uint8Array(16);
-  const dataView = new DataView(dataHeader.buffer);
+  // `data` box：8B header + 4B type_indicator + 4B locale = 16B，payload 紧随其后
   const dataSize = 16 + payload.length;
+  const dataHeader = new Uint8Array(dataSize);
+  const dataView = new DataView(dataHeader.buffer);
   dataView.setUint32(0, dataSize, false);
   dataHeader.set(new TextEncoder().encode('data'), 4);
   dataView.setUint32(8, flags, false);
   dataView.setUint32(12, 0, false);
+  dataHeader.set(payload, 16);
 
   const atomSize = 8 + dataSize;
   const atomHeader = new Uint8Array(8);
@@ -772,7 +774,6 @@ function createDataAtom(type, flags, payload) {
   const res = new Uint8Array(atomSize);
   res.set(atomHeader, 0);
   res.set(dataHeader, 8);
-  res.set(payload, 24);
   return res;
 }
 
@@ -956,27 +957,430 @@ function tagMp4(mp4Bytes, tags) {
   return finalMp4;
 }
 
+/* ==================== Dolby Atmos (dec3 / JOC) 保持 ==================== */
+/**
+ * 遍历 MP4 的 box 树，回调每个 box：`cb(kind, start, size)` 返回 true 时停止。
+ * 只下降到轨道容器层级，样本条目（`stsd` 的 entry）单独处理——它不是普通容器。
+ */
+function walkMp4Boxes(buf, start, end, cb, parentKind = '') {
+  let p = start;
+  while (p + 8 <= end) {
+    let size = buf.readUInt32BE(p);
+    const kind = buf.toString('latin1', p + 4, p + 8);
+    let hdr = 8;
+    if (size === 1) {
+      if (p + 16 > end) return false;
+      size = Number(buf.readBigUInt64BE(p + 8));
+      hdr = 16;
+    } else if (size === 0) {
+      size = end - p;
+    }
+    if (size < hdr || p + size > end) return false;
+    if (cb(kind, p, size, parentKind, hdr)) return true;
+    if (['moov', 'trak', 'mdia', 'minf', 'stbl', 'udta', 'edts', 'dinf'].includes(kind)) {
+      if (walkMp4Boxes(buf, p + hdr, p + size, cb, kind)) return true;
+    }
+    p += size;
+  }
+  return false;
+}
+
+/**
+ * 取 `stsd` 里第一个音频样本条目的 `dec3`（EC3SpecificBox）原始字节。
+ * Atmos 的 JOC 标志（`flag_ec3_extension_type_a` / `complexity_index_type_a`，
+ * Apple 写的是 `0x01 0x10`）是挂在 `dec3` 尾部的**保留字节**，没有它播放器只会当普通 E-AC-3。
+ */
+function extractDec3Box(buf) {
+  let found = null;
+  walkMp4Boxes(buf, 0, buf.length, (kind, p, size, parent, hdr) => {
+    if (kind !== 'stsd' || parent !== 'stbl') return false;
+    // stsd: fullbox(4) + entry_count(4)，之后是样本条目
+    let q = p + hdr + 8;
+    while (q + 8 <= p + size) {
+      const esize = buf.readUInt32BE(q);
+      if (esize < 8 || q + esize > p + size) break;
+      // 音频样本条目固定 28B 字段（视频是 78B，这里只关心音频）
+      let r = q + 8 + 28;
+      while (r + 8 <= q + esize) {
+        const csize = buf.readUInt32BE(r);
+        const ckind = buf.toString('latin1', r + 4, r + 8);
+        if (csize < 8 || r + csize > q + esize) break;
+        if (ckind === 'dec3') {
+          found = buf.subarray(r + 8, r + csize); // 只取负载（不含 8B header）
+          return true;
+        }
+        r += csize;
+      }
+      q += esize;
+    }
+    return false;
+  });
+  return found;
+}
+
+/**
+ * `dec3` 的尾部保留字节里，前 1 字节 `flag_ec3_extension_type_a` 为 1 时
+ * 紧跟 1 字节 `complexity_index_type_a`；都没有则是普通 E-AC-3。
+ */
+function dec3JocTail(dec3) {
+  if (!dec3 || dec3.length < 5) return null;
+  const numIndSub = dec3[0] & 0x07;
+  // 每个独立子流：3B；num_dep_sub>0 时再多 1B chan_loc
+  let p = 1;
+  for (let i = 0; i <= numIndSub; i++) {
+    if (p + 3 > dec3.length) return null;
+    const numDepSub = (dec3[p + 2] >> 1) & 0x0f;
+    p += numDepSub > 0 ? 4 : 3;
+  }
+  if (p >= dec3.length) return null;
+  const flag = dec3[p];
+  const need = flag !== 0 ? 2 : 1;
+  if (p + need > dec3.length) return null;
+  return Buffer.from(dec3.subarray(p, p + need));
+}
+
+/**
+ * ffmpeg 重封装 E-AC-3 时只按 ETSI TS 102 366 的固定 4 个子流字段写 `dec3`，
+ * **会丢掉尾部 JOC 扩展字节**——产物被识别成普通 E-AC-3，Dolby Atmos 全部消失。
+ * 这里把 `dst` 里的 `dec3` 负载替换为 `src` 的原始负载，并修正外层 box 尺寸。
+ * 仅当目标缺少尾部字节时才改写，已是完整结构则原样返回。
+ */
+function restoreAtmosDec3(dst, srcDec3) {
+  const tail = dec3JocTail(srcDec3);
+  if (!tail) return dst; // 源本身没有 Atmos 标志，无需处理
+  // 音频样本条目 4CC（`dec3` 的父级），决定下降 28B 音频字段后才是子 box
+  const sampleEntryKinds = new Set(['ec-3', 'ac-3', 'mp4a', 'alac', 'samr', 'sawb', 'lpcm']);
+
+  let patch = null;
+  const find = (buf) => {
+    let hit = null;
+    walkMp4Boxes(buf, 0, buf.length, (kind, p, size, parent, hdr) => {
+      if (kind !== 'stsd' || parent !== 'stbl') return false;
+      let q = p + hdr + 8;
+      while (q + 8 <= p + size) {
+        const esize = buf.readUInt32BE(q);
+        if (esize < 8 || q + esize > p + size) break;
+        let r = q + 8 + 28;
+        while (r + 8 <= q + esize) {
+          const csize = buf.readUInt32BE(r);
+          const ckind = buf.toString('latin1', r + 4, r + 8);
+          if (csize < 8 || r + csize > q + esize) break;
+          if (ckind === 'dec3') {
+            hit = { start: r, size: csize, payload: buf.subarray(r + 8, r + csize) };
+            return true;
+          }
+          r += csize;
+        }
+        q += esize;
+      }
+      return false;
+    });
+    return hit;
+  };
+
+  patch = find(dst);
+  if (!patch) return dst;
+  // 目标已带尾部扩展（含相同尾字节）→ 不动
+  if (patch.payload.length >= srcDec3.length && dec3JocTail(patch.payload)) {
+    const curTail = dec3JocTail(patch.payload);
+    if (curTail && Buffer.compare(curTail, tail) === 0) return dst;
+  }
+
+  const delta = srcDec3.length - patch.payload.length;
+  if (delta === 0) {
+    srcDec3.copy(dst, patch.start + 8);
+    return dst;
+  }
+
+  // 尺寸变化：先把 dec3 及所有祖先 box 的 size 字段改好，再拼接新缓冲
+  // 祖先链必须包含样本条目本身（`dec3` 的父级是 `ec-3`，不是 `stsd`），
+  // 因此这里复用与 walkMp4Boxes 完全一致的下降规则。
+  const sizeFields = [];
+  const collectAncestors = (targetStart) => {
+    const walk = (start, end) => {
+      let p = start;
+      while (p + 8 <= end) {
+        let size = dst.readUInt32BE(p);
+        const kind = dst.toString('latin1', p + 4, p + 8);
+        let hdr = 8;
+        if (size === 1) {
+          size = Number(dst.readBigUInt64BE(p + 8));
+          hdr = 16;
+        } else if (size === 0) {
+          size = end - p;
+        }
+        if (size < hdr || p + size > end) return false;
+        if (targetStart >= p && targetStart < p + size) {
+          sizeFields.push(p);
+          if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(kind)) {
+            return walk(p + hdr, p + size);
+          }
+          if (kind === 'stsd') {
+            // stsd 的条目区起点：p+8 hdr +4 version/flags +4 entry_count
+            return walk(p + 16, p + size);
+          }
+          // 样本条目（`ec-3`/`mp4a`…）：固定 28B 音频字段后才是 `dec3` 等子 box
+          if (sampleEntryKinds.has(kind)) {
+            return walk(p + hdr + 28, p + size);
+          }
+          return true;
+        }
+        p += size;
+      }
+      return false;
+    };
+    walk(0, dst.length);
+  };
+  collectAncestors(patch.start);
+
+  const out = Buffer.allocUnsafe(dst.length + delta);
+  // dec3 之后的数据整体后移 delta
+  dst.copy(out, 0, 0, patch.start + 8);
+  srcDec3.copy(out, patch.start + 8);
+  dst.copy(out, patch.start + 8 + srcDec3.length, patch.start + 8 + patch.payload.length);
+  for (const sf of sizeFields) {
+    const cur = out.readUInt32BE(sf);
+    if (cur !== 1 && cur !== 0) out.writeUInt32BE(cur + delta, sf);
+  }
+  // dec3 位于 moov 内，插入字节会把其后 mdat 整体后移 delta，而 stco/co64 记的是
+  // mdat 内的绝对偏移 → 必须同步平移，否则所有样本指针错位。
+  // 只在「moov 在 mdat 之前」时平移；ffmpeg 的 +faststart 必然是这个布局。
+  const shiftChunkOffsets = (buf, minOffset) => {
+    const visit = (start, end) => {
+      let p = start;
+      while (p + 8 <= end) {
+        let size = buf.readUInt32BE(p);
+        const kind = buf.toString('latin1', p + 4, p + 8);
+        let hdr = 8;
+        if (size === 1) {
+          size = Number(buf.readBigUInt64BE(p + 8));
+          hdr = 16;
+        } else if (size === 0) {
+          size = end - p;
+        }
+        if (size < hdr || p + size > end) return;
+        if (kind === 'stco') {
+          const n = buf.readUInt32BE(p + 12);
+          for (let i = 0; i < n; i++) {
+            const at = p + 16 + i * 4;
+            if (at + 4 > p + size) break;
+            const v = buf.readUInt32BE(at);
+            if (v >= minOffset) buf.writeUInt32BE(v + delta, at);
+          }
+        } else if (kind === 'co64') {
+          const n = buf.readUInt32BE(p + 12);
+          for (let i = 0; i < n; i++) {
+            const at = p + 16 + i * 8;
+            if (at + 8 > p + size) break;
+            const v = Number(buf.readBigUInt64BE(at));
+            if (v >= minOffset) buf.writeBigUInt64BE(BigInt(v + delta), at);
+          }
+        }
+        if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(kind)) visit(p + hdr, p + size);
+        p += size;
+      }
+    };
+    visit(0, buf.length);
+  };
+  // mdat 的负载起点在插入点之后，就是需要平移的阈值
+  let mdatPayloadStart = -1;
+  (function findMdat(start, end) {
+    let p = start;
+    while (p + 8 <= end) {
+      let size = dst.readUInt32BE(p);
+      const kind = dst.toString('latin1', p + 4, p + 8);
+      let hdr = 8;
+      if (size === 1) { size = Number(dst.readBigUInt64BE(p + 8)); hdr = 16; }
+      if (kind === 'mdat') { mdatPayloadStart = p + hdr; return; }
+      if (size < hdr) return;
+      p += size;
+    }
+  })(0, dst.length);
+  if (mdatPayloadStart > patch.start) shiftChunkOffsets(out, mdatPayloadStart);
+  return out;
+}
+
+/**
+ * 剥除音频样本条目里的 `btrt`（BitRateBox）。
+ *
+ * ffmpeg 重封装时总会往样本条目塞一个 20 字节的 `btrt`，使 `stsd` 从 67B（Apple 原生形态）
+ * 膨胀到 87B。Android MediaExtractor / 椒盐音乐（Salt Player）等严格实现会因此拒绝该文件。
+ * 实测：同一份音频剥掉 `btrt` 后 `stsd` 回到 67B，与能正常播放的参考样本逐字段一致。
+ * 剥除后同步修正 `ec-3` 条目及全部祖先 box（`stsd`→`stbl`→`minf`→`mdia`→`trak`→`moov`）
+ * 的尺寸，并按 `mdat` 负载起点平移 `stco`/`co64` 绝对偏移。
+ */
+function stripBitrateBox(dst) {
+  const sampleEntryKinds = new Set(['ec-3', 'ac-3', 'mp4a', 'alac', 'samr', 'sawb', 'lpcm']);
+
+  // 只处理 moov 内部的音频轨样本条目：stsd 的条目子 box 里若含 btrt 就摘掉
+  const moovEl = dst.indexOf(Buffer.from('moov', 'latin1'));
+  if (moovEl < 4) return dst;
+  const stsdEl = dst.indexOf(Buffer.from('stsd', 'latin1'), moovEl);
+  if (stsdEl < 4) return dst;
+  const stsdPos = stsdEl - 4;
+  const stsdSize = dst.readUInt32BE(stsdPos);
+  if (stsdSize < 16 || stsdPos + stsdSize > dst.length) return dst;
+
+  // stsd: 8B 头 + 4B version/flags + 4B entry_count + N 个样本条目
+  const entryCount = dst.readUInt32BE(stsdPos + 12);
+  if (entryCount < 1) return dst;
+
+  let hit = null;
+  let q = stsdPos + 16;
+  for (let e = 0; e < entryCount && q + 8 <= stsdPos + stsdSize; e++) {
+    const esize = dst.readUInt32BE(q);
+    const ekind = dst.toString('latin1', q + 4, q + 8);
+    if (esize < 8 || q + esize > stsdPos + stsdSize) break;
+    if (sampleEntryKinds.has(ekind)) {
+      // 音频样本条目：8B 头 + 28B 固定字段，之后才是子 box（dec3 / btrt / esds ...）
+      let r = q + 8 + 28;
+      while (r + 8 <= q + esize) {
+        const csize = dst.readUInt32BE(r);
+        const ckind = dst.toString('latin1', r + 4, r + 8);
+        if (csize < 8 || r + csize > q + esize) break;
+        if (ckind === 'btrt') { hit = r; break; }
+        r += csize;
+      }
+      if (hit !== null) break;
+    }
+    q += esize;
+  }
+  if (hit === null) return dst;
+
+  const btrtSize = dst.readUInt32BE(hit);
+  if (btrtSize < 8 || hit + btrtSize > dst.length) return dst;
+  const delta = -btrtSize;
+
+  // 祖先链：命中位置必须落在该 box 的 [pos, pos+size) 区间内。
+  // 只在 moov 范围内向上找，避免把 mdat 等大块误判。
+  const chain = [];
+  (function walk(start, end) {
+    let p = start;
+    while (p + 8 <= end) {
+      let size = dst.readUInt32BE(p);
+      const kind = dst.toString('latin1', p + 4, p + 8);
+      let hdr = 8;
+      if (size === 1) { size = Number(dst.readBigUInt64BE(p + 8)); hdr = 16; }
+      else if (size === 0) { size = end - p; }
+      if (size < hdr) return;
+      if (hit >= p && hit < p + size) {
+        chain.push({ pos: p, hdr, size, kind });
+        const moovPos = dst.indexOf(Buffer.from('moov', 'latin1')) - 4;
+        if (kind === 'moov' || kind === 'trak' || kind === 'mdia' || kind === 'minf' || kind === 'stbl') {
+          walk(p + hdr, p + size);
+        } else if (kind === 'stsd') {
+          walk(p + hdr + 8, p + size);
+        } else if (sampleEntryKinds.has(kind)) {
+          walk(p + hdr + 28, p + size);
+        }
+        return;
+      }
+      p += size;
+    }
+  })(moovEl - 4, dst.length);
+
+  const out = Buffer.allocUnsafe(dst.length + delta);
+  dst.copy(out, 0, 0, hit);
+  dst.copy(out, hit, hit + btrtSize, dst.length);
+  for (const c of chain) {
+    if (c.size === 0) continue;
+    if (c.hdr === 16) out.writeBigUInt64BE(BigInt(c.size + delta), c.pos + 8);
+    else out.writeUInt32BE(c.size + delta, c.pos);
+  }
+
+  // mdat 若在 btrt 之后，其内所有 stco/co64 绝对偏移都要同步前移
+  const mdatEl = out.indexOf(Buffer.from('mdat', 'latin1'));
+  if (mdatEl > hit) {
+    const mdatPos = mdatEl - 4;
+    (function shift(start, end) {
+      let p = start;
+      while (p + 8 <= end) {
+        let size = out.readUInt32BE(p);
+        const kind = out.toString('latin1', p + 4, p + 8);
+        let hdr = 8;
+        if (size === 1) { size = Number(out.readBigUInt64BE(p + 8)); hdr = 16; }
+        else if (size === 0) { size = end - p; }
+        if (size < hdr) return;
+        if (kind === 'stco') {
+          const n = out.readUInt32BE(p + 12);
+          for (let k = 0; k < n && p + 16 + k * 4 + 4 <= p + size; k++) {
+            const at = p + 16 + k * 4;
+            const v = out.readUInt32BE(at);
+            if (v >= mdatPos) out.writeUInt32BE(v + delta, at);
+          }
+        } else if (kind === 'co64') {
+          const n = out.readUInt32BE(p + 12);
+          for (let k = 0; k < n && p + 16 + k * 8 + 8 <= p + size; k++) {
+            const at = p + 16 + k * 8;
+            const v = Number(out.readBigUInt64BE(at));
+            if (v >= mdatPos) out.writeBigUInt64BE(BigInt(v + delta), at);
+          }
+        }
+        if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(kind)) shift(p + hdr, p + size);
+        p += size;
+      }
+    })(moovEl - 4, out.length);
+  }
+  return out;
+}
+
 /**
  * 将 HLS fragmented MP4 (fMP4) 极速解碎片并重封装为标准 Progressive M4A (ftyp M4A, moov faststart, mdat)
  * 采用 ffmpeg -c copy (纯容器重封装，0 编解码，无损音质 100% 保持，耗时仅 ~0.05s)
  * 彻底消除 moof 分片结构，写入完整 stbl 索引与 faststart 头部，
  * 彻底解决 Android ExoPlayer / MediaCodec / 椒盐音乐 等播放器报 "编码错误" (无法识别 moof 分片) 的问题
+ * ⚠️ ffmpeg 会丢掉 E-AC-3 的 `dec3` JOC 尾部字节（Atmos 标志），必须用 `restoreAtmosDec3` 补回。
  */
-async function defragMp4Buffer(inputBuf) {
+async function defragMp4Buffer(inputBuf, codecHint = null) {
   const rnd = Math.random().toString(36).slice(2, 8);
   const tmpIn = `/tmp/am_defrag_in_${Date.now()}_${rnd}.m4a`;
   const tmpOut = `/tmp/am_defrag_out_${Date.now()}_${rnd}.m4a`;
   try {
     await fs.promises.writeFile(tmpIn, inputBuf);
+    // ⚠️ 必须显式 `-f mp4`：Ubuntu 打包的 FFmpeg 6.x 里 m4a 扩展名走的是 `ipod` muxer，
+    // 而 `ipod` 不带 eac3 tag → "Could not find tag for codec eac3" 直接失败，
+    // 整个解碎片会静默回退成未解碎片的 fMP4（椒盐音乐「编码错误」的真正根因）。
+    // ⚠️ 必须 `-map 0:a` + `-map 0:v?`：封面是 `udta/meta/ilst/covr` 标签，
+    // 但 ffmpeg 的 mov demuxer 会把它同时暴露成一路 mjpeg 视频流。
+    // 若只 `-map 0:a`，ffmpeg 丢弃该流的同时会把 `covr` 标签一并剥掉（封面丢失；
+    // Android 系播放器取封面正是读 `covr`）。保留该流则 `covr` 完整保留。
     await execFileAsync('ffmpeg', [
       '-y',
       '-v', 'error',
       '-i', tmpIn,
+      '-map', '0:a',
+      '-map', '0:v?',
       '-c', 'copy',
       '-movflags', '+faststart',
+      '-f', 'mp4',
       tmpOut
     ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
-    const outBuf = await fs.promises.readFile(tmpOut);
+    let outBuf = await fs.promises.readFile(tmpOut);
+    // ffmpeg 的 E-AC-3 重封装会丢掉 dec3 的 JOC 尾部 → 从原始流补回，保住 Atmos 标志
+    if (codecHint) {
+      try {
+        const srcDec3 = extractDec3Box(codecHint);
+        if (srcDec3) {
+          const fixed = restoreAtmosDec3(outBuf, srcDec3);
+          if (fixed !== outBuf) {
+            outBuf = fixed;
+            console.log('[Cloud-Transfer] 已补回 dec3 JOC 扩展字节（Dolby Atmos 标志）');
+          }
+        }
+      } catch (e) {
+        console.warn('[Cloud-Transfer] 恢复 Atmos dec3 失败 (非致命):', e.message);
+      }
+    }
+    // ffmpeg 会往样本条目塞 `btrt`，使 stsd 从 67B 膨胀到 87B，严格解析器（椒盐音乐）会拒绝
+    try {
+      const noBtrt = stripBitrateBox(outBuf);
+      if (noBtrt !== outBuf) {
+        outBuf = noBtrt;
+        console.log('[Cloud-Transfer] 已剥除 btrt，stsd 恢复 Apple 原生形态');
+      }
+    } catch (e) {
+      console.warn('[Cloud-Transfer] 剥除 btrt 失败 (非致命):', e.message);
+    }
     return new Uint8Array(outBuf);
   } catch (err) {
     console.warn('[Cloud-Transfer] ffmpeg 解碎片重封装异常，回退原始缓冲:', err.message);
@@ -1575,9 +1979,9 @@ async function processTransfer(body) {
   let lyricsMime = 'text/plain;charset=utf-8';
   /** 额外外置歌词文件（与主文件同时交付，如 .lrc + .ttml 并存） */
   const extraLyrics = [];
-  if (lyricsData.hasLyrics) {
-    // 主文件 = 用户首选格式
-    const primary = buildLyricsFile(saveLyricsFormats[0] || chosenLyricsFormat) || buildLyricsFile(chosenLyricsFormat);
+  if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {
+    // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
+    const primary = buildLyricsFile(saveLyricsFormats[0]);
     if (primary) {
       lyricsFilename = primary.filename;
       lyricsContent = primary.content;
@@ -1629,7 +2033,11 @@ async function processTransfer(body) {
 
   // 3.1 容器解碎片重封装：消除 HLS moof 分片，重建完整 sample tables 与 faststart，标准 Progressive M4A 封装
   // 彻底解决 Android / 椒盐音乐 / ExoPlayer 等播放器显示 "编码错误" (无法解析 moof 分片) 的问题
-  const finalAudioBuf = await defragMp4Buffer(taggedMp4Buf);
+  const finalAudioBuf = await defragMp4Buffer(
+    taggedMp4Buf,
+    // 零拷贝视图，避免为 17MB 音频再复制一份
+    Buffer.from(rawAudioBuf.buffer, rawAudioBuf.byteOffset, rawAudioBuf.byteLength)
+  );
   const tDefrag = performance.now();
   console.log(`[Cloud-Transfer] 容器解碎片完成 (${((tDefrag - tTag) / 1000).toFixed(3)}s, 标准 M4A faststart 封装)`);
 

@@ -68,8 +68,10 @@ export function normalizeSampleEntries(input) {
   };
   const AUDIO_FIELDS = (t) => ['mp4a', 'alac', 'enca', 'ec-3', 'fLaC'].includes(t);
   const stripFree = (e) => {
-    const fields = AUDIO_FIELDS(e.type) ? 28 : 78;
-    let q = e.start + 8 + fields;
+    // Byte offset of a sample entry's child boxes: 8-byte box header plus the
+    // fixed fields (28 for audio, 78 for video).
+    const fields = 8 + (AUDIO_FIELDS(e.type) ? 28 : 78);
+    let q = e.start + fields;
     let cut = e.end;
     while (q + 8 <= e.end) {
       const cs = be32(q);
@@ -84,7 +86,6 @@ export function normalizeSampleEntries(input) {
     if (entries.length > 1) return true;
     return entries.some((e) => stripFree(e) !== e.end);
   };
-
   const moov = findChild(0, bytes.length, 'moov');
   if (moov < 0) return input;
   const moovSize = be32(moov);

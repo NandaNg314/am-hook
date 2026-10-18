@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::bmff::{self, be32, put32, put64, version_flags, Atom, FourCC};
+use crate::bmff::{self, be32, put32, put64, version_flags, Atom, Body, FourCC};
 use crate::cenc::tkhd_track_id;
 use crate::frag::{sgpd_grouping_type, traf_tfhd, Sample, Sbgp, Tfhd, Trex, Trun, TRUN_DATA_OFFSET};
 use crate::readahead::{Reader, Sink, Source};
@@ -567,6 +567,88 @@ fn full(kind: &FourCC, version: u8, body: Vec<u8>) -> Atom {
     Atom::data(kind, b)
 }
 
+/// Offset, inside a sample entry's full box bytes, where its child boxes
+/// start. Audio entries have 28 bytes of fixed fields after the box header;
+/// video entries have 78.
+fn sample_entry_fields(kind: &FourCC) -> Option<usize> {
+    match kind {
+        b"mp4a" | b"alac" | b"ec-3" | b"ac-3" | b"fLaC" | b"Opus" | b"enca" => Some(8 + 28),
+        b"mp4v" | b"avc1" | b"hvc1" | b"hev1" | b"encv" => Some(8 + 78),
+        _ => None,
+    }
+}
+
+/// Progressive sample tables must look like the output of an ffmpeg `-c copy`
+/// remux. The decryption pass keeps every protected sample entry's `sinf` in
+/// place as an equal-length `free` box with a wiped body, and Apple HLS init
+/// segments often declare two identical sample entries. Strict demuxers
+/// (Android ExoPlayer `Mp4Extractor`, hence Salt Player) reject a `free` where
+/// `sinf`/codec configuration belongs and report a parse error, shown as
+/// "encoding error" (PROJECT_MEMORY.md §3.30). ffmpeg drops such placeholders
+/// and duplicates; mirror that and rewrite stsd's entry count.
+///
+/// Returns the original entry index of every kept entry, so chunk indices can
+/// be renumbered to match.
+fn normalize_sample_entries(stsd: &mut Atom) -> Vec<u32> {
+    let Body::Tree { head, children } = &stsd.body else { return Vec::new() };
+    if !children.iter().any(|e| sample_entry_fields(&e.kind).is_some()) {
+        return Vec::new();
+    }
+    let mut kept: Vec<Atom> = Vec::with_capacity(children.len());
+    let mut original = Vec::with_capacity(children.len());
+    let mut changed = false;
+    for (i, entry) in children.iter().enumerate() {
+        let mut entry = entry.clone();
+        if let Some(fields) = sample_entry_fields(&entry.kind) {
+            let raw = entry.to_bytes();
+            if let Some(cleaned) = strip_entry_placeholders(&raw, fields) {
+                entry = cleaned;
+                changed = true;
+            }
+        }
+        if kept.iter().any(|k| k.kind == entry.kind && k.body == entry.body) {
+            changed = true;
+            continue;
+        }
+        kept.push(entry);
+        original.push(i as u32 + 1);
+    }
+    // Nothing to drop: keep the box byte-for-byte, including its entry order.
+    if !changed {
+        return (1..=children.len() as u32).collect();
+    }
+    let mut new_head = head.clone();
+    put32(&mut new_head, 4, kept.len() as u32);
+    *stsd = Atom::tree(b"stsd", new_head, kept);
+    original
+}
+
+/// Drops `free`/`skip` placeholders from a sample entry and returns the entry
+/// with the remaining payload boxes. The decryption pass renames `sinf` to an
+/// empty `free`, which strict demuxers then try to parse as a codec child.
+/// Returns `None` when nothing needed dropping, so untouched entries keep their
+/// exact bytes.
+fn strip_entry_placeholders(raw: &[u8], fields: usize) -> Option<Atom> {
+    let mut body = raw.get(fields..)?.to_vec();
+    let mut dirty = false;
+    loop {
+        let spans = bmff::spans(&body, 0, body.len()).ok()?;
+        let drop: Vec<bool> = spans.iter().map(|s| &s.kind == b"free" || &s.kind == b"skip").collect();
+        if !drop.contains(&true) {
+            break;
+        }
+        dirty = true;
+        body = spans.iter().zip(&drop).filter(|(_, d)| !**d).flat_map(|(s, _)| body[s.start..s.end].to_vec()).collect();
+    }
+    if !dirty {
+        return None;
+    }
+    Atom::with_encoded_children(&fourcc_of(raw), raw[8..fields].to_vec(), &body).ok()
+}
+fn fourcc_of(raw: &[u8]) -> FourCC {
+    raw[4..8].try_into().unwrap_or(*b"    ")
+}
+
 fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Result<()> {
     // stsd keeps the codec configuration; sample group descriptions are kept
     // and their fragment assignments rebuilt. Other metadata would need a
@@ -581,9 +663,11 @@ fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Re
             k => bail!("track {} has unsupported stbl child {:?}; refusing to silently change its semantics", td.id, bmff::fourcc(k)),
         }
     }
-    let stsd = stsd.ok_or_else(|| Error::msg(format!("track {} has no stsd", td.id)))?;
+    let mut stsd = stsd.ok_or_else(|| Error::msg(format!("track {} has no stsd", td.id)))?;
+    // Drop decryptor placeholder boxes and duplicate entries; `distinct[i]` is
+    // the original stsd index (1-based) of kept entry `i`.
+    let distinct = normalize_sample_entries(&mut stsd);
     let mut children = vec![stsd];
-
     // stts
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for s in &td.samples {
@@ -620,6 +704,13 @@ fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Re
     let mut entries: Vec<[u32; 3]> = Vec::new();
     for (i, c) in td.chunks.iter().enumerate() {
         let d = descriptions[i];
+        // Stale indices are already folded to the first entry by
+        // `normalize_descriptions`; renumber the rest after merging duplicates.
+        let d = if distinct.is_empty() {
+            d
+        } else {
+            distinct.iter().position(|&o| o == d).map(|p| p as u32 + 1).unwrap_or(1)
+        };
         match entries.last() {
             Some(&[_, n, desc]) if n == c.samples && desc == d => {}
             _ => entries.push([i as u32 + 1, c.samples, d]),
@@ -954,7 +1045,7 @@ fn write_progressive<S: Source, W: Sink>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{entry, fragment, init, sample_data, Run, TrackSpec};
+    use crate::testutil::{be, entry, fragment, init, sample_data, Run, TrackSpec};
 
     struct Spec {
         id: u32,
@@ -1095,5 +1186,48 @@ mod tests {
         let mut enc = init(&[TrackSpec { id: 1, timescale: 1000, entry: entry(b"enca") }]);
         enc.extend(fragment(1, &[Run { track: 1, start_time: 0, samples: vec![(1, 0, vec![1])] }], &|_| Vec::new()));
         assert!(defragment(&enc[..], &mut out, &Options::song()).unwrap_err().to_string().contains("is encrypted"));
+    }
+
+    /// Apple Dolby Atmos (DAC3) init segments declare two identical `ec-3`
+    /// entries whose `sinf` the decryptor turned into a wiped `free`. Strict
+    /// demuxers (Salt Player / Android ExoPlayer) reject that and report
+    /// "encoding error", so the progressive stsd must match ffmpeg's remux.
+    #[test]
+    fn decrypted_duplicate_entries_are_normalized() {
+        let dec3 = crate::testutil::leaf(b"dec3", &[0x0e, 0x10, 0x22, 0x08, 0x00, 0x00, 0x0f]);
+        // A wiped `free` standing in for the encryption `sinf` / `pssh`.
+        let freed = crate::testutil::leaf(b"free", &[0u8; 89]);
+        let entry = crate::testutil::leaf(b"ec-3", &[vec![0u8; 28], dec3.clone(), freed.clone()].concat());
+        let stsd_bytes = crate::testutil::full(b"stsd", 0, 0, &[be(&[2]), entry.clone(), entry].concat());
+        let span = bmff::Span { kind: *b"stsd", start: 0, header: 8, end: stsd_bytes.len() };
+        let mut atom = Atom::from_span(&stsd_bytes, &span).unwrap();
+        // Both entries are identical once the placeholder is gone: one survives.
+        assert_eq!(normalize_sample_entries(&mut atom), vec![1]);
+        let mut encoded = Vec::new();
+        atom.encode(&mut encoded);
+        let parsed = bmff::parse(&encoded).unwrap();
+        assert_eq!(be32(parsed[0].bytes(), 4), 1, "duplicate entries collapse to one");
+        let kept = parsed[0].children();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(&kept[0].kind, b"ec-3");
+        let expected = crate::testutil::leaf(b"ec-3", &[vec![0u8; 28], dec3.clone()].concat());
+        assert_eq!(kept[0].to_bytes().len(), expected.len());
+
+        // End to end: the progressive output carries the same normalized stsd.
+        let tracks = [TrackSpec { id: 1, timescale: 48000, entry: crate::testutil::leaf(b"ec-3", &[vec![0u8; 28], dec3, freed].concat()) }];
+        let mut input = init(&tracks);
+        input.extend(fragment(1, &[Run { track: 1, start_time: 0, samples: vec![(1536, 0, vec![7; 24])] }], &|_| Vec::new()));
+        let mut out = Vec::new();
+        defragment(&input[..], &mut out, &Options::song()).unwrap();
+        let atoms = bmff::parse(&out).unwrap();
+        let stsd = atoms[1].path(&[b"trak", b"mdia", b"minf", b"stbl", b"stsd"]).unwrap();
+        assert_eq!(be32(stsd.bytes(), 4), 1);
+        assert_eq!(stsd.children().len(), 1);
+        assert_eq!(stsd.children()[0].to_bytes(), expected, "only the codec configuration remains");
+        // The chunk offset still points at the sample data after stsd shrank.
+        let trak = atoms[1].all(b"trak").next().unwrap();
+        let (offset, first, count) = chunks(trak)[0];
+        assert_eq!((first, count), (0, 1));
+        assert_eq!(&out[offset as usize..offset as usize + 24], &[7u8; 24][..]);
     }
 }

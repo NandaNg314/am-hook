@@ -1801,7 +1801,12 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
     if (data.status !== 'ok' || !data.data?.lyricsFiles?.length) {
       throw new Error(data.error || '无歌词可下载（纯音乐或地区无歌词资源）');
     }
-    const files = data.data.lyricsFiles;
+    // cloud-service 在「无外置格式」时会把内嵌格式当主文件返回，仅歌词场景必须严格按 want 过滤，
+    // 否则用户选「仅歌词 TTML」却收到 .lrc（内嵌模式默认 LRC 造成串味）
+    const files = data.data.lyricsFiles.filter((f) => wantFormats.some((w) => String(f.filename || '').toLowerCase().endsWith(`.${w}`)));
+    if (!files.length) {
+      throw new Error(data.error || '无歌词可下载（纯音乐或地区无歌词资源）');
+    }
     const sentIds = [];
     for (const f of files) {
       const fpath = `/tmp/am_lyr_only_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${f.filename.split('.').pop()}`;
@@ -1873,7 +1878,9 @@ async function ensureLyricsFiles(cacheKey, cached, wantFormats, details) {
       const data = await res.json();
       if (data.status === 'ok' && data.data?.lyricsFiles?.length) {
         for (const f of data.data.lyricsFiles) {
-          const fmt = f.filename.endsWith('.ttml') ? 'ttml' : 'lrc';
+          const fmt = String(f.filename || '').toLowerCase().endsWith('.ttml') ? 'ttml' : 'lrc';
+          // 只吃用户勾选的格式：cloud-service 在内嵌关闭时会回落到内嵌格式，避免误归档
+          if (!missing.includes(fmt)) continue;
           // 上传到归档频道，供后续用户秒传复用
           const fpath = `/tmp/am_lyr_fix_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${fmt}`;
           fs.writeFileSync(fpath, f.content, 'utf8');
@@ -1905,9 +1912,26 @@ async function ensureLyricsFiles(cacheKey, cached, wantFormats, details) {
   return results;
 }
 
+// 歌词交付意图解析：内嵌开关（efmt）即用户对「歌词要不要+以什么格式给」的唯一选择，
+// 外置文件（esave）只作为**额外补充格式**。历史上只看 esave 导致「选了内嵌 TTML 却默认收到 .lrc」。
+function resolveLyricsIntent(embedLyricsMode, saveLyricsFormats) {
+  const embed = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
+  const extra = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
+  // 「内嵌」与「外置」是两组互相独立的开关，语义必须严格对立：
+  //   内嵌 LRC / TTML → 歌词只写进音频 `©lyr` 标签，**不外发任何文件**
+  //   外置 .lrc/.ttml → 仅在用户显式勾选时作为独立文件发送（与内嵌模式无关，可叠加）
+  //   内嵌关 + 无勾选 → 不发歌词
+  // 历史行为把「内嵌 LRC」额外补发一份 .lrc，导致默认状态下总是多推一个文件。
+  const formats = [];
+  for (const f of extra) if (!formats.includes(f)) formats.push(f);
+  return { embedded: embed !== 'off', lyricsFormat: embed === 'ttml' ? 'ttml' : 'lrc', formats };
+}
+
 async function handleDownload(chatId, messageId, details, quality, needLrc, isZip, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
+  // 外置歌词文件 = 内嵌模式对应的主格式 + 用户额外勾选的格式
+  saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
   const songId = details.songId;
   const cacheKey = `${songId}_${quality.toLowerCase()}_${isZip ? 'zip' : 'audio'}`;
   const cached = db.get(cacheKey);
@@ -1930,35 +1954,70 @@ async function handleDownload(chatId, messageId, details, quality, needLrc, isZi
     let copySuccess = false;
     try {
       if (cached.groupMsgId) {
-        await tgCall('copyMessage', {
-          chat_id: chatId,
-          from_chat_id: AUTHORIZED_GROUP_ID,
-          message_id: cached.groupMsgId
-        });
-        // 按需发送/补齐用户请求的外置歌词格式（缓存命中秒发，缺格式现场补生成）
-        if (saveLyricsFormats.length) {
-          const lfResults = await ensureLyricsFiles(cacheKey, cached, saveLyricsFormats, details);
-          for (const fmt of saveLyricsFormats) {
-            const entry = lfResults[fmt];
-            if (!entry) continue;
-            try {
-              if (entry.groupMsgId) {
-                await tgCall('copyMessage', {
-                  chat_id: chatId,
-                  from_chat_id: AUTHORIZED_GROUP_ID,
-                  message_id: entry.groupMsgId
-                });
-              } else if (entry.fileId) {
-                await tgCall('sendDocument', {
-                  chat_id: chatId,
-                  document: entry.fileId,
-                  caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.${fmt}`)
-                });
-              }
-            } catch {}
+        // 归档消息是「音频 + 当初归档时的歌词文件」的媒体组，整条 `copyMessage` 会把
+        // 归档时的 `.lrc`/`.ttml` 原样带出来，与用户当前勾选无关 —— 这就是「选了只内嵌
+        // 却仍收到 .lrc」的第二个来源。仅当当前需要的歌词格式与归档时完全一致才整条转发，
+        // 否则退化为「只发音频 + 按需补发歌词」，保证交付严格跟随用户当前意图。
+        const archivedFormats = Array.isArray(cached.lyricsFormats) ? cached.lyricsFormats : null;
+        const sameLyrics = archivedFormats
+          ? archivedFormats.length === saveLyricsFormats.length &&
+            archivedFormats.every((f) => saveLyricsFormats.includes(f))
+          : saveLyricsFormats.length === 0; // 老归档未记录格式时，仅在用户不要外置歌词时才敢整条复制
+
+        if (sameLyrics) {
+          await tgCall('copyMessage', {
+            chat_id: chatId,
+            from_chat_id: AUTHORIZED_GROUP_ID,
+            message_id: cached.groupMsgId
+          });
+          copySuccess = true;
+        } else if (cached.audioFileId) {
+          // 拆开重发：只发音频，歌词按当前勾选单独补
+          const audioCaption = safeCaption(
+`🎵 <b>${escapeHtml(cached.title)}</b>
+👤 ${isEn ? 'Artist:' : '歌手：'}${escapeHtml(cached.artist)}
+💿 ${isEn ? 'Album:' : '专辑：'}${escapeHtml(cached.album)}
+🎧 ${isEn ? 'Format:' : '规格：'}${escapeHtml(cached.qualityName || quality)}
+
+${artistTag} ${titleTag} ${albumTag}`);
+
+          const audioMsg = await tgCall('sendAudio', {
+            chat_id: chatId,
+            audio: cached.audioFileId,
+            caption: audioCaption,
+            parse_mode: 'HTML',
+            title: cached.title,
+            performer: cached.artist
+          });
+
+          if (saveLyricsFormats.length) {
+            const lfResults = await ensureLyricsFiles(cacheKey, cached, saveLyricsFormats, details);
+            for (const fmt of saveLyricsFormats) {
+              const entry = lfResults[fmt];
+              if (!entry) continue;
+              try {
+                if (entry.groupMsgId) {
+                  await tgCall('copyMessage', {
+                    chat_id: chatId,
+                    from_chat_id: AUTHORIZED_GROUP_ID,
+                    message_id: entry.groupMsgId
+                  });
+                } else if (entry.fileId) {
+                  await tgCall('sendDocument', {
+                    chat_id: chatId,
+                    document: entry.fileId,
+                    caption: safeCaption(`📝 ${escapeHtml(cached.artist)} - ${escapeHtml(cached.title)}.${fmt}`),
+                    reply_to_message_id: audioMsg.message_id
+                  });
+                }
+              } catch {}
+            }
           }
+          copySuccess = true;
+        } else {
+          // 既无独立音频 FileId 又无法整条复制：放弃秒传，走完整下载流程
+          copySuccess = false;
         }
-        copySuccess = true;
       } else if (isZip && cached.zipFileId) {
         const zipCaption = safeCaption(
 `📦 <b>${escapeHtml(cached.title)} [ZIP]</b>
@@ -2252,6 +2311,11 @@ ${artistTag} ${titleTag} ${albumTag}`);
               lrc: (lrcFileId || lrcGroupMsgId) ? { fileId: lrcFileId, groupMsgId: lrcGroupMsgId } : undefined,
               ttml: (lrcTtmlFileId || lrcTtmlGroupMsgId) ? { fileId: lrcTtmlFileId, groupMsgId: lrcTtmlGroupMsgId } : undefined
             },
+            // 记录本次归档实际附带的歌词格式，缓存命中时据此判断能否整条复制
+            lyricsFormats: [
+              ...((lrcFileId || lrcGroupMsgId) ? ['lrc'] : []),
+              ...((lrcTtmlFileId || lrcTtmlGroupMsgId) ? ['ttml'] : [])
+            ],
             artist,
             title,
             album,
@@ -2310,6 +2374,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
   const isEn = userLang === 'en';
   const tracks = (albumData.tracks || []).filter(t => trackIds.has(String(t.id)));
   if (!tracks.length) return;
+  saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
 
   // 配额预估：非站长需确保剩余单曲配额足够 (秒传不计配额，与单曲下载逻辑一致)
   const quotaCheck = quotaManager.checkQuota(chatId, false);
@@ -2627,6 +2692,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
 // ==================== 艺人全专辑批量转存 (站长专属) ====================
 // 勾选的专辑逐张处理：群聊已缓存的直接跳过并收录消息，未缓存的下载归档；全部就绪后统一推送到私聊
 async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality = 'Lossless', needLrc = true, deliveryMode = 'zip', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman') {
+  saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   // 服务端硬鉴权：仅站长可一键批量下载歌手全专辑
@@ -3086,9 +3152,13 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
   const isEn = userLang === 'en';
   const albumId = albumData.albumId;
   const isPl = albumData.isPlaylist === true;
+  saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
   const typeLabel = isPl ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
   const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}`;
   const totalTracks = albumData.tracks.length;
+  // 专辑整包（zip / media 交付）：每首歌的音频+歌词已打进压缩包，再单独发 .lrc 纯属冗余，
+  // 这里把外置文件收敛为空，只保留内嵌歌词；单曲勾选/逐曲推送的路径不受影响。
+  if (deliveryMode === 'zip' || deliveryMode === 'media') saveLyricsFormats = [];
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
