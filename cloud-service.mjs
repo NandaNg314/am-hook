@@ -1794,10 +1794,12 @@ async function processTransfer(body) {
         for (let i = 0; i < groups.length; i++) {
           const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
           const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
-          await packZipFolder(sessionDir, partPath, groups[i]);
+          // 每一卷都附带错误清单，用户拿到任意一卷都能看到完整失败原因
+          const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
+          await packZipFolder(sessionDir, partPath, partFiles);
           const partStat = fs.statSync(partPath);
           const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
-          zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: groups[i].length, trackFiles });
+          zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: partFiles.length, trackFiles });
           console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
         }
         const tEnd = performance.now();
@@ -1844,7 +1846,9 @@ async function processTransfer(body) {
           const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
           partPaths.push(partPath);
           const partName = `${baseName} [part ${i + 1}].zip`;
-          await packZipFolder(sessionDir, partPath, groups[i]);
+          // 每一卷都附带错误清单，用户下载任意一卷都能看到完整失败原因
+          const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
+          await packZipFolder(sessionDir, partPath, partFiles);
           const partStat = fs.statSync(partPath);
           console.log(`[Cloud-Transfer] 📦 分卷 ${i + 1}/${groups.length} 打包完成: ${partName} (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)，正在上传...`);
           const upData = await uploadFileToGofile(partPath, partName, { folderId: currentFolderId, token: currentToken });
@@ -3134,7 +3138,10 @@ function cleanupStaleSessions() {
     for (const entry of entries) {
       if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
           (entry.startsWith('am_defrag_') && entry.endsWith('.m4a')) ||
-          entry.startsWith('am_tg_')) {
+          entry.startsWith('am_tg_') ||
+          // 临时歌词文件：原先无任何清理逻辑，会长期堆积
+          entry.startsWith('am_lyr_only_') ||
+          entry.startsWith('am_lyr_fix_')) {
         const p = path.join(tmpDir, entry);
         try {
           const stat = fs.statSync(p);

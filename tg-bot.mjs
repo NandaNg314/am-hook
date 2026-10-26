@@ -395,10 +395,56 @@ function getTrafficStats() {
 }
 
 // ==================== 防刷限流与配额管理 (作者专属无限制豁免) ====================
+// 每日额度持久化文件：额度若只存在内存，服务一重启就全部清零，用户瞬间拿回 200 首，
+// 等于每日上限形同虚设（本项目一天内因部署重启过多次）。这里落盘保存，重启后按日期恢复。
+const TG_QUOTA_STATE_FILE = path.join(__dirname, 'tg_quota_state.json');
+
 class UserQuotaManager {
   constructor() {
     this.cooldowns = new Map();
     this.dailyUsage = new Map();
+    this._saveTimer = null;
+    this.loadState();
+  }
+
+  loadState() {
+    try {
+      if (!fs.existsSync(TG_QUOTA_STATE_FILE)) return;
+      const raw = JSON.parse(fs.readFileSync(TG_QUOTA_STATE_FILE, 'utf8'));
+      const today = this.getTodayStr();
+      for (const [key, rec] of Object.entries(raw || {})) {
+        // 只恢复今天的记录，跨天的历史数据直接丢弃
+        if (rec && rec.dateStr === today && typeof rec.songCount === 'number') {
+          this.dailyUsage.set(key, { dateStr: rec.dateStr, songCount: rec.songCount });
+        }
+      }
+      if (this.dailyUsage.size) {
+        console.log(`[Quota] 已恢复 ${this.dailyUsage.size} 个用户的今日额度记录`);
+      }
+    } catch (e) {
+      console.warn('[Quota] 读取额度状态失败(忽略):', e.message);
+    }
+  }
+
+  saveState() {
+    // 防抖，避免批量任务里每首曲目都同步落盘
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      try {
+        const today = this.getTodayStr();
+        const out = {};
+        for (const [key, rec] of this.dailyUsage.entries()) {
+          if (rec.dateStr === today) out[key] = rec;
+        }
+        const tmp = `${TG_QUOTA_STATE_FILE}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(out), 'utf8');
+        fs.renameSync(tmp, TG_QUOTA_STATE_FILE);
+      } catch (e) {
+        console.warn('[Quota] 保存额度状态失败:', e.message);
+      }
+    }, 1000);
+    if (this._saveTimer.unref) this._saveTimer.unref();
   }
 
   getTodayStr() {
@@ -469,6 +515,7 @@ class UserQuotaManager {
       return { ok: false, reserved: false, reason: 'insufficient', current: record.songCount, max: DAILY_TRACK_QUOTA, remaining };
     }
     record.songCount += count;
+    this.saveState();
     return { ok: true, reserved: true, reservedCount: count, current: record.songCount, max: DAILY_TRACK_QUOTA, remaining: DAILY_TRACK_QUOTA - record.songCount };
   }
 
@@ -481,6 +528,7 @@ class UserQuotaManager {
     if (!refund) return;
     const record = this.getRecord(userId);
     record.songCount = Math.max(0, record.songCount - refund);
+    this.saveState();
   }
 
   /**
@@ -490,6 +538,7 @@ class UserQuotaManager {
     if (this.isOwner(userId)) return;
     const record = this.getRecord(userId);
     record.songCount += Math.max(0, Math.floor(Number(count) || 0));
+    this.saveState();
   }
 
   cleanupStale() {
@@ -5300,7 +5349,7 @@ ${quotaText}
   }
 }
 
-// 清理异常终止遗留的临时目录 (兜底防护)
+// 清理异常终止遗留的临时目录与临时歌词文件 (兜底防护)
 function cleanupStaleTgTempDirs() {
   try {
     const tmpDir = '/tmp';
@@ -5308,13 +5357,17 @@ function cleanupStaleTgTempDirs() {
     const maxAge = 15 * 60 * 1000; // 15分钟
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
-      if (entry.startsWith('am_tg_')) {
+      // am_tg_* 为下载临时目录；am_lyr_only_* / am_lyr_fix_* 为仅歌词/补歌词场景写出的临时文件。
+      // 后者原先没有任何清理逻辑，会长期堆积在 /tmp。
+      const isTgTempDir = entry.startsWith('am_tg_');
+      const isLyricsTemp = entry.startsWith('am_lyr_only_') || entry.startsWith('am_lyr_fix_');
+      if (isTgTempDir || isLyricsTemp) {
         const p = path.join(tmpDir, entry);
         try {
           const stat = fs.statSync(p);
           if (now - stat.mtimeMs > maxAge) {
             fs.rmSync(p, { recursive: true, force: true });
-            console.log(`[TG-Bot] 自动清理遗留临时目录: ${entry}`);
+            console.log(`[TG-Bot] 自动清理遗留临时${isTgTempDir ? '目录' : '歌词文件'}: ${entry}`);
           }
         } catch {}
       }

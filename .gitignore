@@ -12,6 +12,8 @@ AGENT_MAINTENANCE.md
 summary.md
 summary.txt
 tg_bot_db.json
+tg_quota_state.json
+tg_quota_state.json.tmp
 userbot.mjs
 *.session
 *.session-journal
