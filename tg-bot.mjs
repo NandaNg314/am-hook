@@ -2167,6 +2167,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
   }
   // 开跑前预留 1 首额度：额度不足直接拒绝，绝不开始下载（作者专属账号 100% 豁免）
   const singleQuota = quotaManager.reserveQuota(chatId, 1);
+  if (singleQuota.reserved) addPendingReservation(chatId, 1);
   if (!singleQuota.ok) {
     await tgCall('editMessageText', {
       chat_id: chatId,

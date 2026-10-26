@@ -487,6 +487,61 @@ function writeBatchErrorLog(sessionDir, failedTracks, albumName) {
   }
 }
 
+/**
+ * 在目录内以「排他创建」方式写入文件，杜绝并发下的同名覆盖 (TOCTOU)。
+ * 先尝试原名；若已存在，则依次尝试 `<prefix><原名>`、`<原名> (2)`、`(3)`…
+ * 返回 { fileName, prefix, collisionSeq }，collisionSeq > 0 表示发生了重命名。
+ */
+function writeFileExclusive(dir, baseName, data, trackPrefix = '') {
+  const ext = path.extname(baseName);
+  const stem = baseName.slice(0, baseName.length - ext.length);
+
+  // 候选名生成器：0 = 原名；1 = 曲目号前缀；2+ = 编号后缀
+  const candidates = function* () {
+    yield { name: baseName, prefix: '' };
+    if (trackPrefix) yield { name: `${trackPrefix}${baseName}`, prefix: trackPrefix };
+    for (let n = 2; n <= 999; n++) {
+      yield { name: `${stem} (${n})${ext}`, prefix: trackPrefix };
+    }
+  };
+
+  let seq = 0;
+  for (const cand of candidates()) {
+    seq++;
+    const full = path.join(dir, cand.name);
+    try {
+      // 'wx' = 排他创建，文件已存在则抛 EEXIST，且检查与创建是原子的
+      const fd = fs.openSync(full, 'wx');
+      try {
+        fs.writeFileSync(fd, data);
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { fileName: cand.name, prefix: cand.prefix, collisionSeq: seq - 1 };
+    } catch (err) {
+      if (err.code === 'EEXIST') continue;
+      throw err;
+    }
+  }
+  throw new Error(`无法为 ${baseName} 分配唯一文件名（同名过多）`);
+}
+
+/**
+ * 给目录内文件取一个不冲突的名字（不实际创建，仅计算），用于歌词等附属文件。
+ */
+function uniqueNameInDir(dir, baseName, trackPrefix = '') {
+  const ext = path.extname(baseName);
+  const stem = baseName.slice(0, baseName.length - ext.length);
+  const exists = (n) => fs.existsSync(path.join(dir, n));
+  if (!exists(baseName)) return baseName;
+  if (trackPrefix && !exists(`${trackPrefix}${baseName}`)) return `${trackPrefix}${baseName}`;
+  for (let n = 2; n <= 999; n++) {
+    const cand = `${stem} (${n})${ext}`;
+    if (!exists(cand)) return cand;
+  }
+  return baseName;
+}
+
 /* ==================== TTML 纯净 LRC 转换 ==================== */
 
 function parseTimeToSeconds(timeStr) {
@@ -2309,24 +2364,43 @@ async function processTransfer(body) {
     const sessionDir = `/tmp/am_sessions/${batchId}`;
     fs.mkdirSync(sessionDir, { recursive: true });
 
-    let finalM4aName = standardM4aName;
-    let finalLyricsName = lyricsFilename;
-    if (fs.existsSync(path.join(sessionDir, finalM4aName))) {
-      const trackPrefix = meta.trackNumber ? `${String(meta.trackNumber).padStart(2, '0')}. ` : '';
-      finalM4aName = `${trackPrefix}${standardM4aName}`;
-      if (finalLyricsName) {
-        finalLyricsName = `${trackPrefix}${lyricsFilename}`;
-      }
+    // 音频落盘：必须用排他创建 (wx)，不能用「先 existsSync 再 writeFileSync」。
+    // 批量转存是 3 线程并发，同名单曲（同名不同专辑、feature 版等）会在检查与写入之间的窗口期
+    // 同时通过检查，导致后者静默覆盖前者，歌单里凭空少歌且无任何报错。
+    // 这里改为排他创建后按序号递增重试，保证每一首都能落地且名字唯一。
+    const trackPrefix = meta.trackNumber ? `${String(meta.trackNumber).padStart(2, '0')}. ` : '';
+    const written = writeFileExclusive(sessionDir, standardM4aName, finalAudioBuf, trackPrefix);
+    const finalM4aName = written.fileName;
+    let finalLyricsName = lyricsFilename
+      ? `${written.prefix}${lyricsFilename}`
+      : lyricsFilename;
+    if (written.collisionSeq > 0) {
+      // 序号前缀拼接后仍可能重名（如曲目号相同），歌词名也走一次唯一化
+      if (finalLyricsName) finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
+      console.log(`[Cloud-Transfer] ⚠️ 检测到同名曲目，已自动重命名避免覆盖: ${finalM4aName}`);
     }
-
-    fs.writeFileSync(path.join(sessionDir, finalM4aName), finalAudioBuf);
 
     if (finalLyricsName && lyricsContent) {
-      fs.writeFileSync(path.join(sessionDir, finalLyricsName), lyricsContent, 'utf8');
-      console.log(`[Cloud-Transfer] 缓存歌词: ${finalLyricsName} 到 session: ${batchId}`);
+      try {
+        const fd = fs.openSync(path.join(sessionDir, finalLyricsName), 'wx');
+        try { fs.writeFileSync(fd, lyricsContent, 'utf8'); } finally { fs.closeSync(fd); }
+        console.log(`[Cloud-Transfer] 缓存歌词: ${finalLyricsName} 到 session: ${batchId}`);
+      } catch (lyrErr) {
+        if (lyrErr.code === 'EEXIST') {
+          // 并发下歌词撞名：换个唯一名写入，绝不覆盖别人的歌词
+          const alt = uniqueNameInDir(sessionDir, finalLyricsName, trackPrefix);
+          try {
+            fs.writeFileSync(path.join(sessionDir, alt), lyricsContent, 'utf8');
+            console.log(`[Cloud-Transfer] 缓存歌词(重命名): ${alt} 到 session: ${batchId}`);
+          } catch {}
+        } else {
+          throw lyrErr;
+        }
+      }
     }
     for (const extra of extraLyrics) {
-      const extraName = finalLyricsName && extra.filename === lyricsFilename ? finalLyricsName : `${meta.trackNumber ? String(meta.trackNumber).padStart(2, '0') + '. ' : ''}${extra.filename}`;
+      const baseExtraName = finalLyricsName && extra.filename === lyricsFilename ? finalLyricsName : `${trackPrefix}${extra.filename}`;
+      const extraName = uniqueNameInDir(sessionDir, baseExtraName, trackPrefix);
       fs.writeFileSync(path.join(sessionDir, extraName), extra.content, 'utf8');
       console.log(`[Cloud-Transfer] 缓存歌词(附加): ${extraName} 到 session: ${batchId}`);
     }
@@ -2690,12 +2764,19 @@ const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyRes
 // 网页批量 ZIP 是一次下单 + N 次逐首请求 + 1 次收尾，必须整单只扣一次。
 const webBatchQuotaLedger = new Map();
 
-// 定期清理过期的 IP 限流记录，防止长期运行内存累积
+// 定期清理过期的 IP 限流记录与孤儿配额台账，防止长期运行内存累积
 setInterval(() => {
   const now = Date.now();
   for (const [ip, rec] of webIpLimitMap.entries()) {
-    if (now > rec.dailyResetAt) {
+    // 超过配额重置点再给 1 小时宽限即回收（此前只比 dailyResetAt，跨天后若该 IP 不再访问会永久滞留）
+    if (now > rec.dailyResetAt + 60 * 60 * 1000) {
       webIpLimitMap.delete(ip);
+    }
+  }
+  // 孤儿台账：收尾请求丢失（客户端关闭页面/崩溃）留下的条目，2 小时后回收
+  for (const [key, led] of webBatchQuotaLedger.entries()) {
+    if (!led.createdAt || now - led.createdAt > 2 * 60 * 60 * 1000) {
+      webBatchQuotaLedger.delete(key);
     }
   }
 }, 60 * 60 * 1000).unref();
@@ -2970,7 +3051,7 @@ const server = http.createServer(async (req, res) => {
               return;
             }
             quotaReserved = tracks;
-            webBatchQuotaLedger.set(batchKey, { reserved: tracks, consumed: 0 });
+            webBatchQuotaLedger.set(batchKey, { reserved: tracks, consumed: 0, createdAt: Date.now() });
           }
         }
       } catch (quotaErr) {
@@ -2985,6 +3066,10 @@ const server = http.createServer(async (req, res) => {
         });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'ok', data: result }));
+        // 批量收尾成功后清理台账，避免常驻进程内存无限累积
+        if (body.finalizeBatch && body.batchId) {
+          webBatchQuotaLedger.delete(`${clientIp}|${body.batchId}`);
+        }
       } catch (err) {
         // 本请求失败：把该请求涉及的预留额度退回，不让用户为失败任务付费
         if (quotaReserved > 0) {
