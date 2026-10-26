@@ -61,7 +61,17 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     a.hidden = !alertState;
     if (!alertState) return;
     a.className = `alert ${alertState.kind}`;
-    a.textContent = typeof alertState.message === 'function' ? alertState.message() : alertState.message;
+    const msg = typeof alertState.message === 'function' ? alertState.message() : alertState.message;
+    // 支持 \n 分段渲染（如批量下载的逐首失败清单），单行时行为与原来完全一致
+    if (typeof msg === 'string' && msg.includes('\n')) {
+      a.replaceChildren(...msg.split('\n').map((line) => {
+        const row = document.createElement('div');
+        row.textContent = line;
+        return row;
+      }));
+    } else {
+      a.textContent = msg;
+    }
   }
 
   /* ---------- amp-api：与 music.apple.com 专辑页相同的 albums 请求，经服务端 /amp 代理 ---------- */
@@ -571,10 +581,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const batchSessionId = isZip ? `album_${albumId || Date.now()}_${Date.now()}` : null;
     const zipFilename = `${normalizeArtistName(artistName)} - ${toSimplified(albumTitle)} [${quality}].zip`;
     const BATCH_CONCURRENCY = 3;
+    // 整单额度由服务端在下单时一次性预留；首个请求携带整单曲目数，避免逐首扣费导致中途才喊停
+    let quotaTracksPending = tracks.length;
     let parentFolder = null;
     let guestToken = null;
     let finalDownloadPage = null;
     let successCount = 0;
+    let failedCount = 0;
+    const failedTracks = [];
     let finishedCount = 0;
     let batchAbortReason = null;
 
@@ -586,6 +600,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const songTitle = attr.name || '未知曲目';
       try {
         const coverUrl = artUrl(attr.artwork || albAttr.artwork, 1400);
+        const quotaTracks = quotaTracksPending;
+        quotaTracksPending = 0;
         const resp = await fetch('/api/cloud-transfer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -595,6 +611,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             folderId: parentFolder,
             token: guestToken,
             batchId: batchSessionId,
+            quotaTracks: quotaTracks || undefined,
             isLastTrack: false,
             zipFilename,
             meta: {
@@ -637,10 +654,29 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           console.warn(`[Batch] 配额不足中止批量: ${msg}`);
           return;
         } else {
+          // 失败曲目收集后随 finalize 上交，服务端在包内生成 error.log
+          failedCount++;
+          failedTracks.push({
+            title: songTitle,
+            artist: attr.artistName || artistName,
+            album: albumTitle,
+            error: resJson.error || `HTTP ${resp.status}`,
+            adamId: t.id
+          });
           console.warn(`[Batch] 曲目《${songTitle}》转存失败:`, resJson.error);
         }
       } catch (err) {
-        if (!batchSig.aborted) console.warn(`[Batch] 曲目《${songTitle}》转存异常:`, err.message);
+        if (!batchSig.aborted) {
+          failedCount++;
+          failedTracks.push({
+            title: songTitle,
+            artist: attr.artistName || artistName,
+            album: albumTitle,
+            error: err.message,
+            adamId: t.id
+          });
+          console.warn(`[Batch] 曲目《${songTitle}》转存异常:`, err.message);
+        }
       } finally {
         finishedCount++;
         const pct = Math.floor((finishedCount / tracks.length) * (isZip ? 90 : 100));
@@ -690,6 +726,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             quality,
             folderId: parentFolder,
             token: guestToken,
+            // 失败曲目清单：服务端据此在压缩包内生成 error.log（全部成功则不生成）
+            failedTracks: failedTracks.length ? failedTracks : undefined,
             meta: { album: albumTitle }
           }),
           signal: batchSig
@@ -719,9 +757,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       if (gofileLinkInput) gofileLinkInput.value = shareUrl;
       if (gofileOpenLink) gofileOpenLink.href = shareUrl;
       if (gofileSongInfo) {
+        const failNote = failedCount ? `，${failedCount} 首未收录（详见压缩包内 _INTERNAL_error.log.txt）` : '';
         gofileSongInfo.textContent = isZip
-          ? `已成功将《${albumTitle}》打包压缩为单文件：${zipFilename} (${successCount} 首完整曲目${saveFormats.length ? '与歌词' : ''})`
-          : `已成功将《${albumTitle}》(${successCount} 首歌曲) 归集至同一 Gofile 文件夹`;
+          ? `已成功将《${albumTitle}》打包压缩为单文件：${zipFilename} (${successCount} 首完整曲目${saveFormats.length ? '与歌词' : ''}${failNote})`
+          : `已成功将《${albumTitle}》(${successCount} 首歌曲) 归集至同一 Gofile 文件夹${failNote}`;
       }
       if (gofileCopyBtn) gofileCopyBtn.textContent = '复制链接';
       gofileDialog?.showModal();
@@ -761,6 +800,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
     let okCount = 0;
     let failCount = 0;
+    const failReasons = [];
     for (let i = 0; i < tracks.length; i++) {
       if (batchSig.aborted) break;
       const t = tracks[i];
@@ -775,7 +815,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         const parseData = await parseRes.json();
         const variants = parseData.variants || [];
         if (!variants.length) {
-          failCount++;
+          // 无可用音频流：通常是该曲在当前账号地区无版权/未上架
+          failReasons.push({ title: songTitle, artist: attr.artistName || '', reason: '此歌曲在解析账号所属地区无可用音频流（可能无版权或未上架）' });
           continue;
         }
 
@@ -846,14 +887,33 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         await new Promise(r => setTimeout(r, 1200));
       } catch (err) {
         if (batchSig.aborted) break;
-        failCount++;
+        failReasons.push({ title: songTitle, artist: attr.artistName || '', reason: err.message || '未知错误' });
         console.warn(`[Batch DL] 下载《${songTitle}》失败:`, err.message);
       }
     }
 
     if (batchProgressFill) batchProgressFill.style.width = '100%';
     setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
-    toast(batchSig.aborted ? '已取消批量下载' : (failCount > 0 ? `全辑下载完成：成功 ${okCount} 首，失败 ${failCount} 首` : '🎉 全辑批量下载完成！'));
+
+    if (batchSig.aborted) {
+      toast('已取消批量下载');
+      return;
+    }
+    failCount = failReasons.length;
+    if (!failCount) {
+      toast('🎉 全辑批量下载完成！');
+      return;
+    }
+    // 逐首明确告知失败原因，而不是只报一个总数
+    const brief = failReasons
+      .slice(0, 3)
+      .map((f) => `《${f.title}》(${f.reason})`)
+      .join('；');
+    toast(`⚠️ 成功 ${okCount} 首，失败 ${failReasons.length} 首：${brief}${failReasons.length > 3 ? '…' : ''}`);
+    // 完整清单写到页内常驻提示条（不会被 Toast 2.6 秒自动吞掉）
+    const lines = failReasons.map((f, idx) => `${idx + 1}. 《${f.title}》${f.artist ? ' - ' + f.artist : ''}：${f.reason}`);
+    showAlert('error', () => `本机下载完成：成功 ${okCount} 首，失败 ${failReasons.length} 首\n${lines.join('\n')}`);
+    console.warn('[Batch DL] 失败明细:', failReasons);
   }
 
   if (!albumId) {

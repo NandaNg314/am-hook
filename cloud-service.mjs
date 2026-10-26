@@ -386,6 +386,107 @@ async function getGofileServer() {
   return cachedServer || 'store1';
 }
 
+// Gofile 单次上传硬上限：实测 >4GB 会被服务端直接断连（UND_ERR_SOCKET other side closed），
+// 3GB/4GB 正常，5GB/5.6GB 必挂。因此超过该阈值必须分卷，阈值留 200MB 余量。
+const GOFILE_MAX_PART_BYTES = 3.8 * 1024 * 1024 * 1024;
+
+/**
+ * 上传单个文件到 Gofile（游客或指定 folderId/token）。成功返回 Gofile 的 data 载荷。
+ * 注意：Gofile 无「预先建空文件夹」的公开端点；游客首次上传时服务端会自动建好文件夹，
+ * 后续文件把该 folderId/token 传回来即可全部归集到同一分享页。
+ */
+async function uploadFileToGofile(filePath, fileName, { folderId, token, timeoutMs = 300000 } = {}) {
+  const srv = await getGofileServer();
+  const form = new FormData();
+  // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
+  const blob = await fs.openAsBlob(filePath, { type: 'application/zip' });
+  form.append('file', blob, fileName);
+  if (folderId) form.append('folderId', folderId);
+  if (token) form.append('token', token);
+
+  const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+    method: 'POST',
+    body: form,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const raw = await upRes.text();
+  let upData;
+  try {
+    upData = JSON.parse(raw);
+  } catch {
+    throw new Error(`Gofile 返回非 JSON 响应 (HTTP ${upRes.status}): ${raw.slice(0, 160)}`);
+  }
+  if (upData.status !== 'ok') {
+    throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
+  }
+  return upData.data || {};
+}
+
+/**
+ * 把会话目录按累计大小贪心切卷：每卷均为完整独立 ZIP，最后一卷收尾。
+ * 单文件本身超限时单独成卷（避免后续曲目被它连带卡死）。
+ */
+function groupFilesByLimit(fileSizes, limitBytes) {
+  const groups = [];
+  let cur = [];
+  let curBytes = 0;
+  for (const f of fileSizes) {
+    if (cur.length && curBytes + f.size > limitBytes) {
+      groups.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(f.name);
+    curBytes += f.size;
+  }
+  if (cur.length) groups.push(cur);
+  return groups;
+}
+
+/**
+ * 生成打包内的 error.log（英文内容，仅在确有失败曲目时生成）。
+ * 由前端把逐曲失败信息随 finalize 请求带上来，避免服务端重复探测。
+ * 返回写入的文件名，无失败则返回 null。
+ */
+function writeBatchErrorLog(sessionDir, failedTracks, albumName) {
+  const list = Array.isArray(failedTracks) ? failedTracks.filter(Boolean) : [];
+  if (!list.length) return null;
+
+  const lines = [];
+  lines.push('am-hook transfer error report');
+  lines.push('==============================');
+  lines.push(`Album / Playlist : ${albumName || 'Unknown'}`);
+  lines.push(`Generated (UTC)  : ${new Date().toISOString()}`);
+  lines.push(`Failed tracks    : ${list.length}`);
+  lines.push('');
+  lines.push('The following tracks could NOT be included in this archive:');
+  lines.push('');
+  list.forEach((t, i) => {
+    const title = t.title || 'Unknown title';
+    const artist = t.artist || 'Unknown artist';
+    const album = t.album || '';
+    const reason = String(t.error || 'Unknown error').replace(/\s+/g, ' ').trim();
+    lines.push(`${String(i + 1).padStart(2, ' ')}. ${artist} - ${title}${album ? ` [${album}]` : ''}`);
+    lines.push(`    Reason: ${reason}`);
+    if (t.adamId) lines.push(`    Track ID: ${t.adamId}`);
+    lines.push('');
+  });
+  lines.push('Possible causes:');
+  lines.push('  - Track is not available in the storefront of the resolving account (regional exclusivity).');
+  lines.push('  - Track is DRM-only and the web playback stream is incomplete or malformed.');
+  lines.push('  - Upstream request timed out or was rate-limited; re-run the transfer for these tracks.');
+
+  const fileName = '_INTERNAL_error.log.txt';
+  try {
+    fs.writeFileSync(path.join(sessionDir, fileName), lines.join('\n'), 'utf8');
+    console.log(`[Cloud-Transfer] 已写入错误清单: ${fileName} (${list.length} 首失败)`);
+    return fileName;
+  } catch (err) {
+    console.warn('[Cloud-Transfer] 写入错误清单失败:', err.message);
+    return null;
+  }
+}
+
 /* ==================== TTML 纯净 LRC 转换 ==================== */
 
 function parseTimeToSeconds(timeStr) {
@@ -1601,7 +1702,8 @@ async function processTransfer(body) {
     zip = false,
     finalizeBatch = false,
     noUpload = false,
-    outputDir
+    outputDir,
+    failedTracks
   } = body;
 
   // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
@@ -1612,7 +1714,9 @@ async function processTransfer(body) {
     }
     const finalZipName = sanitizeFilename(toSimplifiedChinese(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip')));
     const zipFilePath = `/tmp/${batchId}.zip`;
-    const files = fs.readdirSync(sessionDir);
+    // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
+    const errorLogName = writeBatchErrorLog(sessionDir, failedTracks, meta.album || meta.title || finalZipName);
+    const files = fs.readdirSync(sessionDir).filter((n) => n !== errorLogName);
     const splitMaxMB = Number(body.splitMaxMB || 0);
     console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
 
@@ -1628,19 +1732,7 @@ async function processTransfer(body) {
       if (totalBytes > limitBytes) {
         // 贪心切卷：累计大小达到 limit 即开新卷。若某单文件本身超过 limit（极端超长曲目），
         // 则单独成卷并继续，避免后续所有曲目被它连带卡死；该卷可能>limit，但 unifiedSendMedia 的 2000MB 检查仍为最终兜底。
-        const groups = [];
-        let cur = [];
-        let curBytes = 0;
-        for (const f of fileSizes) {
-          if (cur.length && curBytes + f.size > limitBytes) {
-            groups.push(cur);
-            cur = [];
-            curBytes = 0;
-          }
-          cur.push(f.name);
-          curBytes += f.size;
-        }
-        if (cur.length) groups.push(cur);
+        const groups = groupFilesByLimit(fileSizes, limitBytes);
 
         const baseName = finalZipName.replace(/\.zip$/i, '');
         const zipParts = [];
@@ -1670,6 +1762,69 @@ async function processTransfer(body) {
       }
     }
 
+    // Gofile 直传：整包一旦超过 Gofile 单次上传硬上限（实测 >4GB 必断连），
+    // 必须先切卷再逐卷上传，否则 5GB+ 歌单 100% 失败。切卷后所有卷上传到同一个新建文件夹，
+    // 前端只展示一个 share 链接。
+    const sessionFileSizes = files
+      .map((name) => ({ name, size: fs.statSync(path.join(sessionDir, name)).size }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const sessionTotalBytes = sessionFileSizes.reduce((s, f) => s + f.size, 0);
+    const needGofileSplit = !noUpload && sessionTotalBytes > GOFILE_MAX_PART_BYTES;
+
+    if (needGofileSplit) {
+      const groups = groupFilesByLimit(sessionFileSizes, GOFILE_MAX_PART_BYTES);
+      const baseName = finalZipName.replace(/\.zip$/i, '');
+      console.log(`[Cloud-Transfer] 全辑 ${(sessionTotalBytes / (1024 * 1024)).toFixed(1)}MB 超过 Gofile 单次上传上限，自动切分为 ${groups.length} 卷...`);
+
+      const partPaths = [];
+      try {
+        let currentFolderId = folderId || null;
+        let currentToken = token || null;
+        let downloadPage = null;
+        const uploadedParts = [];
+
+        // 逐卷串行打包 + 上传（串行可避免多卷同时抢占上行带宽）。
+        // 第一卷由 Gofile 自动创建文件夹，拿到 folderId 后其余卷都传进去，最终只给一个分享链接。
+        for (let i = 0; i < groups.length; i++) {
+          const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
+          partPaths.push(partPath);
+          const partName = `${baseName} [part ${i + 1}].zip`;
+          await packZipFolder(sessionDir, partPath, groups[i]);
+          const partStat = fs.statSync(partPath);
+          console.log(`[Cloud-Transfer] 📦 分卷 ${i + 1}/${groups.length} 打包完成: ${partName} (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)，正在上传...`);
+          const upData = await uploadFileToGofile(partPath, partName, { folderId: currentFolderId, token: currentToken });
+          currentFolderId = upData.parentFolder || currentFolderId;
+          currentToken = upData.guestToken || currentToken;
+          if (upData.downloadPage) downloadPage = upData.downloadPage;
+          uploadedParts.push({ fileName: partName, fileSize: partStat.size, fileId: upData.id || upData.fileId });
+          console.log(`[Cloud-Transfer] ✔ 分卷 ${i + 1}/${groups.length} 上传完成 (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)`);
+          // 立刻删掉分卷 ZIP，避免多卷叠加占满磁盘
+          try { fs.rmSync(partPath, { force: true }); } catch {}
+        }
+
+        downloadPage = downloadPage || (currentFolderId ? `https://gofile.io/d/${currentFolderId}` : null);
+        const tEnd = performance.now();
+        console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 分卷转存完成 (${uploadedParts.length} 卷)! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${downloadPage}`);
+        return {
+          downloadPage,
+          folderId: currentFolderId,
+          guestToken: currentToken,
+          fileId: uploadedParts[0]?.fileId,
+          fileName: finalZipName,
+          isZip: true,
+          isSplit: true,
+          parts: uploadedParts,
+          partCount: uploadedParts.length,
+          totalFiles: files.length,
+          qualityName: quality,
+          elapsedMs: Math.round(tEnd - t0)
+        };
+      } finally {
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+        for (const p of partPaths) { try { fs.rmSync(p, { force: true }); } catch {} }
+      }
+    }
+
     await packZipFolder(sessionDir, zipFilePath);
 
     if (noUpload) {
@@ -1694,31 +1849,15 @@ async function processTransfer(body) {
       const zipStat = fs.statSync(zipFilePath);
       console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
 
-      const srv = await getGofileServer();
-      const form = new FormData();
-      // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
-      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
-      form.append('file', zipBlob, finalZipName);
-      if (folderId) form.append('folderId', folderId);
-      if (token) form.append('token', token);
-
-      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-        method: 'POST',
-        body: form,
-        signal: AbortSignal.timeout(300000)
-      });
-      const upData = await upRes.json();
-      if (upData.status !== 'ok') {
-        throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
-      }
+      const upData = await uploadFileToGofile(zipFilePath, finalZipName, { folderId, token, timeoutMs: 300000 });
 
       const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.downloadPage}`);
       return {
-        downloadPage: upData.data?.downloadPage,
-        folderId: upData.data?.parentFolder || folderId,
-        guestToken: upData.data?.guestToken || token,
-        fileId: upData.data?.fileId,
+        downloadPage: upData.downloadPage,
+        folderId: upData.parentFolder || folderId,
+        guestToken: upData.guestToken || token,
+        fileId: upData.fileId,
         fileName: finalZipName,
         isZip: true,
         totalFiles: files.length,
@@ -2547,6 +2686,9 @@ const OWNER_IPS = new Set([
   ...(process.env.OWNER_IPS ? process.env.OWNER_IPS.split(',').map(s => s.trim()) : [])
 ]);
 const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt }
+// 整单额度预留台账：`${clientIp}|${batchId}` -> { reserved, consumed }
+// 网页批量 ZIP 是一次下单 + N 次逐首请求 + 1 次收尾，必须整单只扣一次。
+const webBatchQuotaLedger = new Map();
 
 // 定期清理过期的 IP 限流记录，防止长期运行内存累积
 setInterval(() => {
@@ -2572,32 +2714,35 @@ function nextBeijingMidnight() {
   return nextBjMidnightUtc > now ? nextBjMidnightUtc : now + 86400000; // 兜底防负值
 }
 
-function checkWebRateLimit(clientIp, adminKeyHeader) {
-  // 1. 本地回环、内部调用与管理员静态 IP -> 100% 豁免放行
-  if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) {
-    return { ok: true, isOwner: true };
-  }
+// 网页端每日总配额（单位：曲目数）。单曲 / 专辑 / 歌单全部合并计入同一个池子。
+const WEB_DAILY_TRACK_QUOTA = parseInt(process.env.WEB_DAILY_TRACK_QUOTA || '200', 10);
+
+function getClientIp(req) {
+  let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
+  if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+  return clientIp;
+}
+
+/**
+ * 特权判定：站长静态 IP 白名单 或 管理员 Key。特权用户额度无限、且独占「歌手全辑」等高成本入口。
+ */
+function isPrivilegedClient(clientIp, adminKeyHeader) {
+  if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) return true;
   for (const ip of OWNER_IPS) {
-    if (ip && clientIp.includes(ip)) {
-      return { ok: true, isOwner: true };
-    }
+    if (ip && clientIp.includes(ip)) return true;
   }
-
-  // 2. 携带管理员专属 Key -> 100% 豁免放行
   const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
-  if (adminKeyHeader && adminKeyHeader === ADMIN_SECRET) {
-    return { ok: true, admin: true };
-  }
+  return Boolean(adminKeyHeader && adminKeyHeader === ADMIN_SECRET);
+}
 
-  // 3. 公网访客 IP 限流 (每分钟最多 60 次，支持整辑一键并发入队；每天最多 200 次)
-  // 底层已有 GlobalTransferQueue(1) 严格串行调度，CPU/RAM 绝不会过载
+/** 取（并按需重置）每日额度记录 */
+function getDailyRecord(clientIp) {
   const now = Date.now();
   let rec = webIpLimitMap.get(clientIp);
   if (!rec) {
     rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
     webIpLimitMap.set(clientIp, rec);
   }
-
   if (now > rec.resetAt) {
     rec.count = 0;
     rec.resetAt = now + 60000;
@@ -2606,16 +2751,63 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
     rec.dailyCount = 0;
     rec.dailyResetAt = nextBeijingMidnight();
   }
+  return rec;
+}
 
+/** 只读查询剩余额度 */
+function getWebQuota(clientIp) {
+  const rec = getDailyRecord(clientIp);
+  return {
+    used: rec.dailyCount,
+    max: WEB_DAILY_TRACK_QUOTA,
+    remaining: Math.max(0, WEB_DAILY_TRACK_QUOTA - rec.dailyCount)
+  };
+}
+
+/**
+ * 开跑前一次性预留整单额度（原子操作）。额度不足直接返回 ok=false，调用方必须在此中止、
+ * 绝不触发任何下载，避免跑一半才发现不够、白烧带宽和用户时间。
+ */
+function reserveWebQuota(clientIp, tracks) {
+  const count = Math.max(0, Math.floor(Number(tracks) || 0));
+  const rec = getDailyRecord(clientIp);
+  const remaining = Math.max(0, WEB_DAILY_TRACK_QUOTA - rec.dailyCount);
+  if (count > remaining) {
+    return {
+      ok: false,
+      reserved: false,
+      used: rec.dailyCount,
+      max: WEB_DAILY_TRACK_QUOTA,
+      remaining,
+      error: `⚠️ 今日转存配额不足：本单共 ${count} 首，今日仅剩 ${remaining} 首 (每日上限 ${WEB_DAILY_TRACK_QUOTA} 首，已用 ${rec.dailyCount} 首)。已取消下载，未消耗任何额度。配额将在明日北京时间 00:00 重置。`
+    };
+  }
+  rec.dailyCount += count;
+  return { ok: true, reserved: true, reservedCount: count, used: rec.dailyCount, max: WEB_DAILY_TRACK_QUOTA, remaining: WEB_DAILY_TRACK_QUOTA - rec.dailyCount };
+}
+
+/** 预留了但未实际消耗时退回，避免误伤用户 */
+function refundWebQuota(clientIp, tracks) {
+  const refund = Math.max(0, Math.floor(Number(tracks) || 0));
+  if (!refund) return;
+  const rec = getDailyRecord(clientIp);
+  rec.dailyCount = Math.max(0, rec.dailyCount - refund);
+}
+
+function checkWebRateLimit(clientIp, adminKeyHeader) {
+  // 1. 特权（站长 IP / 管理员 Key）-> 100% 豁免放行
+  if (isPrivilegedClient(clientIp, adminKeyHeader)) {
+    return { ok: true, isOwner: true };
+  }
+
+  // 2. 公网访客：仅做每分钟 60 次的防刷保护。
+  // 每日 200 首额度【不在这里】消耗，改由 reserveWebQuota 按整单一次性预扣，
+  // 否则整单并发入队会被逐首计费、也无法在下载前准确拦截。
+  const rec = getDailyRecord(clientIp);
   if (rec.count >= 60) {
     return { ok: false, error: '⚠️ 请求提交过快，已触发服务器安全保护。请稍候 1 分钟后再试 (429 Too Many Requests)' };
   }
-  if (rec.dailyCount >= 200) {
-    return { ok: false, error: '⚠️ 今日网页端转存配额已达上限 (每日限额 200 首曲目)。配额将在明日北京时间 00:00 自动重置刷新。' };
-  }
-
   rec.count++;
-  rec.dailyCount++;
   return { ok: true };
 }
 
@@ -2649,40 +2841,25 @@ const server = http.createServer(async (req, res) => {
 
   // 只读配额查询：供批量转存前置预检查，不消耗任何配额（绝不调用 checkWebRateLimit，其内部会 rec.count++）
   if (req.method === 'GET' && u.pathname === '/api/quota') {
-    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-    if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+    const clientIp = getClientIp(req);
     const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
-    const isOwnerIp = !clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1') || Array.from(OWNER_IPS).some(ip => ip && clientIp.includes(ip));
-    const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
-    if (isOwnerIp || (adminKey && adminKey === ADMIN_SECRET)) {
+    if (isPrivilegedClient(clientIp, adminKey)) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ status: 'ok', data: { unlimited: true } }));
+      res.end(JSON.stringify({ status: 'ok', data: { unlimited: true, privileged: true } }));
       return;
     }
-    const now = Date.now();
-    let rec = webIpLimitMap.get(clientIp);
-    if (!rec) {
-      rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
-      webIpLimitMap.set(clientIp, rec);
-    }
-    if (now > rec.resetAt) rec.count = 0;
-    if (now > rec.dailyResetAt) {
-      rec.dailyCount = 0;
-      rec.dailyResetAt = nextBeijingMidnight();
-    }
+    const quota = getWebQuota(clientIp);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ status: 'ok', data: { unlimited: false, used: rec.dailyCount, max: 200, remaining: Math.max(0, 200 - rec.dailyCount) } }));
+    res.end(JSON.stringify({ status: 'ok', data: { unlimited: false, privileged: false, ...quota } }));
     return;
   }
 
-  // 配额预扣：本机下载同样消耗 VPS 出站带宽，纳入每日配额；owner/admin 豁免
+  // 整单额度预留（原子）：本机下载 / 本机打包同样消耗 VPS 出站带宽，纳入每日配额；特权用户豁免。
+  // 额度不足直接 429 拒绝，调用方必须在收到 429 时不开始任何下载。
   if (req.method === 'POST' && u.pathname === '/api/quota/consume') {
-    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-    if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
+    const clientIp = getClientIp(req);
     const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
-    const isOwnerIp = !clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1') || Array.from(OWNER_IPS).some(ip => ip && clientIp.includes(ip));
-    const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
-    if (isOwnerIp || (adminKey && adminKey === ADMIN_SECRET)) {
+    if (isPrivilegedClient(clientIp, adminKey)) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', data: { unlimited: true } }));
       return;
@@ -2695,24 +2872,14 @@ const server = http.createServer(async (req, res) => {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
         tracks = Math.max(1, parseInt(body.tracks, 10) || 1);
       } catch {}
-      const now = Date.now();
-      let rec = webIpLimitMap.get(clientIp);
-      if (!rec) {
-        rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
-        webIpLimitMap.set(clientIp, rec);
-      }
-      if (now > rec.dailyResetAt) {
-        rec.dailyCount = 0;
-        rec.dailyResetAt = nextBeijingMidnight();
-      }
-      if (rec.dailyCount + tracks > 200) {
+      const reserved = reserveWebQuota(clientIp, tracks);
+      if (!reserved.ok) {
         res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', error: `⚠️ 今日转存配额不足：本批 ${tracks} 首，今日仅剩 ${Math.max(0, 200 - rec.dailyCount)} 首。请明日北京时间 00:00 后重试或缩小范围` }));
+        res.end(JSON.stringify({ status: 'error', error: reserved.error }));
         return;
       }
-      rec.dailyCount += tracks;
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ status: 'ok', data: { remaining: Math.max(0, 200 - rec.dailyCount) } }));
+      res.end(JSON.stringify({ status: 'ok', data: { reserved: tracks, remaining: reserved.remaining } }));
     });
     return;
   }
@@ -2747,6 +2914,69 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // ---------- 整单额度：开跑前一次性预留，不足则直接拒绝，不触发任何下载 ----------
+      // 网页批量 ZIP 模式是一次「整单请求」+ N 次逐首请求 + 1 次 finalize，逐首扣费既不准也会
+      // 跑到一半才喊停。因此整单在 quotaTracks 里一次性预留，后续逐首请求只认 batchId 放行。
+      let quotaReserved = 0;
+      try {
+        const privileged = isPrivilegedClient(clientIp, adminKey);
+        // 歌手全辑（Discography）为站长专属：普通访客直接拒绝，不进入队列、不消耗任何资源
+        if (body.discography === true && !privileged) {
+          console.warn(`[WebQuota] 🔒 拒绝非特权用户下载歌手全辑: ${clientIp}`);
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({
+            status: 'error',
+            error: '🔒 歌手全辑批量转存为站长专属功能。您仍可单独转存该歌手的单张专辑、歌单或单曲。'
+          }));
+          return;
+        }
+        const batchKey = body.batchId ? `${clientIp}|${body.batchId}` : null;
+
+        if (body.finalizeBatch && batchKey) {
+          // 收尾请求：额度已在下单时预留过，这里只确认台账存在；不存在则按整单曲目数兜底预留
+          if (!webBatchQuotaLedger.has(batchKey) && !privileged) {
+            const tracks = Math.max(0, parseInt(body.quotaTracks, 10) || 0);
+            if (tracks > 0) {
+              const r = reserveWebQuota(clientIp, tracks);
+              if (!r.ok) {
+                res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ status: 'error', error: r.error }));
+                return;
+              }
+              quotaReserved = tracks;
+            }
+          }
+        } else if (!privileged && !batchKey) {
+          // 非批量路径（单曲直转）：按本请求曲目数预留
+          const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
+          const r = reserveWebQuota(clientIp, tracks);
+          if (!r.ok) {
+            console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
+            res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ status: 'error', error: r.error }));
+            return;
+          }
+          quotaReserved = tracks;
+        } else if (!privileged && batchKey) {
+          // 批量首请求一次性预留整单额度；后续同 batchId 请求不再重复扣。
+          // 若台账不存在（首请求失败/服务重启），退化为按单首计费，杜绝整单免费跑。
+          if (!webBatchQuotaLedger.has(batchKey)) {
+            const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
+            const r = reserveWebQuota(clientIp, tracks);
+            if (!r.ok) {
+              console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
+              res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ status: 'error', error: r.error }));
+              return;
+            }
+            quotaReserved = tracks;
+            webBatchQuotaLedger.set(batchKey, { reserved: tracks, consumed: 0 });
+          }
+        }
+      } catch (quotaErr) {
+        console.warn('[WebQuota] 预留异常(继续):', quotaErr.message);
+      }
+
       try {
         const taskName = body.meta?.title ? `${body.meta.artist || ''} - ${body.meta.title} (${body.quality || 'Lossless'})` : (body.adamId || 'Transfer');
         const result = await globalQueue.enqueue(() => processTransfer(body), {
@@ -2756,6 +2986,19 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'ok', data: result }));
       } catch (err) {
+        // 本请求失败：把该请求涉及的预留额度退回，不让用户为失败任务付费
+        if (quotaReserved > 0) {
+          try { refundWebQuota(clientIp, quotaReserved); } catch {}
+        }
+        if (body.batchId) {
+          // 批量会话中任一请求失败即撤销整单台账，避免「首请求失败退款、后续请求免费跑」
+          const batchKey = `${clientIp}|${body.batchId}`;
+          const led = webBatchQuotaLedger.get(batchKey);
+          if (led && led.reserved > led.consumed && led.reserved !== quotaReserved) {
+            try { refundWebQuota(clientIp, led.reserved - led.consumed); } catch {}
+          }
+          webBatchQuotaLedger.delete(batchKey);
+        }
         // wrapper-lite 卡死特征：terminated / internal error / Fairplay -42786 等。
         // 后台 wrapper-watchdog 已会自动重启 wrapper-lite，这里把原生态错误翻译成友好提示，
         // 让用户/日志能明确看到"wrapper 卡死已自愈，请重试"，而非晦涩的 terminated。

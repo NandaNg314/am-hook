@@ -423,39 +423,73 @@ class UserQuotaManager {
     return { ok: true };
   }
 
-  checkQuota(userId, isAlbum = false) {
-    if (this.isOwner(userId)) return { ok: true, isOwner: true };
+  getRecord(userId) {
     const today = this.getTodayStr();
     const key = String(userId);
     let record = this.dailyUsage.get(key);
     if (!record || record.dateStr !== today) {
-      record = { dateStr: today, albumCount: 0, songCount: 0 };
+      // songCount 为「今日已消耗曲目数」：单曲、批量勾选、整张专辑全部合并计入同一池，
+      // 不再区分独立的专辑额度。
+      record = { dateStr: today, songCount: 0 };
       this.dailyUsage.set(key, record);
     }
-
-    const maxAlbums = 20; // 每日最多 20 张全辑
-    const maxSongs = 50;  // 每日最多 50 首单曲
-
-    if (isAlbum && record.albumCount >= maxAlbums) {
-      return { ok: false, limitType: 'album', current: record.albumCount, max: maxAlbums };
-    }
-    if (!isAlbum && record.songCount >= maxSongs) {
-      return { ok: false, limitType: 'song', current: record.songCount, max: maxSongs };
-    }
-    return { ok: true, current: isAlbum ? record.albumCount : record.songCount, max: isAlbum ? maxAlbums : maxSongs };
+    return record;
   }
 
-  incrementQuota(userId, isAlbum = false) {
-    if (this.isOwner(userId)) return;
-    const today = this.getTodayStr();
-    const key = String(userId);
-    let record = this.dailyUsage.get(key);
-    if (!record || record.dateStr !== today) {
-      record = { dateStr: today, albumCount: 0, songCount: 0 };
-      this.dailyUsage.set(key, record);
+  /**
+   * 查询今日剩余额度。isAlbum 参数仅为兼容旧调用签名保留，语义已统一为「曲目数」。
+   */
+  checkQuota(userId) {
+    if (this.isOwner(userId)) return { ok: true, isOwner: true, current: 0, max: DAILY_TRACK_QUOTA, remaining: Infinity };
+    const record = this.getRecord(userId);
+    const remaining = Math.max(0, DAILY_TRACK_QUOTA - record.songCount);
+    return {
+      ok: remaining > 0,
+      current: record.songCount,
+      max: DAILY_TRACK_QUOTA,
+      remaining
+    };
+  }
+
+  /**
+   * 开跑前一次性预留整单额度（原子操作）：额度不足时直接拒绝，绝不开始下载。
+   * 这是「不够额度就直接不触发下载」的唯一入口，避免跑了一半才发现额度不够、
+   * 白烧服务器带宽和用户时间。
+   * 返回 { ok, reserved, reason, current, max, remaining }
+   */
+  reserveQuota(userId, trackCount) {
+    const count = Math.max(0, Math.floor(Number(trackCount) || 0));
+    if (this.isOwner(userId)) return { ok: true, isOwner: true, reserved: true, remaining: Infinity, current: 0, max: DAILY_TRACK_QUOTA };
+    const record = this.getRecord(userId);
+    const remaining = Math.max(0, DAILY_TRACK_QUOTA - record.songCount);
+    if (count === 0) {
+      return { ok: true, reserved: false, current: record.songCount, max: DAILY_TRACK_QUOTA, remaining };
     }
-    if (isAlbum) record.albumCount++;
-    else record.songCount++;
+    if (count > remaining) {
+      return { ok: false, reserved: false, reason: 'insufficient', current: record.songCount, max: DAILY_TRACK_QUOTA, remaining };
+    }
+    record.songCount += count;
+    return { ok: true, reserved: true, reservedCount: count, current: record.songCount, max: DAILY_TRACK_QUOTA, remaining: DAILY_TRACK_QUOTA - record.songCount };
+  }
+
+  /**
+   * 预留了但实际未消耗（如整单失败/提前中止）时，把多扣的额度退回，避免误伤用户。
+   */
+  refundQuota(userId, count) {
+    if (this.isOwner(userId)) return;
+    const refund = Math.max(0, Math.floor(Number(count) || 0));
+    if (!refund) return;
+    const record = this.getRecord(userId);
+    record.songCount = Math.max(0, record.songCount - refund);
+  }
+
+  /**
+   * 增量计数（兼容旧调用点）。统一计入曲目池。
+   */
+  incrementQuota(userId, count = 1) {
+    if (this.isOwner(userId)) return;
+    const record = this.getRecord(userId);
+    record.songCount += Math.max(0, Math.floor(Number(count) || 0));
   }
 
   cleanupStale() {
@@ -475,6 +509,44 @@ class UserQuotaManager {
 }
 
 const quotaManager = new UserQuotaManager();
+
+// 非特权用户每日总配额（单位：曲目数）。单曲、批量勾选、整张专辑全部合并计入同一个 200 首池子，
+// 不再区分独立的「20 张专辑」额度。已归档秒传不消耗额度。
+const DAILY_TRACK_QUOTA = parseInt(process.env.DAILY_TRACK_QUOTA || '200', 10);
+
+// 整单额度预留台账：chatId -> 队列中【尚未对账】的预留曲目数。
+// 开跑前 reserveQuota 按整单曲目数从预留，完成时按实际下载数对账多退少补，
+// 这样排队中的第二个批量任务也能看到第一个任务已占用的额度，不会双重超卖。
+const pendingQuotaReservations = new Map();
+
+function addPendingReservation(chatId, count) {
+  const key = String(chatId);
+  const add = Math.max(0, Math.floor(Number(count) || 0));
+  if (!add) return;
+  pendingQuotaReservations.set(key, (pendingQuotaReservations.get(key) || 0) + add);
+}
+
+/**
+ * 是否存在尚未对账的整单预留（供 transferAlbumCore 判定是否已预扣费）。
+ */
+function hasPendingReservation(chatId) {
+  return (pendingQuotaReservations.get(String(chatId)) || 0) > 0;
+}
+
+/**
+ * 整单结束对账：把预留的曲目数换成实际消耗数（多退少补），并从待对账台账移除。
+ * 调用点必须保证无论成功失败都执行一次，失败时实际消耗传 0 即全额退回。
+ */
+function settleQuotaReservation(chatId, consumedTracks) {
+  const key = String(chatId);
+  const reserved = pendingQuotaReservations.get(key) || 0;
+  if (!reserved) return;
+  pendingQuotaReservations.delete(key);
+  const consumed = Math.max(0, Math.floor(Number(consumedTracks) || 0));
+  const delta = consumed - reserved;
+  if (delta > 0) quotaManager.incrementQuota(chatId, delta);
+  else if (delta < 0) quotaManager.refundQuota(chatId, -delta);
+}
 
 /**
  * 轻量高可用并发执行器 (Worker Pool)
@@ -2093,15 +2165,15 @@ ${artistTag} ${titleTag} ${albumTag}`);
       return;
     }
   }
-  // 检查讨论组/普通用户单曲下载配额 (作者专属账号 100% 豁免)
-  const quotaCheck = quotaManager.checkQuota(chatId, false);
-  if (!quotaCheck.ok) {
+  // 开跑前预留 1 首额度：额度不足直接拒绝，绝不开始下载（作者专属账号 100% 豁免）
+  const singleQuota = quotaManager.reserveQuota(chatId, 1);
+  if (!singleQuota.ok) {
     await tgCall('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text: isEn
-        ? `⚠️ <b>Daily single track download quota reached (${quotaCheck.current}/${quotaCheck.max})</b>\n\nTo ensure fair use and bandwidth safety, non-admin users have a daily quota of ${quotaCheck.max} songs.\n\n⏰ Resets daily at midnight (UTC+8).\n💡 <b>Tip</b>: Archived songs from library do NOT count towards quota!`
-        : `⚠️ <b>您今日的单曲下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 首)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 首全新单曲。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档曲目均支持秒传直发，<b>秒传不计入任何配额</b>，欢迎随时取用！`,
+        ? `⚠️ <b>Daily track download quota reached (${singleQuota.current}/${singleQuota.max})</b>\n\nTo ensure fair use and bandwidth safety, non-admin users have a daily quota of ${singleQuota.max} tracks (single songs, albums and playlists all share this pool).\n\n⏰ Resets daily at midnight (UTC+8).\n💡 <b>Tip</b>: Archived songs from library do NOT count towards quota!`
+        : `⚠️ <b>您今日的下载配额已达上限 (${singleQuota.current}/${singleQuota.max} 首)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日共限 ${singleQuota.max} 首（单曲、专辑、歌单共用同一份额度）。已取消本次下载，未消耗任何额度。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档曲目均支持秒传直发，<b>秒传不计入任何配额</b>，欢迎随时取用！`,
       parse_mode: 'HTML'
     });
     return;
@@ -2331,7 +2403,8 @@ ${artistTag} ${titleTag} ${albumTag}`);
             : `\n\n📊 <b>性能统计：</b>\n• 文件大小：<code>${sendResult.sizeMb} MB</code>\n• 上传耗时：<code>${sendResult.durationSec} 秒</code> (速度: <code>${sendResult.speedMbS} MB/s</code>)\n• 全程总耗时：<code>${totalDurationSec} 秒</code>\n• 传输通道：<code>官方 Local Bot API 专线</code>`
         ) : '';
 
-        quotaManager.incrementQuota(chatId, false);
+        // 单曲额度已在开跑前预留 1 首，成功即消耗（失败路径在 catch 中退回）
+        settleQuotaReservation(chatId, 1);
 
         await tgCall('editMessageText', {
           chat_id: chatId,
@@ -2353,8 +2426,11 @@ ${artistTag} ${titleTag} ${albumTag}`);
           });
         } catch {}
       } finally {
+        // 失败或异常时预留额度尚未结算，退回这 1 首，不让用户为失败任务付费
+        if (singleQuota.reserved && hasPendingReservation(chatId)) {
+          settleQuotaReservation(chatId, 0);
+        }
         try {
-          if (zipFilePath) fs.rmSync(zipFilePath, { force: true });
           if (audioFilePath) {
             const dir = path.dirname(audioFilePath);
             if (dir.includes('am_tg_')) {
@@ -2376,31 +2452,20 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
   if (!tracks.length) return;
   saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
 
-  // 配额预估：非站长需确保剩余单曲配额足够 (秒传不计配额，与单曲下载逻辑一致)
-  const quotaCheck = quotaManager.checkQuota(chatId, false);
-  if (!quotaCheck.ok) {
+  // 开跑前按勾选曲目数一次性预留额度：不够直接拒绝，绝不开始下载（秒传不计配额）
+  const multiQuota = quotaManager.reserveQuota(chatId, tracks.length);
+  if (!multiQuota.ok) {
     await tgCall('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text: isEn
-        ? `⚠️ <b>Daily single track download quota reached (${quotaCheck.current}/${quotaCheck.max})</b>`
-        : `⚠️ <b>您今日的单曲下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 首)</b>`,
+        ? `⚠️ <b>Daily quota insufficient:</b> you selected <code>${tracks.length}</code> tracks but only have <code>${multiQuota.remaining}</code> of your daily <code>${multiQuota.max}</code>-track quota left. Nothing was downloaded.`
+        : `⚠️ <b>今日配额不足，未开始下载</b>\n\n您勾选了 <code>${tracks.length}</code> 首，但今天只剩 <code>${multiQuota.remaining}</code> 首额度（每日上限 <code>${multiQuota.max}</code> 首）。已取消，未消耗任何额度。请减少勾选数量或明天再试。`,
       parse_mode: 'HTML'
     });
     return;
   }
-  const remainingCount = quotaCheck.isOwner ? Infinity : (quotaCheck.max - quotaCheck.current);
-  if (tracks.length > remainingCount) {
-    await tgCall('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      text: isEn
-        ? `⚠️ <b>Daily quota insufficient:</b> only <code>${remainingCount}</code> tracks remaining today, but you selected <code>${tracks.length}</code>. Please reduce selection or retry tomorrow!`
-        : `⚠️ <b>今日剩余单曲配额不足：</b>今天还剩 <code>${remainingCount}</code> 首下载额度，您勾选了 <code>${tracks.length}</code> 首。请减少勾选数量或明天再试！`,
-      parse_mode: 'HTML'
-    });
-    return;
-  }
+  if (multiQuota.reserved) addPendingReservation(chatId, tracks.length);
 
   return botTaskQueue.enqueue(
     { chatId, messageId, type: 'album', name: `${albumData.name} 所选曲目` },
@@ -2601,7 +2666,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
             });
           }
 
-          quotaManager.incrementQuota(chatId, false);
+          // 额度在任务结束时按实际新下载首数统一结算（见 finally），此处仅计数
           downloadedCount++;
 
           if (sendResult?.groupMsgId) allMsgIds.push(sendResult.groupMsgId);
@@ -2650,8 +2715,8 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
         const skipNote = skippedTracks.length ? (
           isEn
-            ? `\n\n⚠️ Note: ${skippedTracks.length} tracks failed (regional copyright or download error).`
-            : `\n\n⚠️ 注：有 ${skippedTracks.length} 首歌曲下载失败 (地区版权或解析错误)。`
+            ? `\n\n⚠️ <b>Note:</b> ${skippedTracks.length} ${skippedTracks.length > 1 ? 'tracks were' : 'track was'} skipped:\n${skippedTracks.map(s => `• ${escapeHtml(s.track?.name || s.track || 'Unknown')} — ${escapeHtml((s.error || 'unavailable').split('\n')[0])}`).join('\n')}`
+            : `\n\n⚠️ <b>注明：</b>有 ${skippedTracks.length} 首歌曲未能收录：\n${skippedTracks.map(s => `• ${escapeHtml(s.track?.name || s.track || '未知曲目')} — ${escapeHtml((s.error || '不可用').split('\n')[0])}`).join('\n')}`
         ) : '';
         await tgCall('editMessageText', {
           chat_id: chatId,
@@ -2672,6 +2737,10 @@ ${artistTag} ${titleTag} ${albumTag}`);
           });
         } catch {}
       } finally {
+        // 整单对账：按实际新下载首数结算，多退少补（失败则全额退回预留）
+        if (multiQuota.reserved && hasPendingReservation(chatId)) {
+          settleQuotaReservation(chatId, downloadedCount);
+        }
         // 统一清理本次批量新下载的临时文件 (zip / audio 目录 / lrc / 封面)
         for (const f of downloadedFilePaths) {
           try {
@@ -2744,6 +2813,24 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
       const failedAlbums = [];
       const totalAlbums = selectedAlbums.length;
       let downloadedCount = 0;
+      let downloadedTracks = 0;
+      // 整单额度预留：按待下载专辑的曲目总数从严预留，不够则直接拒绝（不会开始任何下载）。
+      // 站长专属功能，特权用户自动豁免。
+      const plannedTracks = toDownload.reduce((s, al) => s + ((al.trackCount || 0) || 0), 0);
+      const batchReserve = quotaManager.reserveQuota(chatId, plannedTracks);
+      if (!batchReserve.ok) {
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: isEn
+            ? `⚠️ <b>Daily quota insufficient:</b> this batch needs <code>${plannedTracks}</code> tracks, only <code>${batchReserve.remaining}</code> left today. Nothing was downloaded.`
+            : `⚠️ <b>今日配额不足，未开始下载</b>\n\n本批共需 <code>${plannedTracks}</code> 首，今日仅剩 <code>${batchReserve.remaining}</code> 首（每日上限 <code>${batchReserve.max}</code> 首）。已取消，未消耗任何额度。`,
+          parse_mode: 'HTML'
+        });
+        selection.clear();
+        return;
+      }
+      if (batchReserve.reserved) addPendingReservation(chatId, plannedTracks);
 
       try {
         await tgCall('editMessageText', {
@@ -2857,6 +2944,10 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
           });
         } catch {}
       } finally {
+        // 整单对账：按实际下载曲目数结算，多退少补（失败则全额退回预留）
+        if (batchReserve.reserved && hasPendingReservation(chatId)) {
+          settleQuotaReservation(chatId, downloadedTracks);
+        }
         selection.clear();
       }
     }
@@ -3075,15 +3166,18 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
       return;
     }
   }
-  // 检查讨论组/普通用户专辑下载配额 (作者专属账号 100% 豁免)
-  const quotaCheck = quotaManager.checkQuota(chatId, true);
-  if (!quotaCheck.ok) {
+  // 开跑前一次性预估整单额度：按专辑实际曲目数从严预留，不够直接拒绝，绝不开始下载
+  // (已归档秒传在上面的缓存分支就已返回，不消耗额度；作者专属账号 100% 豁免)
+  const albumTrackCount = (albumData.tracks || []).length;
+  const quotaReserve = quotaManager.reserveQuota(chatId, albumTrackCount);
+  if (quotaReserve.ok && quotaReserve.reserved) addPendingReservation(chatId, albumTrackCount);
+  if (!quotaReserve.ok) {
     await tgCall('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text: isEn
-        ? `⚠️ <b>Daily ${typeLabel.toLowerCase()} download quota reached (${quotaCheck.current}/${quotaCheck.max})</b>`
-        : `⚠️ <b>您今日的专辑下载配额已达上限 (${quotaCheck.current}/${quotaCheck.max} 张)</b>\n\n为了保障小讨论组共享公平与 VPS 带宽安全，非特权用户每日限额下载 ${quotaCheck.max} 张全新专辑。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档专辑均支持秒传直发，<b>秒传不计入任何配额</b>，欢迎随时取用！`,
+        ? `⚠️ <b>Daily quota insufficient</b>\n\nThis ${typeLabel.toLowerCase()} has <code>${albumTrackCount}</code> tracks, but you only have <code>${quotaReserve.remaining}</code> of your daily <code>${quotaReserve.max}</code>-track quota left (used <code>${quotaReserve.current}</code>).\n\n⏰ Resets daily at midnight (UTC+8).\n💡 Archived ${typeLabel.toLowerCase()}s still deliver instantly and do NOT count towards quota.`
+        : `⚠️ <b>今日配额不足，未开始下载</b>\n\n该${typeLabel}共 <code>${albumTrackCount}</code> 首，而您今天剩余的额度只有 <code>${quotaReserve.remaining}</code> 首（每日上限 <code>${quotaReserve.max}</code> 首，已用 <code>${quotaReserve.current}</code> 首）。\n\n⏰ <b>配额刷新时间</b>：北京时间每日午夜 00:00 自动重置，明日即可恢复使用。\n💡 <b>免配额小贴士</b>：所有已归档${typeLabel}仍支持秒传直发，<b>秒传不计入任何配额</b>。`,
       parse_mode: 'HTML'
     });
     return;
@@ -3097,7 +3191,6 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
         const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: '', needTranslate, embedLyricsMode, saveLyricsFormats, needRuby, rubyMode });
         if (!res || !res.ok) return;
         await pushAlbumMsgsToPrivate(chatId, res.allGroupMsgIds);
-
         const useTotalSizeMb = res.zipSizeMb || res.sendResult?.sizeMb || 0;
         const useUploadSec = res.uploadDurationSec || res.sendResult?.durationSec || 0;
         const useSpeedMbS = useTotalSizeMb && useUploadSec ? Number((useTotalSizeMb / useUploadSec).toFixed(2)) : (res.sendResult?.speedMbS || 0);
@@ -3140,6 +3233,12 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
             parse_mode: 'HTML'
           });
         } catch {}
+      } finally {
+        // 整单失败/异常：退回尚未对账的预留额度，不让用户为失败任务付费
+        // （成功路径已在 transferAlbumCore 内按实际下载数对账）
+        if (quotaReserve.reserved && hasPendingReservation(chatId)) {
+          settleQuotaReservation(chatId, 0);
+        }
       }
     }
   );
@@ -3359,7 +3458,10 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             createdAt: Date.now()
           });
 
-          quotaManager.incrementQuota(chatId, true);
+          // 额度已在开跑前整单预留（handleAlbumDownload 等入口），这里只按实际下载数对账；
+          // 若走的是未预留的旧路径，则按实际下载曲目数补扣。
+          if (hasPendingReservation(chatId)) settleQuotaReservation(chatId, allDownloadedFiles.length);
+          else quotaManager.incrementQuota(chatId, allDownloadedFiles.length);
 
           const totalDurationSec = ((performance.now() - albumStartTime) / 1000).toFixed(1);
 
@@ -3616,7 +3718,9 @@ ${artistTag} ${albumTag} #${typeLabel}`);
           createdAt: Date.now()
         });
 
-        quotaManager.incrementQuota(chatId, true);
+        // 额度已在开跑前整单预留，这里按实际下载数对账（未预留则按实际下载数补扣）
+        if (hasPendingReservation(chatId)) settleQuotaReservation(chatId, allDownloadedFiles.length);
+        else quotaManager.incrementQuota(chatId, allDownloadedFiles.length);
 
         const totalDurationSec = ((performance.now() - albumStartTime) / 1000).toFixed(1);
         return {
@@ -3849,13 +3953,12 @@ async function handleUpdate(update) {
     if (text === '/stats' || text === '/traffic' || text === '/quota') {
       const stats = getTrafficStats();
       const isOwner = String(chatId) === String(OWNER_USER_ID);
-      const userQuota = quotaManager.checkQuota(chatId, false);
-      const albumQuota = quotaManager.checkQuota(chatId, true);
+      const userQuota = quotaManager.checkQuota(chatId);
 
       const roleText = isOwner ? '👑 <b>站长/管理员 (拥有 100% 全面豁免权)</b>' : '👤 <b>讨论组成员</b>';
       const quotaText = isOwner
-        ? '• 下载权限：<code>无限制 (100% 全面豁免)</code>\n• 冷却限制：<code>无限制 (0秒间隔)</code>'
-        : `• 今日单曲：<code>${userQuota.current} / ${userQuota.max} 首</code>\n• 今日专辑：<code>${albumQuota.current} / ${albumQuota.max} 张</code>\n• 冷却间隔：<code>5 秒/次</code>`;
+        ? '• 下载权限：<code>无限制 (100% 全面豁免)</code>\n• 歌手全辑：<code>✅ 可用 (站长专属)</code>\n• 冷却限制：<code>无限制 (0秒间隔)</code>'
+        : `• 今日已用：<code>${userQuota.current} / ${userQuota.max} 首</code> (剩余 <code>${userQuota.remaining}</code> 首)\n• 计算口径：<code>单曲 / 专辑 / 歌单 共用同一份额度</code>\n• 歌手全辑：<code>🔒 站长专属</code>\n• 冷却间隔：<code>5 秒/次</code>`;
 
       const msgText = 
 `📊 <b>VPS 服务器带宽与使用配额监控</b>

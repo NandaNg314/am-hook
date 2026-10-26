@@ -559,18 +559,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   async function runDiscographyTransfer({ quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, ruby = false, rubyMode = 'roman', includeFull, includeLive, includeSingles, includeCompilations }) {
     if (!artist) return;
 
-    // 前置配额低水位检查：剩余配额极低时直接拦截，避免白跑全量检索与逐首下载
-    let quotaRemaining = Infinity;
+    // 前置权限检查：歌手全辑是站长专属，特权用户额度无限，无需检查；
+    // 普通用户即便绕过 UI 也会被服务端 403 拦截，这里只负责给出友好提示、不白跑。
     try {
       const quotaRes = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
       const quotaJson = await quotaRes.json();
       if (quotaJson.status === 'ok' && quotaJson.data && !quotaJson.data.unlimited) {
-        quotaRemaining = quotaJson.data.remaining;
-        if (quotaRemaining < 5) {
-          toast(`⚠️ 今日转存配额不足：今日仅剩 ${quotaRemaining} 首。请明日北京时间 00:00 后重试`);
-          console.warn(`[Disco] 前置配额拦截: 剩余 ${quotaRemaining} 首`);
-          return;
-        }
+        toast('🔒 歌手全辑批量转存为站长专属功能，请改为下载单张专辑、歌单或单曲');
+        return;
       }
     } catch (err) {
       console.warn('[Disco] 配额预检查失败(继续):', err.message);
@@ -673,15 +669,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
       if (!albTracks.length) continue;
 
-      // 每张专辑曲目读出后做一次配额检查：剩余不足以覆盖本张专辑时跳过该张，避免中途撞墙
-      if (quotaRemaining !== Infinity && quotaRemaining < albTracks.length) {
-        if (discoStatusDetail) discoStatusDetail.textContent = `⚠️ 今日配额不足，跳过《${albTitle}》(${albTracks.length} 首 > 剩余 ${quotaRemaining} 首)`;
-        console.warn(`[Disco] 配额不足跳过专辑: ${albTitle} ${albTracks.length} 首 > 剩余 ${quotaRemaining} 首`);
-        quotaRemaining = 0;
-        continue;
-      }
-      if (quotaRemaining !== Infinity) quotaRemaining -= albTracks.length;
-
       const batchSessionId = `disco_${alb.id}_${Date.now()}`;
       const zipFilename = `${albArtist} - ${albTitle} [${quality}].zip`;
       const BATCH_CONCURRENCY = 3;
@@ -702,6 +689,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               folderId: parentFolder,
               token: guestToken,
               batchId: batchSessionId,
+              // 服务端据此硬鉴权：歌手全辑仅站长可用
+              discography: true,
               isLastTrack: false,
               zipFilename,
               meta: {
@@ -773,6 +762,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             quality,
             folderId: parentFolder,
             token: guestToken,
+            discography: true,
             meta: { album: albTitle, artist: albArtist }
           }),
           signal: sig
