@@ -2768,6 +2768,13 @@ const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyRes
 // 网页批量 ZIP 是一次下单 + N 次逐首请求 + 1 次收尾，必须整单只扣一次。
 const webBatchQuotaLedger = new Map();
 
+// 批量转存结果缓存：`${clientIp}|${batchId}` -> { downloadPage, folderId, guestToken, partCount, ... }
+// finalize 一次要打包+上传数 GB，耗时可达数分钟。浏览器标签页被切到后台或休眠时可能直接掐断
+// 连接，前端 fetch 永远拿不到结果，用户会看到「转存失败」而服务端其实已经成功。
+// 这里把成品结果留档，前端超时/断线后可用 batchId 补查，链接不会再丢。
+const webBatchResultCache = new Map();
+const BATCH_RESULT_TTL_MS = 2 * 60 * 60 * 1000; // 2 小时
+
 // 定期清理过期的 IP 限流记录与孤儿配额台账，防止长期运行内存累积
 setInterval(() => {
   const now = Date.now();
@@ -2781,6 +2788,12 @@ setInterval(() => {
   for (const [key, led] of webBatchQuotaLedger.entries()) {
     if (!led.createdAt || now - led.createdAt > 2 * 60 * 60 * 1000) {
       webBatchQuotaLedger.delete(key);
+    }
+  }
+  // 过期的成品结果缓存
+  for (const [key, rec] of webBatchResultCache.entries()) {
+    if (!rec.createdAt || now - rec.createdAt > 2 * 60 * 60 * 1000) {
+      webBatchResultCache.delete(key);
     }
   }
 }, 60 * 60 * 1000).unref();
@@ -2921,6 +2934,20 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && (u.pathname === '/queue' || u.pathname === '/api/queue-status')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', data: globalQueue.status }));
+    return;
+  }
+
+  // 批量转存结果补查：finalize 耗时长，浏览器断线/超时后可用 batchId 取回成品链接
+  if (req.method === 'GET' && u.pathname === '/api/cloud-transfer-result') {
+    const clientIp = getClientIp(req);
+    const batchId = u.searchParams.get('batchId') || '';
+    const rec = webBatchResultCache.get(`${clientIp}|${batchId}`);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    if (rec && Date.now() - rec.createdAt < BATCH_RESULT_TTL_MS) {
+      res.end(JSON.stringify({ status: 'ok', data: rec.data }));
+    } else {
+      res.end(JSON.stringify({ status: 'error', error: '该批次结果不存在或已过期（服务端仍在处理中请稍候再查）' }));
+    }
     return;
   }
 
@@ -3073,6 +3100,13 @@ const server = http.createServer(async (req, res) => {
         // 批量收尾成功后清理台账，避免常驻进程内存无限累积
         if (body.finalizeBatch && body.batchId) {
           webBatchQuotaLedger.delete(`${clientIp}|${body.batchId}`);
+          // 留档成品结果：浏览器断线/超时后可凭 batchId 补查，避免「服务端成功但前端报失败」
+          if (result) {
+            webBatchResultCache.set(`${clientIp}|${body.batchId}`, {
+              data: result,
+              createdAt: Date.now()
+            });
+          }
         }
       } catch (err) {
         // 本请求失败：把该请求涉及的预留额度退回，不让用户为失败任务付费

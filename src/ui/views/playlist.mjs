@@ -688,6 +688,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (isZip && !batchSig.aborted && successCount > 0) {
       if (batchProgressFill) batchProgressFill.style.width = '92%';
       if (batchStatusDetail) batchStatusDetail.textContent = `所有曲目已就绪，正在生成 ZIP 压缩包并极速直传 Gofile...`;
+      // finalize 要打包并上传数 GB，耗时可达数分钟。这里不跟随 batchSig：
+      // 一旦用户点取消或配额中止，不该把已经在跑的打包上传半途掐断（服务端会自己收尾）。
+      let finalizeOk = false;
       try {
         const finResp = await fetch('/api/cloud-transfer', {
           method: 'POST',
@@ -702,8 +705,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             // 失败曲目清单：服务端据此在压缩包内生成 error.log（全部成功则不生成）
             failedTracks: failedTracks.length ? failedTracks : undefined,
             meta: { album: plName }
-          }),
-          signal: batchSig
+          })
         });
         const finJson = await finResp.json();
         if (finJson.status === 'ok' && finJson.data) {
@@ -711,19 +713,47 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           if (finJson.data.folderId) parentFolder = finJson.data.folderId;
           if (finJson.data.guestToken) guestToken = finJson.data.guestToken;
           zipPartCount = finJson.data.partCount || 1;
+          finalizeOk = true;
         } else if (finJson.error) {
           finalizeError = finJson.error;
         }
       } catch (err) {
-        if (!batchSig.aborted) {
-          finalizeError = err.message;
-          console.warn('[Batch] 歌单 ZIP 打包直传异常:', err.message);
+        // 连接被浏览器掐断（标签页后台/休眠/网络切换）时这里拿不到任何响应，
+        // 但服务端可能已经成功。标记为「结果未知」，稍后补查而不是直接报失败。
+        finalizeError = err.message;
+        console.warn('[Batch] 打包直传请求中断，稍后补查结果:', err.message);
+      }
+
+      // 结果未知：用 batchId 向服务端补查成品链接（服务端有 2 小时结果留档）
+      if (!finalizeOk && !finalDownloadPage) {
+        if (batchStatusDetail) batchStatusDetail.textContent = '正在确认云端结果...';
+        for (let attempt = 0; attempt < 6; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 15000));
+          try {
+            const q = await fetch(`/api/cloud-transfer-result?batchId=${encodeURIComponent(batchSessionId)}`, {
+              signal: AbortSignal.timeout(10000)
+            });
+            const qj = await q.json();
+            if (qj.status === 'ok' && qj.data) {
+              if (qj.data.downloadPage) finalDownloadPage = qj.data.downloadPage;
+              if (qj.data.folderId) parentFolder = qj.data.folderId;
+              if (qj.data.guestToken) guestToken = qj.data.guestToken;
+              zipPartCount = qj.data.partCount || 1;
+              finalizeError = null;
+              console.log('[Batch] 补查成功，已取回云端链接');
+              break;
+            }
+          } catch {}
         }
       }
     }
 
     if (batchProgressFill) batchProgressFill.style.width = '100%';
-    setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
+    // 不再无条件隐藏进度卡片：成功时保留（用户切回来仍能看到结果），失败时也保留错误信息。
+    // 只有用户主动取消才在 1.5 秒后收起。
+    if (batchSig.aborted) {
+      setTimeout(() => { if (batchCard) batchCard.hidden = true; }, 1500);
+    }
 
     if (batchSig.aborted) {
       toast(batchAbortReason ? `⚠️ ${batchAbortReason}` : '已取消批量转存');
@@ -747,10 +777,17 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       if (gofileCopyBtn) gofileCopyBtn.textContent = '复制链接';
       gofileDialog?.showModal();
     } else if (finalizeError) {
+      // 保留失败原因在卡片上，不只靠 2.6 秒的 toast
+      if (batchStatusTitle) batchStatusTitle.textContent = '⚠️ 转存未完成';
+      if (batchStatusDetail) batchStatusDetail.textContent = finalizeError;
       toast(`⚠️ 转存失败：${finalizeError}`);
     } else if (lastTrackError && successCount === 0) {
+      if (batchStatusTitle) batchStatusTitle.textContent = '⚠️ 转存未完成';
+      if (batchStatusDetail) batchStatusDetail.textContent = lastTrackError;
       toast(`⚠️ 转存失败：${lastTrackError}`);
     } else {
+      if (batchStatusTitle) batchStatusTitle.textContent = '⚠️ 转存未完成';
+      if (batchStatusDetail) batchStatusDetail.textContent = '未能创建网盘链接，请稍后重试';
       toast('转存失败，未能创建网盘链接');
     }
   }
