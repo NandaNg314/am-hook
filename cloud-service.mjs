@@ -1724,10 +1724,29 @@ async function fetchCencFmp4(m3u8Url, encOut) {
     return buf;
   };
 
-  const parts = [await fetchRange(initUri, initRange)];
-  for (const seg of segments) {
-    parts.push(await fetchRange(seg.uri, seg.range));
-  }
+  // 分段并发拉取：HLS 通常有几十到上百个分片，串行拉取会让单曲耗时被逐段 RTT 叠加拖慢。
+  // 这里按分段数自适应并发（上限可配），并保持输出顺序不变。
+  const SEG_CONCURRENCY = Math.max(1, parseInt(process.env.HLS_SEG_CONCURRENCY || '8', 10));
+  const parts = new Array(segments.length + 1);
+  parts[0] = await fetchRange(initUri, initRange);
+
+  let nextIdx = 0;
+  const lane = async () => {
+    while (nextIdx < segments.length) {
+      const i = nextIdx++;
+      const seg = segments[i];
+      // 失败重试一次，避免单个分片抖动导致整首失败
+      try {
+        parts[i + 1] = await fetchRange(seg.uri, seg.range);
+      } catch (e1) {
+        await new Promise((r) => setTimeout(r, 300));
+        parts[i + 1] = await fetchRange(seg.uri, seg.range);
+      }
+    }
+  };
+  const laneCount = Math.min(SEG_CONCURRENCY, segments.length);
+  await Promise.all(Array.from({ length: laneCount }, () => lane()));
+
   await fs.promises.writeFile(encOut, Buffer.concat(parts));
   return segments.length;
 }
@@ -3089,6 +3108,20 @@ const server = http.createServer(async (req, res) => {
         console.warn('[WebQuota] 预留异常(继续):', quotaErr.message);
       }
 
+      // ---------- 磁盘水位保护：空间不足直接拒绝，避免跑到一半 No space left on device ----------
+      try {
+        const needBytes = Math.max(0, parseInt(body.fileSize, 10) || 0);
+        const diskCheck = ensureDiskSpace(needBytes);
+        if (!diskCheck.ok) {
+          console.warn(`[DiskGuard] ⚠️ 拒绝 ${clientIp}: 剩余 ${diskCheck.free.toFixed(1)}GB`);
+          res.writeHead(507, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ status: 'error', error: diskCheck.error }));
+          return;
+        }
+      } catch (diskErr) {
+        console.warn('[DiskGuard] 检查异常(继续):', diskErr.message);
+      }
+
       try {
         const taskName = body.meta?.title ? `${body.meta.artist || ''} - ${body.meta.title} (${body.quality || 'Lossless'})` : (body.adamId || 'Transfer');
         const result = await globalQueue.enqueue(() => processTransfer(body), {
@@ -3144,6 +3177,60 @@ const server = http.createServer(async (req, res) => {
 
 /* ==================== 磁盘与临时会话自动清理 ==================== */
 
+// 磁盘水位保护：转存要落临时文件（Hi-Res 单首可达 170MB，大专辑可堆数十 GB）。
+// 磁盘写满时 ffmpeg 会报 "No space left on device"，用户跑到一半才失败、且临时文件残留。
+// 这里在任务开始前预估所需空间，不足则直接拒绝并主动清理最旧的临时目录。
+const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '5');
+
+function getFreeDiskGB(dirPath = '/tmp') {
+  try {
+    const st = fs.statfsSync(dirPath);
+    return (st.bavail * st.bsize) / (1024 ** 3);
+  } catch {
+    return Infinity; // 取不到就不拦，避免误伤
+  }
+}
+
+/**
+ * 任务开始前的磁盘检查。空间不足以容纳预计用量时，先按 mtime 从旧到新清理
+ * /tmp 下的 am_tg_* / am_defrag_* / am_sessions 临时目录，再复查；仍不足则返回失败。
+ * @param {number} needBytes 预计需要写入的字节数（未知传 0）
+ */
+function ensureDiskSpace(needBytes = 0) {
+  const needGB = needBytes / (1024 ** 3);
+  const required = Math.max(MIN_FREE_DISK_GB, needGB * 1.2); // 留 20% 余量
+  let free = getFreeDiskGB();
+  if (free >= required) return { ok: true, free };
+
+  console.warn(`[DiskGuard] ⚠️ 可用空间 ${free.toFixed(1)}GB < 需要 ${required.toFixed(1)}GB，开始清理旧临时文件...`);
+  try {
+    const entries = fs.readdirSync('/tmp')
+      .filter((n) => n.startsWith('am_tg_') || n.startsWith('am_defrag_') || n.startsWith('am_single_') ||
+                     n.endsWith('.zip') || n.startsWith('am_wp_'))
+      .map((n) => {
+        const p = path.join('/tmp', n);
+        try { return { p, m: fs.statSync(p).mtimeMs }; } catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.m - b.m); // 最旧优先
+    for (const e of entries) {
+      if (getFreeDiskGB() >= required) break;
+      try { fs.rmSync(e.p, { recursive: true, force: true }); } catch {}
+    }
+  } catch {}
+
+  free = getFreeDiskGB();
+  if (free < required) {
+    return {
+      ok: false,
+      free,
+      error: `⚠️ 服务器磁盘空间不足（剩余 ${free.toFixed(1)}GB，本次任务约需 ${required.toFixed(1)}GB），已取消以免写到一半失败。请稍后重试或联系站长清理。`
+    };
+  }
+  console.log(`[DiskGuard] ✔ 清理后可用 ${free.toFixed(1)}GB，继续任务`);
+  return { ok: true, free };
+}
+
 function cleanupStaleSessions() {
   try {
     const sessionsRoot = '/tmp/am_sessions';
@@ -3167,7 +3254,7 @@ function cleanupStaleSessions() {
   try {
     const tmpDir = '/tmp';
     const now = Date.now();
-    const maxAge = 30 * 60 * 1000; // 30 分钟自动过期，防止异常终止导致残余堆积
+    const maxAge = 15 * 60 * 1000; // 15 分钟自动过期：Hi-Res 大文件堆积快，30 分钟易撑满磁盘
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
       if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
@@ -3196,7 +3283,8 @@ server.keepAliveTimeout = 60000;
 server.listen(PORT, HOST, () => {
   console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
   cleanupStaleSessions();
-  setInterval(cleanupStaleSessions, 30 * 60 * 1000);
+  // 收紧到 10 分钟：Hi-Res 大专辑连续转存时临时文件堆积很快，30 分钟一次容易堆满磁盘
+  setInterval(cleanupStaleSessions, 10 * 60 * 1000);
 });
 
 // 全局异常与未处理 Promise 拒绝守护，确保服务 7x24 小时稳定在线，永不崩溃闪退
