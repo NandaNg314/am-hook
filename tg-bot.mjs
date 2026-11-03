@@ -760,9 +760,36 @@ async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, ma
   }
 }
 
+/**
+ * sendMediaGroup 发送节流：两次媒体组之间至少间隔 N 秒。
+ *
+ * 为什么需要：批量转存时多个下载任务并发完成，媒体组会在极短时间内密集推送，
+ * 必然触发 Telegram 429 限流。而限流重试存在「实际已发送但返回 429」的边界情况，
+ * 重试就会让用户在频道里看到重复的两组卡片。
+ * 从源头拉开间隔，比事后重试更可靠。代价是整体慢几十秒，属可接受开销。
+ */
+const TG_MEDIA_GROUP_INTERVAL_MS = Math.max(0, parseInt(process.env.TG_MEDIA_GROUP_INTERVAL_MS || '4000', 10));
+let lastMediaGroupAt = 0;
+let mediaGroupChain = Promise.resolve();
+
+async function throttleMediaGroup() {
+  if (TG_MEDIA_GROUP_INTERVAL_MS <= 0) return;
+  // 串行化：并发调用时排队，保证任意两次发送之间有固定间隔
+  const run = async () => {
+    const wait = lastMediaGroupAt + TG_MEDIA_GROUP_INTERVAL_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastMediaGroupAt = Date.now();
+  };
+  mediaGroupChain = mediaGroupChain.then(run, run);
+  return mediaGroupChain;
+}
+
 async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 2) {
   let attempt = 0;
   const isLocalApi = TG_API_BASE.includes('127.0.0.1') || TG_API_BASE.includes('localhost');
+
+  // 发送前先排队节流，避免多个并发任务同一时刻扎堆推送
+  await throttleMediaGroup();
 
   while (attempt < maxRetries) {
     attempt++;
@@ -808,6 +835,8 @@ async function tgSendMediaGroup(chatId, mediaArray, filesMap = {}, maxRetries = 
           if (attempt >= maxRetries) {
             throw new Error(`Telegram API [sendMediaGroup] 频控: ${data.description || '未知错误'}`);
           }
+          // 重试前再过一次节流队列，避免与其他并发任务叠加再次撞限流
+          await throttleMediaGroup();
           continue;
         }
         throw new Error(`Telegram API [sendMediaGroup] 错误: ${data.description || '未知错误'}`);
@@ -3198,6 +3227,8 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
               caption: idx === 0 ? safeCaption(`💿 <b>${escapeHtml(cached.albumName)} (${i + 1}-${i + chunk.length})</b>\n${artistTag} ${albumTag}`) : undefined,
               parse_mode: 'HTML'
             }));
+            // 秒传复用路径同样要节流，否则密集推送仍会触发 429 并导致重复卡片
+            await throttleMediaGroup();
             await tgCall('sendMediaGroup', {
               chat_id: chatId,
               media: mediaGroup
