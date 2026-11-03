@@ -2222,9 +2222,19 @@ async function processTransfer(body) {
   }
 
   // 智能华语元数据嗅探：若歌曲标题或艺人名缺少中文，自动跨区优先向 (cn -> tw -> hk -> us) 同步正统中文名
-  const hasChineseInTitle = /[\u4e00-\u9fa5]/.test(meta.title || '');
-  const hasChineseInArtist = /[\u4e00-\u9fa5]/.test(meta.artist || '');
-  if (adamId && (!hasChineseInTitle || !hasChineseInArtist) && !isLikelyJapanese) {
+  //
+  // ⚠️ 合唱场景必须按「单个艺人」判断，不能看整体：
+  //    例 "Anthony Wong & 容祖儿" —— 整体含中文（容祖儿），旧逻辑据此跳过同步，
+  //    导致英文艺名 "Anthony Wong" 永远得不到中文名「黄耀明」。
+  const splitArtists = (s) => String(s || '').split(/(\s*(?:,|&|\/|feat\.|ft\.)\s*)/i).filter((x) => x && !/^[\s,&/]*$/.test(x));
+  const artistSegments = splitArtists(meta.artist);
+  const hasChinese = (t) => /[\u4e00-\u9fa5]/.test(t || '');
+  const hasLatin = (t) => /[a-z]/i.test(t || '');
+  const hasChineseInTitle = hasChinese(meta.title);
+  const hasChineseInArtist = hasChinese(meta.artist);
+  // 存在「纯英文的艺人片段」时才需要跨区补中文名
+  const artistNeedsChinese = artistSegments.some((p) => hasLatin(p) && !hasChinese(p));
+  if (adamId && (!hasChineseInTitle || !hasChineseInArtist || artistNeedsChinese) && !isLikelyJapanese) {
     for (const sf of ['cn', 'tw', 'hk', 'us']) {
       try {
         const sfRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${adamId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(3000) });
@@ -2233,21 +2243,43 @@ async function processTransfer(body) {
           const sAttr = sData.data?.[0]?.attributes;
           if (sAttr) {
             let updated = false;
-            if (!hasChineseInTitle && sAttr.name && /[\u4e00-\u9fa5]/.test(sAttr.name)) {
+            if (!hasChineseInTitle && sAttr.name && hasChinese(sAttr.name)) {
               meta.title = toSimplifiedChinese(sAttr.name);
               updated = true;
             }
-            if (!hasChineseInArtist && sAttr.artistName && /[\u4e00-\u9fa5]/.test(sAttr.artistName)) {
-              meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
-              updated = true;
+            // 艺人名：按片段逐个替换，只补纯英文的片段，中文片段原样保留
+            if (artistNeedsChinese && sAttr.artistName && hasChinese(sAttr.artistName)) {
+              const remoteSegs = splitArtists(sAttr.artistName);
+              const srcSegs = splitArtists(meta.artist);
+              // 中文段落数一致时才做逐段对齐，避免结构不同导致错位
+              if (remoteSegs.length === srcSegs.length) {
+                const merged = srcSegs.map((seg, i) => {
+                  if (hasLatin(seg) && !hasChinese(seg)) {
+                    const cand = remoteSegs[i];
+                    return cand && hasChinese(cand) ? cand : seg;
+                  }
+                  return seg;
+                });
+                const mergedName = normalizeArtistName(merged.join(' & '));
+                if (mergedName !== meta.artist) {
+                  meta.artist = mergedName;
+                  updated = true;
+                }
+              } else {
+                // 结构不一致：仅当整个远端艺人名都含中文且本地完全无中文时才整体采用
+                if (!hasChinese(meta.artist)) {
+                  meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
+                  updated = true;
+                }
+              }
             }
-            if (sAttr.albumName && (!meta.album || !/[\u4e00-\u9fa5]/.test(meta.album))) {
+            if (sAttr.albumName && (!meta.album || !hasChinese(meta.album))) {
               meta.album = toSimplifiedChinese(sAttr.albumName);
               updated = true;
             }
             if (updated) {
               console.log(`[Cloud-Transfer] 成功从 ${sf.toUpperCase()} 华语区同步正统中文元数据: ${meta.artist} - ${meta.title}`);
-              if (/[\u4e00-\u9fa5]/.test(meta.title) && /[\u4e00-\u9fa5]/.test(meta.artist)) {
+              if (hasChinese(meta.title) && hasChinese(meta.artist)) {
                 break;
               }
             }

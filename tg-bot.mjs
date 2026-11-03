@@ -563,6 +563,11 @@ const quotaManager = new UserQuotaManager();
 // 不再区分独立的「20 张专辑」额度。已归档秒传不消耗额度。
 const DAILY_TRACK_QUOTA = parseInt(process.env.DAILY_TRACK_QUOTA || '200', 10);
 
+// TG 端曲目下载并发：与 am-cloud 的 CLOUD_CONCURRENCY 对齐。
+// 原先三处硬编码为 2，导致 am-cloud 的 3 个队列槽只用得上 2 个，浪费三分之一处理能力。
+// 2026-11-03 实测 am-cloud 最优并发为 3（71.22 MB/s @ 并发3，59.84 @ 并发4）。
+const TG_TRACK_CONCURRENCY = Math.max(1, parseInt(process.env.CLOUD_CONCURRENCY || '3', 10));
+
 // 整单额度预留台账：chatId -> 队列中【尚未对账】的预留曲目数。
 // 开跑前 reserveQuota 按整单曲目数从预留，完成时按实际下载数对账多退少补，
 // 这样排队中的第二个批量任务也能看到第一个任务已占用的额度，不会双重超卖。
@@ -2894,7 +2899,8 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
 
         // 阶段 1：流水线下载未缓存的专辑 (并发 2：前一张专辑归档上传到频道时，后一张已同时开始下载，
         // 下载与上传两个阶段跨专辑重叠，整批总耗时从「逐张串行和」大幅缩短为「首张下载 + 后续 max(下载,上传) + 末张上传」)
-        // 并发控制在 2：再高会成倍放大 /tmp 临时磁盘占用与频道上传带宽争抢，429 退避兜底足够应付
+        // ⚠️ 专辑级并发保持 2 不改：每张专辑内部还会按 TG_TRACK_CONCURRENCY 并发下载曲目，
+        // 两者是相乘关系。若专辑级也提到 3，瞬时并发会到 9，成倍放大 /tmp 占用与频道上传带宽争抢。
         const BATCH_ALBUM_CONCURRENCY = 2;
         await pMap(toDownload, BATCH_ALBUM_CONCURRENCY, async (al, i) => {
           const prefix = `📀 [${i + 1}/${toDownload.length}] ${escapeHtml(al.name)}：`;
@@ -3329,7 +3335,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
         if (deliveryMode === 'zip') {
           // 3.A 全辑单个 ZIP 模式：并发下载所有单曲，然后打包并零拷贝极速直传
           let completedCount = 0;
-          await pMap(albumData.tracks, 2, async (track, i) => {
+          await pMap(albumData.tracks, TG_TRACK_CONCURRENCY, async (track, i) => {
             const trackOrder = i + 1;
             const payload = {
               adamId: track.id,
@@ -3556,7 +3562,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
         // 单组曲目下载器 (双线程并发拉取与解密)
         const downloadChunkTracks = async (group) => {
           const chunkFiles = [];
-          await pMap(group.tracks, 2, async (track, relIdx) => {
+          await pMap(group.tracks, TG_TRACK_CONCURRENCY, async (track, relIdx) => {
             const globalIdx = group.startNum + relIdx;
             const payload = {
               adamId: track.id,
