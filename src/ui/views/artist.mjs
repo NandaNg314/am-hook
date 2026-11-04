@@ -402,15 +402,15 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     try {
       const l = await AmI18n.catalogLang(country);
       const data = await amp(`/v1/catalog/${country}/artists/${artistId}`, { l, ...ARTIST_PARAMS });
-      const next = data.data && data.data[0];
+      let next = data.data && data.data[0];
       if (!next || !next.attributes) throw new Error('empty response');
       if (token !== loadToken || signal.aborted) return;
 
-      // 智能日区/华语 Storefront 原生元数据嗅探 (杜绝欧美区罗马音音译与英文艺名)
+      // 智能日区 Storefront 原生元数据嗅探 (仅中文模式下启用，英文模式保持英文/罗马化原名)
       const aName = (next.attributes && next.attributes.name) || '';
       const isJapanese = (next.attributes.genreNames || []).some((g) => /j-pop|anime|japanese|アニメ/i.test(g)) ||
         /[\u3040-\u309F\u30A0-\u30FF]/.test(aName);
-      if (isJapanese && country !== 'jp') {
+      if (AmI18n.lang !== 'en' && isJapanese && country !== 'jp') {
         try {
           const jpData = await amp(`/v1/catalog/jp/artists/${artistId}`, { l: 'ja', ...ARTIST_PARAMS });
           if (jpData?.data?.[0]?.attributes) {
@@ -493,8 +493,30 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   let discoAbortController = null;
 
+  function renderCustomArtistI18n() {
+    const isEn = AmI18n.lang === 'en';
+    if (discoBtn) {
+      discoBtn.title = isEn ? '☁️ Transfer Full Discography to Gofile (Admin Password Protected)' : '☁️ 一键转存全作品至 Gofile (密码保护)';
+      discoBtn.setAttribute('aria-label', isEn ? 'Transfer Full Discography to Gofile' : '转存全作品至 Gofile');
+    }
+    if (discoCancelBtn) discoCancelBtn.textContent = isEn ? 'Cancel' : '取消';
+    if (discoModal) {
+      const h3 = discoModal.querySelector('h3');
+      if (h3) h3.textContent = isEn ? '☁️ Transfer Full Discography to Gofile' : '☁️ 转存全作品至 Gofile (极速云端)';
+      if (discoPasswordInput) {
+        discoPasswordInput.placeholder = isEn ? 'Enter admin passphrase...' : '请输入专属口令...';
+        const lbl = discoPasswordInput.previousElementSibling;
+        if (lbl) lbl.textContent = isEn ? '🔒 Admin Passphrase (Discography Protection)' : '🔒 专属安全口令 (防误触与带宽控制)';
+      }
+      if (discoModalCancel) discoModalCancel.textContent = isEn ? 'Cancel' : '取消';
+      if (discoModalConfirm) discoModalConfirm.textContent = isEn ? 'Verify & Start' : '验证并开始';
+    }
+  }
+  renderCustomArtistI18n();
+
   discoBtn?.addEventListener('click', () => {
     if (discoModal) {
+      renderCustomArtistI18n();
       if (discoPasswordInput) discoPasswordInput.value = '';
       discoModal.showModal();
     }
@@ -506,7 +528,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   discoCancelBtn?.addEventListener('click', () => {
     if (discoAbortController) {
       discoAbortController.abort();
-      toast('已请求取消全作品转存任务');
+      toast(AmI18n.lang === 'en' ? 'Cancelling discography transfer...' : '已请求取消全作品转存任务');
     }
   });
 
@@ -526,7 +548,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const pwd = discoPasswordInput?.value?.trim() || '';
     const pass = await verifyPassword(pwd);
     if (!pass) {
-      toast('❌ 专属口令错误，仅限授权使用');
+      toast(AmI18n.lang === 'en' ? '❌ Invalid admin passphrase' : '❌ 专属口令错误，仅限授权使用');
       return;
     }
 
@@ -565,7 +587,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const quotaRes = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
       const quotaJson = await quotaRes.json();
       if (quotaJson.status === 'ok' && quotaJson.data && !quotaJson.data.unlimited) {
-        toast('🔒 歌手全辑批量转存为站长专属功能，请改为下载单张专辑、歌单或单曲');
+        toast(AmI18n.lang === 'en'
+          ? '🔒 Artist discography batch transfer is admin-only. Please download individual albums, playlists, or tracks instead.'
+          : '🔒 歌手全辑批量转存为站长专属功能，请改为下载单张专辑、歌单或单曲');
         return;
       }
     } catch (err) {
@@ -714,7 +738,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               saveLrc: saveFormats.length > 0,
               translateLyrics,
               ruby,
-              rubyMode
+              rubyMode,
+              lang: AmI18n.lang || 'zh'
             }),
             signal: sig
           });
@@ -763,6 +788,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             folderId: parentFolder,
             token: guestToken,
             discography: true,
+            lang: AmI18n.lang || 'zh',
             meta: { album: albTitle, artist: albArtist }
           }),
           signal: sig
@@ -798,6 +824,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   // 切换语言：简介、货架标题等由 amp-api 按语言返回，重新获取
   onLangChange(() => {
+    renderCustomArtistI18n();
     renderAlert();
     if (artist) render();
     if (artistId) loadArtist();

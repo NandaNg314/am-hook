@@ -61,15 +61,62 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
 
   // 拉取当前 IP 每日转存配额并填充首页说明（站长/管理员不限量则显示对应文案）
   const quotaText = root.querySelector('#quota-status-text');
+  let lastQuotaData = null;
+
+  function renderCustomHomeI18n() {
+    const isEn = AmI18n.lang === 'en';
+    const card = root.querySelector('#delivery-options-card');
+    if (card) {
+      const titleEl = card.querySelector('.options-title');
+      const hintEl = card.querySelector('.options-hint');
+      const groupTitles = card.querySelectorAll('.options-group-title');
+      const localLabel = card.querySelector('#mode-local')?.closest('label')?.querySelector('.radio-text');
+      const gofileLabel = card.querySelector('#mode-gofile')?.closest('label')?.querySelector('.radio-text');
+      const embedLabel = card.querySelector('#opt-embed-metadata')?.closest('label')?.querySelector('.checkbox-text');
+      const lrcLabel = card.querySelector('#opt-download-lrc')?.closest('label')?.querySelector('.checkbox-text');
+      if (titleEl) titleEl.textContent = isEn ? 'Download Preferences' : '下载偏好设置';
+      if (hintEl) hintEl.textContent = isEn ? 'Global' : '全局生效';
+      if (groupTitles[0]) groupTitles[0].textContent = isEn ? 'Delivery Target' : '交付目标';
+      if (groupTitles[1]) groupTitles[1].textContent = isEn ? 'Track Enhancements' : '歌曲增强';
+      if (localLabel) {
+        const s = localLabel.querySelector('strong');
+        const sm = localLabel.querySelector('small');
+        if (s) s.textContent = isEn ? 'Local Download' : '本机下载';
+        if (sm) sm.textContent = isEn ? 'Browser-side decrypt & save to device · Counts toward daily quota' : '浏览器解密并保存到本地 · 计入每日转存配额';
+      }
+      if (gofileLabel) {
+        const s = gofileLabel.querySelector('strong');
+        const sm = gofileLabel.querySelector('small');
+        if (s) s.textContent = isEn ? 'Gofile Cloud Transfer' : 'Gofile 云端转存';
+        if (sm) sm.textContent = isEn ? 'Packaged & uploaded to Gofile cloud, zero local disk usage · Counts toward daily quota' : '打包生成单 ZIP 上传网盘，免本地占用 · 计入每日转存配额';
+      }
+      if (embedLabel) embedLabel.textContent = isEn ? 'Embed clean metadata & cover art' : '内嵌纯净元数据与封面';
+      if (lrcLabel) lrcLabel.textContent = isEn ? 'Save external lyrics file alongside audio' : '同步保存外挂歌词文件';
+    }
+    if (quotaText) {
+      if (lastQuotaData) {
+        quotaText.textContent = lastQuotaData.unlimited
+          ? (isEn ? 'Admin session detected — unlimited daily transfers.' : '当前身份为管理员，无每日转存数量限制。')
+          : (isEn
+              ? `Daily limit: 200 tracks per 24h (resets at 00:00 UTC+8). Used today: ${lastQuotaData.used}, remaining: ${lastQuotaData.remaining}. Both cloud transfer and local download share this quota.`
+              : `网页端每次 24h 内限转存 200 首曲目（北京时间 00:00 重置）。今日已用 ${lastQuotaData.used} 首，剩余 ${lastQuotaData.remaining} 首。云端转存与本机批量下载均计入配额（本机下载消耗服务器出站带宽），开始前会自动校验剩余配额，不足时直接拦截。`);
+      } else {
+        quotaText.textContent = isEn
+          ? 'Web users can transfer up to 200 tracks per day (resets at 00:00 UTC+8). Remaining quota is checked automatically before batch transfers.'
+          : '网页端每人每日限转存 200 首曲目（北京时间 00:00 重置）。批量转存前会自动检查剩余配额，不足时直接拦截，避免浪费服务器资源。';
+      }
+    }
+  }
+
+  renderCustomHomeI18n();
   if (quotaText) {
     (async () => {
       try {
         const q = await fetch('/api/quota', { signal: AbortSignal.timeout(8000) });
         const j = await q.json();
         if (j.status === 'ok' && j.data) {
-          quotaText.textContent = j.data.unlimited
-            ? '当前身份为管理员，无每日转存数量限制。'
-            : `网页端每次 24h 内限转存 200 首曲目（北京时间 00:00 重置）。今日已用 ${j.data.used} 首，剩余 ${j.data.remaining} 首。云端转存与本机批量下载均计入配额（本机下载消耗服务器出站带宽），开始前会自动校验剩余配额，不足时直接拦截。`;
+          lastQuotaData = j.data;
+          renderCustomHomeI18n();
         }
       } catch { /* 拉取失败保持静态文案 */ }
     })();
@@ -589,6 +636,7 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
   addEventListener('popstate', syncFromUrl, { signal });
 
   onLangChange(() => {
+    renderCustomHomeI18n();
     renderDetect();
     closeSuggest();
     if (!errorEl.hidden && errorKey) errorEl.textContent = t(errorKey);

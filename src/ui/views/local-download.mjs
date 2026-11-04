@@ -801,9 +801,20 @@ export async function fetchLyricsData(trackId, translate = false, simplify = (s)
  */
 export async function fetchSongMeta(adamId, opts = {}) {
   const country = (opts.country || 'us').toLowerCase();
-  const simplify = opts.simplify || ((s) => s);
+  const isEn = window.AmI18n?.lang === 'en';
+  const simplify = isEn ? ((s) => s) : (opts.simplify || ((s) => s));
   const preferredStorefront = (window.AmI18n?.storefront || '').toLowerCase();
-  const candidateRegions = [...new Set([preferredStorefront, country, 'jp', 'cn', 'us'].filter((c) => /^[a-z]{2}$/.test(c)))];
+  const candidateRegions = isEn
+    ? [...new Set(['us', preferredStorefront, country, 'gb', 'tr', 'hk', 'jp'].filter((c) => /^[a-z]{2}$/.test(c)))]
+    : [...new Set([preferredStorefront, country, 'jp', 'cn', 'us'].filter((c) => /^[a-z]{2}$/.test(c)))];
+  const catalogLangFor = (cc, wantEn) => {
+    if (wantEn) return (cc === 'us' || cc === 'jp') ? 'en-US' : 'en-GB';
+    if (cc === 'hk') return 'zh-Hant-HK';
+    if (cc === 'tw') return 'zh-Hant-TW';
+    if (cc === 'cn' || cc === 'us') return 'zh-Hans-CN';
+    if (cc === 'jp') return 'ja';
+    return 'en-GB';
+  };
 
   let rawSong = null;
   let resolvedCountry = country;
@@ -811,7 +822,7 @@ export async function fetchSongMeta(adamId, opts = {}) {
     try {
       const url = new URL(`/amp/v1/catalog/${cc}/songs/${adamId}`, location.origin);
       url.searchParams.set('include', 'albums,artists');
-      const l = await window.AmI18n?.catalogLang?.(cc);
+      const l = isEn ? catalogLangFor(cc, true) : (await window.AmI18n?.catalogLang?.(cc) || catalogLangFor(cc, false));
       if (l) url.searchParams.set('l', l);
       let res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (res.status === 400 && url.searchParams.has('l')) {
@@ -833,10 +844,31 @@ export async function fetchSongMeta(adamId, opts = {}) {
   const audioLocale = (attr.audioLocale || '').toLowerCase();
   const genreList = attr.genreNames || [];
   const isJapanese = audioLocale === 'ja' || genreList.some((g) => /j-pop|japanese|anime|アニメ/i.test(g));
-  const isChinese = audioLocale.startsWith('zh') || /[\u4e00-\u9fa5]/.test((attr.name || '') + (attr.artistName || ''));
+  const isChinese = /^(zh|cmn|yue|hak|nan)/i.test(audioLocale) ||
+    /[\u4e00-\u9fa5]/.test((attr.name || '') + (attr.artistName || '') + (attr.albumName || '')) ||
+    genreList.some((g) => /国语|粤语|华语|中国|台湾|香港|台语|mandopop|cantopop|c-pop|chinese|hokkien/i.test(g));
 
-  // 日文歌：保持日文原貌（假名/日文汉字），绝不要欧美区罗马音
-  if (isJapanese && resolvedCountry !== 'jp') {
+  if (isEn) {
+    // 外国用户 (English)：若源区返回了汉字，主动按各区支持的英文语言码请求替换为官方英文标签
+    if (/[\u4e00-\u9fa5]/.test((attr.name || '') + (attr.artistName || '') + (attr.albumName || ''))) {
+      for (const enTarget of ['us', 'gb', 'hk', 'tw', 'cn', 'tr']) {
+        try {
+          const enUrl = new URL(`/amp/v1/catalog/${enTarget}/songs/${adamId}`, location.origin);
+          enUrl.searchParams.set('include', 'albums,artists');
+          enUrl.searchParams.set('l', catalogLangFor(enTarget, true));
+          const enRes = await fetch(enUrl, { signal: AbortSignal.timeout(5000) });
+          if (!enRes.ok) continue;
+          const enSong = (await enRes.json()).data?.[0];
+          if (enSong?.attributes) {
+            rawSong = enSong;
+            resolvedCountry = enTarget;
+            if (!/[\u4e00-\u9fa5]/.test((enSong.attributes.name || '') + (enSong.attributes.artistName || ''))) break;
+          }
+        } catch {}
+      }
+    }
+  } else if (isJapanese && resolvedCountry !== 'jp') {
+    // 日文歌：保持日文原貌（假名/日文汉字），绝不要欧美区罗马音
     try {
       const jpUrl = new URL(`/amp/v1/catalog/jp/songs/${adamId}`, location.origin);
       jpUrl.searchParams.set('include', 'albums,artists');
@@ -852,21 +884,15 @@ export async function fetchSongMeta(adamId, opts = {}) {
     } catch {}
   } else if (isChinese) {
     // 中文歌：按 cn -> us -> hk -> tw 依次取「官方中文元数据」，命中带汉字的区即采用。
-    //
-    // 为什么不能只看 resolvedCountry：源链接常常来自 tr/hk 这类小区域，
-    // 它们虽然能返回数据，但字段是英文艺名（实测 tr 的 1721449919 返回 Say Goodbye / Jay Chou / The Era，
-    // 而 cn/tw 直接 404，只有 hk(繁) 与 us(简) 有中文名）。旧实现把 resolvedCountry 又请求一遍，等于空转。
-    // us 排在 hk 前是因为 us 返回 zh-Hans-CN 简体，比港区繁体少一次繁简转换。
     for (const cnTarget of ['cn', 'us', 'hk', 'tw']) {
       if (cnTarget === resolvedCountry) {
-        // 已命中的源区如果本身就带汉字，无需重复请求
         if (/[\u4e00-\u9fa5]/.test((rawSong.attributes?.name || '') + (rawSong.attributes?.artistName || ''))) break;
         continue;
       }
       try {
         const cnUrl = new URL(`/amp/v1/catalog/${cnTarget}/songs/${adamId}`, location.origin);
         cnUrl.searchParams.set('include', 'albums,artists');
-        cnUrl.searchParams.set('l', 'zh-Hans-CN');
+        cnUrl.searchParams.set('l', catalogLangFor(cnTarget, false));
         const cnRes = await fetch(cnUrl, { signal: AbortSignal.timeout(6000) });
         if (!cnRes.ok) continue;
         const cnSong = (await cnRes.json()).data?.[0];
@@ -877,16 +903,8 @@ export async function fetchSongMeta(adamId, opts = {}) {
     }
   }
 
-  // 华语元数据补全：歌名/艺人名/专辑名缺中文时（海外华语歌常见）向华语区嗅探正统中文名。
-  //
-  // 规则（与服务端 cloud-service.mjs 的华语嗅探同源，但更保守）：
-  //   1. 只有在「源曲目本身是华语」或「元数据不带 locale（老歌常见 zxx/空）」时才允许用中文补名，
-  //      避免把西洋歌在 cn 区的官方译名当成正名。
-  //   2. 歌名 / 艺人 / 专辑三者各自独立判定，都是「缺中文才补」，不做「有英文就覆盖」。
-  //   3. 三者都补齐才提前结束，避免歌名仍为英文就 break。
-  //   4. 嗅探顺序固定 cn -> us -> hk -> tw（见 CHINESE_STOREFRONTS 注释：四区覆盖互补）。
-  const allowChineseSniff = !isJapanese
-    && (!audioLocale || audioLocale.startsWith('zh') || isChinese);
+  // 华语元数据补全：仅在中文模式下，且确属华语曲目时向华语区嗅探正统中文名（绝不把欧美/古典歌手翻成译名）
+  const allowChineseSniff = !isEn && !isJapanese && isChinese;
   if (allowChineseSniff) {
     const hasHan = (s) => /[\u4e00-\u9fa5]/.test(s || '');
     const pending = new Set();
@@ -899,7 +917,7 @@ export async function fetchSongMeta(adamId, opts = {}) {
       try {
         const sfUrl = new URL(`/amp/v1/catalog/${sf}/songs/${adamId}`, location.origin);
         sfUrl.searchParams.set('include', 'albums,artists');
-        sfUrl.searchParams.set('l', 'zh-Hans-CN');
+        sfUrl.searchParams.set('l', catalogLangFor(sf, false));
         const sfRes = await fetch(sfUrl, { signal: AbortSignal.timeout(4000) });
         if (!sfRes.ok) continue;
         const sfAttr = (await sfRes.json()).data?.[0]?.attributes;
@@ -924,9 +942,10 @@ export async function fetchSongMeta(adamId, opts = {}) {
 
   const a = rawSong.attributes;
   const albumAttr = rawSong.relationships?.albums?.data?.[0]?.attributes;
-  // 只要字符串本身含中文就做繁简转换，避免嗅探回的繁体名残留
+  // 仅中文模式下做繁简转换
   const simp = (str) => {
     const s = str || '';
+    if (isEn) return s;
     return isChinese || /[\u4e00-\u9fa5]/.test(s) ? simplify(s) : s;
   };
 
@@ -999,7 +1018,8 @@ export async function fetchCoverBytes(meta) {
  */
 export async function downloadDecryptedTrack(p) {
   const { AmDecrypt } = window;
-  const simplify = p.simplify || ((s) => s);
+  const isEn = window.AmI18n?.lang === 'en';
+  const simplify = isEn ? ((s) => s) : (p.simplify || ((s) => s));
   const lyrOpts = p.lyricsOpts || { embedMode: 'lrc', saveFormats: [], translateOn: false };
   const shouldEmbed = lyrOpts.embedMode !== 'off';
 

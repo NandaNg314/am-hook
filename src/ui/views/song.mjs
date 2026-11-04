@@ -173,26 +173,73 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   const gofileOpenLink = $('gofile-open-link');
   const gofileSongInfo = $('gofile-song-info');
 
+  function renderCustomSongI18n() {
+    const isEn = AmI18n.lang === 'en';
+    const fmtSel = $('lyrics-format-select');
+    if (fmtSel) {
+      const prevSpan = fmtSel.previousElementSibling;
+      if (prevSpan) {
+        prevSpan.textContent = isEn ? 'Embed:' : '内嵌:';
+        prevSpan.title = isEn ? 'Choose embedded lyrics format in ©lyr tag' : '选择音频文件 ©lyr 标签内嵌的歌词格式（TTML 仅部分播放器可解析显示）';
+      }
+      const offOpt = fmtSel.querySelector('option[value="off"]');
+      if (offOpt) offOpt.textContent = isEn ? 'Off' : '关闭';
+    }
+    const lrcSpan = $('save-lrc-toggle')?.nextElementSibling;
+    if (lrcSpan) lrcSpan.textContent = isEn ? 'Ext .lrc' : '外挂 .lrc';
+    const ttmlSpan = $('save-ttml-toggle')?.nextElementSibling;
+    if (ttmlSpan) ttmlSpan.textContent = isEn ? 'Ext .ttml' : '外挂 .ttml';
+    const transSpan = $('translate-lyrics-label')?.querySelector('span');
+    if (transSpan) transSpan.textContent = isEn ? '🇨🇳 CN Translation' : '🇨🇳 中文翻译';
+    const rubySpan = $('ruby-lyrics-label')?.querySelector('span');
+    if (rubySpan) rubySpan.textContent = isEn ? 'あ Ruby' : 'あ 注音';
+    const rubySel = $('ruby-mode-select');
+    if (rubySel) {
+      const rOpt = rubySel.querySelector('option[value="roman"]');
+      const kOpt = rubySel.querySelector('option[value="kana"]');
+      if (rOpt) rOpt.textContent = isEn ? 'Romaji' : '罗马音';
+      if (kOpt) kOpt.textContent = isEn ? 'Hiragana' : '平假名';
+    }
+    const gfSpan = $('gofile-toggle')?.nextElementSibling;
+    if (gfSpan) gfSpan.textContent = isEn ? '☁️ Gofile Cloud' : '☁️ Gofile 转存';
+    const zipSpan = $('zip-toggle')?.nextElementSibling;
+    if (zipSpan) zipSpan.textContent = isEn ? '📦 ZIP Archive' : '📦 ZIP 压缩';
+    if (gofileDialog) {
+      const h3 = gofileDialog.querySelector('h3');
+      if (h3) h3.textContent = isEn ? 'Gofile Transfer Complete' : 'Gofile 转存完成';
+      const openSpan = gofileOpenLink?.querySelector('span');
+      if (openSpan) openSpan.textContent = isEn ? 'Open Page' : '打开页面';
+      if (gofileDoneBtn) gofileDoneBtn.textContent = isEn ? 'Done' : '完成';
+      if (gofileCopyBtn && gofileCopyBtn.textContent !== '已复制!' && gofileCopyBtn.textContent !== 'Copied!') {
+        gofileCopyBtn.textContent = isEn ? 'Copy Link' : '复制链接';
+      }
+    }
+  }
+  renderCustomSongI18n();
+
   function showGofileResult(downloadPage, trackInfoText) {
     if (!gofileDialog) return;
+    const isEn = AmI18n.lang === 'en';
+    renderCustomSongI18n();
     gofileLinkInput.value = downloadPage;
     gofileOpenLink.href = downloadPage;
     gofileSongInfo.textContent = trackInfoText;
-    gofileCopyBtn.textContent = '复制链接';
+    gofileCopyBtn.textContent = isEn ? 'Copy Link' : '复制链接';
     gofileDialog.showModal();
   }
 
   gofileCloseBtn?.addEventListener('click', () => gofileDialog.close());
   gofileDoneBtn?.addEventListener('click', () => gofileDialog.close());
   gofileCopyBtn?.addEventListener('click', async () => {
+    const isEn = AmI18n.lang === 'en';
     try {
       await navigator.clipboard.writeText(gofileLinkInput.value);
-      gofileCopyBtn.textContent = '已复制!';
-      setTimeout(() => { if (gofileCopyBtn) gofileCopyBtn.textContent = '复制链接'; }, 2000);
-      toast('已复制 Gofile 分享链接');
+      gofileCopyBtn.textContent = isEn ? 'Copied!' : '已复制!';
+      setTimeout(() => { if (gofileCopyBtn) gofileCopyBtn.textContent = isEn ? 'Copy Link' : '复制链接'; }, 2000);
+      toast(isEn ? 'Copied Gofile share link' : '已复制 Gofile 分享链接');
     } catch {
       gofileLinkInput.select();
-      toast('请手动复制链接');
+      toast(isEn ? 'Please copy the link manually' : '请手动复制链接');
     }
   });
 
@@ -442,10 +489,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     // 与 loadVariants() 并行发起（后者先返回并渲染出下载按钮）。若用户在元数据落定前点击下载，
     // tagMp4 收到的字段全为 undefined → atoms 为空 → 静默返回原文件，产物零标签。
     // 服务端路径（Gofile/TG）自行按 adamId 查元数据，故无此问题。此处必须等待一次。
+    const isEn = AmI18n.lang === 'en';
     if (!isGofile) {
       const ready = await ensureMetaReady();
       if (!ready) {
-        toast('⚠️ 元数据获取失败，无法写入歌曲标签，已取消下载');
+        toast(isEn ? '⚠️ Failed to fetch metadata, download cancelled' : '⚠️ 元数据获取失败，无法写入歌曲标签，已取消下载');
         downloads.delete(id);
         showDownload(id);
         return;
@@ -461,28 +509,28 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         const consumeRes = await fetch('/api/quota/consume', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tracks: 1 }),
+          body: JSON.stringify({ tracks: 1, lang: AmI18n.lang || 'zh' }),
           signal: AbortSignal.timeout(8000)
         });
-        if (!consumeRes.ok && consumeRes.status !== 429) throw new Error(`配额预扣失败: HTTP ${consumeRes.status}`);
+        if (!consumeRes.ok && consumeRes.status !== 429) throw new Error(isEn ? `Quota check failed: HTTP ${consumeRes.status}` : `配额预扣失败: HTTP ${consumeRes.status}`);
         if (consumeRes.status === 429) {
           const errJson = await consumeRes.json().catch(() => null);
-          toast(errJson?.error || '⚠️ 今日转存配额不足，无法进行本机下载');
+          toast(errJson?.error || (isEn ? '⚠️ Daily transfer quota exceeded' : '⚠️ 今日转存配额不足，无法进行本机下载'));
           downloads.delete(id);
           return;
         }
       } catch (err) {
-        toast(`⚠️ 配额预扣失败: ${err.message}`);
+        toast(isEn ? `⚠️ Quota check failed: ${err.message}` : `⚠️ 配额预扣失败: ${err.message}`);
         downloads.delete(id);
         return;
       }
     }
     if (isGofile) {
-      job.statusText = '☁️ VPS 2000M 极速转存中...';
+      job.statusText = isEn ? '☁️ Transferring to Gofile via 2000M VPS...' : '☁️ VPS 2000M 极速转存中...';
       job.done = 10;
       job.total = 100;
       showDownload(id);
-      toast('☁️ 正在通过 VPS 2000M 云端极速转存至 Gofile...');
+      toast(isEn ? '☁️ Transferring to Gofile via 2000M VPS...' : '☁️ 正在通过 VPS 2000M 云端极速转存至 Gofile...');
 
       const lyrOpts = getLyricsOptions();
       const lyricsFormat = lyrOpts.embedMode;
@@ -530,20 +578,21 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             translateLyrics: shouldTranslateLyrics,
             ruby: Boolean(lyrOpts.rubyOn),
             rubyMode: lyrOpts.rubyMode || 'roman',
+            lang: AmI18n.lang || 'zh',
             zip: zipChecked
           }),
           signal: job.ctl.signal
         });
         clearInterval(progressTimer);
         const resJson = await resp.json();
-        if (resJson.status !== 'ok') throw new Error(resJson.error || '云端转存失败');
+        if (resJson.status !== 'ok') throw new Error(resJson.error || (isEn ? 'Cloud transfer failed' : '云端转存失败'));
 
         job.done = 100;
         job.total = 100;
-        job.statusText = '☁️ 转存完成';
+        job.statusText = isEn ? '☁️ Transfer Complete' : '☁️ 转存完成';
         showDownload(id);
 
-        toast('🎉 已成功转存至 Gofile！');
+        toast(isEn ? '🎉 Successfully transferred to Gofile!' : '🎉 已成功转存至 Gofile！');
         showGofileResult(resJson.data.downloadPage, `${meta.artist} - ${meta.title} [${v.info.name}]`);
         return;
       } catch (err) {
@@ -562,7 +611,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const cleanTitle = safeName(toSimplified(meta.title || adamId || 'Track'));
       const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
 
-      job.statusText = '正在解密并内嵌官方元数据与歌词...';
+      job.statusText = isEn ? 'Decrypting & embedding metadata + lyrics...' : '正在解密并内嵌官方元数据与歌词...';
       showDownload(id);
 
       // 解密 + 标签/封面/歌词注入统一由共享模块完成（与批量下载同一实现，杜绝分叉）
@@ -578,7 +627,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         onDefrag: () => { job.defrag = true; showDownload(id); },
       });
 
-      if (!dl.tagged) toast('⚠️ 未能写入歌曲标签（元数据缺失），文件已下载');
+      if (!dl.tagged) toast(isEn ? '⚠️ Could not write tags (metadata missing), audio downloaded' : '⚠️ 未能写入歌曲标签（元数据缺失），文件已下载');
 
       saveResult({ file: dl.blob, dispose: dl.dispose }, standardM4aName);
 
@@ -769,6 +818,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }, { capture: true, signal });
 
   function variantMenu(v, fileName) {
+    const isEn = AmI18n.lang === 'en';
     const items = [
       {
         icon: ICON.download,
@@ -778,30 +828,30 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       },
       {
         icon: ICON.cloud,
-        label: '转存至 Gofile',
-        hint: '云端临时网盘分享，免本地占用',
+        label: isEn ? 'Transfer to Gofile' : '转存至 Gofile',
+        hint: isEn ? 'Cloud share link, zero local disk usage' : '云端临时网盘分享，免本地占用',
         onSelect: () => startDownload(v, fileName, 'gofile'),
       },
       {
         icon: ICON.lyrics,
-        label: '下载独立歌词文件',
-        hint: '根据所选格式保存 .lrc 或 .ttml 歌词',
+        label: isEn ? 'Download Lyrics Only' : '下载独立歌词文件',
+        hint: isEn ? 'Save .lrc or .ttml lyrics file' : '根据所选格式保存 .lrc 或 .ttml 歌词',
         onSelect: async () => {
-          toast('正在获取歌词...');
+          toast(isEn ? 'Fetching lyrics...' : '正在获取歌词...');
           const o = getLyricsOptions();
           const translateOn = o.translateOn;
           const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese, (s) => s, {
             ruby: Boolean(o.rubyOn),
             rubyMode: o.rubyMode || 'roman',
           });
-          if (!data || !data.hasLyrics) { toast('暂无歌词或此曲为纯音乐'); return; }
+          if (!data || !data.hasLyrics) { toast(isEn ? 'No lyrics available (instrumental)' : '暂无歌词或此曲为纯音乐'); return; }
           // 优先按外置格式数组下载；未选外置则按当前内嵌格式下载一个
           const fmts = o.saveFormats.length ? o.saveFormats : [(o.embedMode === 'ttml' && data.ttml) ? 'ttml' : 'lrc'];
           for (const f of fmts) {
             if (f === 'ttml' && data.ttml) downloadLyricsFile(data.ttml, 'ttml', meta.artist, meta.title);
             else if (f === 'lrc' && data.lrc) downloadLyricsFile(data.lrc, 'lrc', meta.artist, meta.title);
           }
-          toast('已开始下载歌词');
+          toast(isEn ? 'Lyrics download started' : '已开始下载歌词');
         },
       },
     ];
@@ -934,7 +984,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.masterUrl || !Array.isArray(data.variants) || !data.variants.length) {
         if (data.msg === 'failed to get m3u8' || data.msg?.includes('无资源') || data.msg?.includes('无版权') || res.status === 404 || res.status === 500) {
-          throw new Error('此歌曲在解析服务器账号所属区域（土区）无资源或未上架（可能为日区/美区独占版权），暂无法获取解密音轨');
+          throw new Error(AmI18n.lang === 'en'
+            ? 'This track is unavailable in the resolving server region (Turkey storefront; may be a JP/US regional exclusive).'
+            : '此歌曲在解析服务器账号所属区域（土区）无资源或未上架（可能为日区/美区独占版权），暂无法获取解密音轨');
         }
         throw new Error(data.msg || t('song.parseFailedHttp', { status: res.status }));
       }
@@ -1073,6 +1125,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   // 切换语言：重绘所有动态生成的文字（播放、下载不受影响）；歌名等由 amp-api 按语言返回，重新获取
   onLangChange(() => {
     closeMenu(false);
+    renderCustomSongI18n();
     if (!metaLoaded) document.title = t('song.pageTitle');
     renderMeta();
     if (adamId) kickMeta();

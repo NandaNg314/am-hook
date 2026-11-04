@@ -1112,7 +1112,15 @@
     const sf = await storefrontInfo(cc);
     if (!sf) return undefined;
     const chosen = ampLang(cc);
-    return chosen && sf.tags.includes(chosen) ? chosen : sf.default;
+    if (chosen && sf.tags.includes(chosen)) return chosen;
+    if (lang === 'en') {
+      const enTag = sf.tags.find((tag) => /^en(-|$)/i.test(tag));
+      if (enTag) return enTag;
+    } else if (lang === 'zh') {
+      const zhTag = sf.tags.find((tag) => /^zh-Hans/i.test(tag)) || sf.tags.find((tag) => /^zh/i.test(tag));
+      if (zhTag) return zhTag;
+    }
+    return sf.default;
   }
 
   document.addEventListener('click', (e) => {

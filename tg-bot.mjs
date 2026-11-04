@@ -151,12 +151,40 @@ const CHINESE_ARTIST_ALIASES = {
   'bibi zhou': '周笔畅', 'shang wenjie': '尚雯婕', 'tan weiwei': '谭维维', 'della ding': '丁当', 'ding dang': '丁当',
   'momo wu': '吴莫愁', 'curley g': '希林娜依·高', 'vava': '毛衍七', 'sunnee': '杨芸晴',
   'amber kuo': '郭采洁', 'valen hsu': '许茹芸', 'tarcy su': '苏慧伦', 'winnie hsin': '辛晓琪',
-  'mavis fan': '范晓萱', 'shunza': '顺子', 'wanfang': '万芳', 'peggy hsu': '许哲珮'
+  'mavis fan': '范晓萱', 'shunza': '顺子', 'wanfang': '万芳', 'peggy hsu': '许哲珮',
+  // 港台经典与独立音乐人补充
+  'anthony wong': '黄耀明', 'wong yiu-ming': '黄耀明', 'denise ho': '何韵诗', 'hocc': '何韵诗',
+  'tat ming pair': '达明一派', 'tom chang': '张雨生', 'chang yu-sheng': '张雨生',
+  'bobby chen': '陈升', 'chen sheng': '陈升', 'samuel hui': '许冠杰', 'paula tsui': '徐小凤',
+  'roman tam': '罗文', 'danny chan': '陈百强', 'alan tam': '谭咏麟', 'kenny bee': '钟镇涛',
+  'shirley kwan': '关淑怡', 'cass phang': '彭羚', 'f.i.r.': '飞儿乐团', 'power station': '动力火车',
+  'charlene choi': '蔡卓妍', 'gillian chung': '钟欣潼', 'fiona sit': '薛凯琪', 'kay tse': '谢安琪',
+  'ivana wong': '王菀之', 'endy chau': '周国贤', 'juno mak': '麦浚龙', 'ellen loo': '卢凯彤',
+  'eman lam': '林二汶', 'lo ta-yu': '罗大佑', 'luo dayou': '罗大佑', 'wu bai': '伍佰', 'wubai': '伍佰',
+  'richie jen': '任贤齐', 'ronald cheng': '郑中基', 'andy hui': '许志安', 'william so': '苏永康',
+  'edmond leung': '梁汉文', 'dicky cheung': '张卫健', 'nicholas tse': '谢霆锋', 'jordan chan': '陈小春',
+  'ekin cheng': '郑伊健', 'raymond lam': '林峯', 'alfred hui': '许廷铿', 'hubert wu': '胡鸿钧',
+  'jinny ng': '吴若希', 'hana kuk': '菊梓乔'
 };
 
-function normalizeArtistName(rawArtist) {
+function isChineseArtistAlias(rawArtist) {
+  if (!rawArtist || typeof rawArtist !== 'string') return false;
+  const trimmed = rawArtist.trim();
+  if (CHINESE_ARTIST_ALIASES[trimmed.toLowerCase()]) return true;
+  const parts = trimmed.split(/\s*(?:,|&|\/|feat\.|ft\.)\s*/i);
+  return parts.some((p) => Boolean(CHINESE_ARTIST_ALIASES[p.trim().toLowerCase()]));
+}
+
+function isChineseGenre(genre) {
+  if (!genre) return false;
+  const text = Array.isArray(genre) ? genre.join(' ') : String(genre);
+  return /国语|粤语|华语|中国|台湾|香港|台语|mandopop|cantopop|c-pop|chinese|taiwan|hong\s*kong|hokkien/i.test(text);
+}
+
+function normalizeArtistName(rawArtist, isEn = false) {
   if (!rawArtist || typeof rawArtist !== 'string') return rawArtist;
   const trimmed = rawArtist.trim();
+  if (isEn) return trimmed;
   const lower = trimmed.toLowerCase();
 
   if (CHINESE_ARTIST_ALIASES[lower]) {
@@ -233,12 +261,18 @@ class JsonDb {
 const db = new JsonDb(DB_FILE);
 
 // ==================== 国际化双语支持 (i18n) ====================
+const inferredUserLang = new Map(); // chatId -> 'zh' | 'en'（记住客户端 language_code 推断结果，供无 from 参数的内部调用使用）
+
 function getUserLang(chatId, fromLangCode = '') {
   const saved = db.get(`lang_${chatId}`);
   if (saved === 'zh' || saved === 'en') return saved;
-  if (fromLangCode && !fromLangCode.toLowerCase().startsWith('zh')) {
-    return 'en';
+  if (fromLangCode) {
+    const detected = fromLangCode.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    inferredUserLang.set(String(chatId), detected);
+    return detected;
   }
+  const mem = inferredUserLang.get(String(chatId));
+  if (mem === 'zh' || mem === 'en') return mem;
   return 'zh';
 }
 
@@ -1017,11 +1051,14 @@ class BotTaskQueue {
       if (item.meta.chatId && item.meta.messageId && !item.notified) {
         item.notified = true;
         const pos = i + 1;
+        const isEn = getUserLang(item.meta.chatId) === 'en';
         try {
           await tgCall('editMessageText', {
             chat_id: item.meta.chatId,
             message_id: item.meta.messageId,
-            text: `⏳ <b>已加入全局下载队列 (排在第 ${pos} 位)</b>\n当前有其他任务正在下载处理中。为保护服务器负载与带宽稳定，系统严格按先后顺序执行，前面的任务完成后将立即自动开始您的下载，请耐心稍候...`,
+            text: isEn
+              ? `⏳ <b>Added to global download queue (Position #${pos})</b>\nAnother task is currently in progress. Tasks run in strict FIFO order to keep bandwidth stable—yours will start automatically as soon as the queue clears.`
+              : `⏳ <b>已加入全局下载队列 (排在第 ${pos} 位)</b>\n当前有其他任务正在下载处理中。为保护服务器负载与带宽稳定，系统严格按先后顺序执行，前面的任务完成后将立即自动开始您的下载，请耐心稍候...`,
             parse_mode: 'HTML'
           });
         } catch {}
@@ -1042,11 +1079,14 @@ class BotTaskQueue {
       const remaining = this.queue[i];
       if (remaining.meta.chatId && remaining.meta.messageId) {
         const newPos = i + 1;
+        const isEn = getUserLang(remaining.meta.chatId) === 'en';
         try {
           await tgCall('editMessageText', {
             chat_id: remaining.meta.chatId,
             message_id: remaining.meta.messageId,
-            text: `⏳ <b>下载队列更新 (当前前进至第 ${newPos} 位)</b>\n正在等待前序任务完成，即将开始处理您的转存...`,
+            text: isEn
+              ? `⏳ <b>Queue updated (Moved up to #${newPos})</b>\nWaiting for preceding tasks to finish, your transfer will start shortly...`
+              : `⏳ <b>下载队列更新 (当前前进至第 ${newPos} 位)</b>\n正在等待前序任务完成，即将开始处理您的转存...`,
             parse_mode: 'HTML'
           });
         } catch {}
@@ -1131,10 +1171,23 @@ function parseAppleMusicUrl(text) {
   return null;
 }
 
-async function fetchSongDetails(songId, storefront = 'hk') {
-  // 智能地区级联顺序：日韩链接优先原区；其余链接优先国区大库 (cn) 获取正统中文元数据，杜绝拼音/英文艺名；无资源时顺延回退原区、港台与美区
+function catalogLangFor(sf, isEn = false) {
+  const c = String(sf || 'hk').toLowerCase();
+  if (isEn) return (c === 'us' || c === 'jp') ? 'en-US' : 'en-GB';
+  if (c === 'hk') return 'zh-Hant-HK';
+  if (c === 'tw') return 'zh-Hant-TW';
+  if (c === 'cn' || c === 'us') return 'zh-Hans-CN';
+  if (c === 'jp') return 'ja';
+  return 'en-GB';
+}
+
+async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
+  const isEn = lang === 'en';
   let storefronts;
-  if (storefront === 'jp' || storefront === 'kr') {
+  if (isEn) {
+    // 外国用户：优先美区/原区/英区/港区拉取官方英文元数据
+    storefronts = ['us', storefront, 'gb', 'hk', 'tw', 'cn', 'tr'].filter((v, i, a) => a.indexOf(v) === i);
+  } else if (storefront === 'jp' || storefront === 'kr') {
     storefronts = [storefront, 'cn', 'hk', 'tw', 'us', 'tr'];
   } else if (storefront === 'cn') {
     storefronts = ['cn', 'hk', 'tw', 'us', 'tr'];
@@ -1146,7 +1199,8 @@ async function fetchSongDetails(songId, storefront = 'hk') {
   let songAttr = null;
   for (const sf of storefronts) {
     try {
-      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${songId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(5000) });
+      const l = catalogLangFor(sf, isEn);
+      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${songId}?l=${l}`, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const data = await res.json();
         if (data.data?.[0]?.attributes) {
@@ -1158,7 +1212,9 @@ async function fetchSongDetails(songId, storefront = 'hk') {
   }
 
   if (!songAttr) {
-    throw new Error(`未能从 Apple Music 获取到歌曲 (${songId}) 的元数据，请检查链接或版权`);
+    throw new Error(isEn
+      ? `Failed to fetch track metadata (${songId}) from Apple Music. Please check the link or regional availability.`
+      : `未能从 Apple Music 获取到歌曲 (${songId}) 的元数据，请检查链接或版权`);
   }
 
   let variants = [];
@@ -1175,33 +1231,67 @@ async function fetchSongDetails(songId, storefront = 'hk') {
   const hasLossless = variants.some(v => v.codecs === 'alac') || true;
   const hasAac = variants.some(v => v.codecs && v.codecs.includes('mp4a')) || true;
 
-  let title = toSimplifiedChinese(songAttr.name);
-  let artist = normalizeArtistName(songAttr.artistName);
-  let album = toSimplifiedChinese(songAttr.albumName);
-  let albumArtist = normalizeArtistName(songAttr.albumArtistName || songAttr.artistName);
-  let composer = normalizeArtistName(songAttr.composerName);
+  let title = isEn ? (songAttr.name || '') : toSimplifiedChinese(songAttr.name);
+  let artist = normalizeArtistName(songAttr.artistName, isEn);
+  let album = isEn ? (songAttr.albumName || '') : toSimplifiedChinese(songAttr.albumName);
+  let albumArtist = normalizeArtistName(songAttr.albumArtistName || songAttr.artistName, isEn);
+  let composer = normalizeArtistName(songAttr.composerName, isEn);
 
-  // 若艺人名或曲名仍为英文/罗马音，向 cn 大库带入 l=zh-Hans-CN 再次精准补全正统中文名
-  if (!/[\u4e00-\u9fa5]/.test(artist) || !/[\u4e00-\u9fa5]/.test(title)) {
-    try {
-      const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/cn/songs/${songId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(3000) });
-      if (cnRes.ok) {
-        const cData = await cnRes.json();
-        const cAttr = cData.data?.[0]?.attributes;
-        if (cAttr) {
-          if (!/[\u4e00-\u9fa5]/.test(artist) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
-            artist = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
-            albumArtist = artist;
+  if (isEn) {
+    // 外国用户若因源区仅有汉字而拿到中文名，按各区支持的英文语言码拉取英文名
+    if (/[\u4e00-\u9fa5]/.test(title + artist + album)) {
+      for (const enSf of ['us', 'gb', 'hk', 'tw', 'cn', 'tr']) {
+        try {
+          const enLang = catalogLangFor(enSf, true);
+          const enRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${enSf}/songs/${songId}?l=${enLang}`, { signal: AbortSignal.timeout(3000) });
+          if (enRes.ok) {
+            const enAttr = (await enRes.json()).data?.[0]?.attributes;
+            if (enAttr) {
+              if (enAttr.name) title = enAttr.name;
+              if (enAttr.artistName) {
+                artist = enAttr.artistName;
+                albumArtist = enAttr.albumArtistName || enAttr.artistName;
+              }
+              if (enAttr.albumName) album = enAttr.albumName;
+              if (!/[\u4e00-\u9fa5]/.test(title + artist)) break;
+            }
           }
-          if (!/[\u4e00-\u9fa5]/.test(title) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
-            title = toSimplifiedChinese(cAttr.name);
-          }
-          if (cAttr.albumName && (!album || !/[\u4e00-\u9fa5]/.test(album))) {
-            album = toSimplifiedChinese(cAttr.albumName);
-          }
-        }
+        } catch {}
       }
-    } catch {}
+    }
+  } else {
+    // 中文模式：仅对确属华语曲目/华语歌手向 ['cn', 'us', 'hk', 'tw'] 补全中文名，避免把欧美/古典歌手翻成译名
+    const isGenuineChinese = /[\u4e00-\u9fa5]/.test(title + artist + album) ||
+      isChineseArtistAlias(songAttr.artistName) ||
+      isChineseGenre(songAttr.genreNames) ||
+      /^(zh|cmn|yue|hak|nan)/i.test(songAttr.audioLocale || '');
+    if (isGenuineChinese && (!/[\u4e00-\u9fa5]/.test(artist) || !/[\u4e00-\u9fa5]/.test(title) || !/[\u4e00-\u9fa5]/.test(album))) {
+      for (const zhSf of ['cn', 'us', 'hk', 'tw']) {
+        try {
+          const zhLang = catalogLangFor(zhSf, false);
+          const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${zhSf}/songs/${songId}?l=${zhLang}`, { signal: AbortSignal.timeout(3000) });
+          if (cnRes.ok) {
+            const cData = await cnRes.json();
+            const cAttr = cData.data?.[0]?.attributes;
+            if (cAttr) {
+              if (!/[\u4e00-\u9fa5]/.test(artist) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
+                artist = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
+                albumArtist = artist;
+              }
+              if (!/[\u4e00-\u9fa5]/.test(title) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
+                title = toSimplifiedChinese(cAttr.name);
+              }
+              if (cAttr.albumName && (!album || !/[\u4e00-\u9fa5]/.test(album)) && /[\u4e00-\u9fa5]/.test(cAttr.albumName)) {
+                album = toSimplifiedChinese(cAttr.albumName);
+              }
+              if (/[\u4e00-\u9fa5]/.test(artist) && /[\u4e00-\u9fa5]/.test(title) && /[\u4e00-\u9fa5]/.test(album)) {
+                break;
+              }
+            }
+          }
+        } catch {}
+      }
+    }
   }
 
   return {
@@ -1214,7 +1304,7 @@ async function fetchSongDetails(songId, storefront = 'hk') {
     durationInMillis: songAttr.durationInMillis,
     trackNumber: songAttr.trackNumber,
     discNumber: songAttr.discNumber,
-    genre: (songAttr.genreNames || []).map(g => toSimplifiedChinese(g)).join('/'),
+    genre: (songAttr.genreNames || []).map(g => isEn ? g : toSimplifiedChinese(g)).join('/'),
     composer,
     hasLyrics: Boolean(songAttr.hasLyrics),
     coverUrl: (songAttr.artwork?.url || '').replace('{w}x{h}', '600x600'),
@@ -1227,22 +1317,16 @@ async function fetchSongDetails(songId, storefront = 'hk') {
   };
 }
 
-async function fetchAlbumDetails(albumId, storefront = 'hk') {
+async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh') {
+  const isEn = lang === 'en';
   // tr 优先：专辑曲目 ID 必须与土区 wrapper 账号一致，避免跨区 adamId 不匹配
-  let storefronts;
-  if (storefront === 'jp' || storefront === 'kr') {
-    storefronts = ['tr', storefront, 'cn', 'hk', 'tw', 'us'];
-  } else if (storefront === 'cn') {
-    storefronts = ['tr', 'cn', 'hk', 'tw', 'us'];
-  } else {
-    storefronts = ['tr', storefront, 'cn', 'hk', 'tw', 'us'];
-  }
-  storefronts = storefronts.filter((v, i, a) => a.indexOf(v) === i);
+  let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
 
   let albumData = null;
   for (const sf of storefronts) {
     try {
-      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/albums/${albumId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(6000) });
+      const l = catalogLangFor(sf, isEn);
+      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/albums/${albumId}?l=${l}`, { signal: AbortSignal.timeout(6000) });
       if (res.ok) {
         const data = await res.json();
         if (data.data?.[0]) {
@@ -1254,33 +1338,58 @@ async function fetchAlbumDetails(albumId, storefront = 'hk') {
   }
 
   if (!albumData) {
-    throw new Error(`未能获取到专辑信息 (${albumId})`);
+    throw new Error(isEn ? `Failed to fetch album details (${albumId})` : `未能获取到专辑信息 (${albumId})`);
   }
 
   const attr = albumData.attributes || {};
   let tracks = albumData.relationships?.tracks?.data || [];
-  let albumName = toSimplifiedChinese(attr.name);
-  let artistName = normalizeArtistName(attr.artistName);
+  let albumName = isEn ? (attr.name || '') : toSimplifiedChinese(attr.name);
+  let artistName = normalizeArtistName(attr.artistName, isEn);
 
-  // 若艺人名或专辑名仍为英文/拼音，智能向 cn 大库精准嗅探补全
-  if (!/[\u4e00-\u9fa5]/.test(artistName) || !/[\u4e00-\u9fa5]/.test(albumName)) {
-    try {
-      const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/cn/albums/${albumId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(4000) });
-      if (cnRes.ok) {
-        const cData = await cnRes.json();
-        const cAttr = cData.data?.[0]?.attributes;
-        if (cAttr) {
-          if (!/[\u4e00-\u9fa5]/.test(artistName) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
-            artistName = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
+  let zhTrackTitleById = new Map();
+  let zhTrackTitleByIndex = [];
+  if (!isEn) {
+    // 中文模式：仅在确属华语专辑/华语歌手时向 ['cn', 'us', 'hk', 'tw'] 补全中文专辑名、艺人名与曲目名，避免外国专辑被翻成译名
+    const isGenuineChinese = /[\u4e00-\u9fa5]/.test(albumName + artistName) ||
+      isChineseArtistAlias(attr.artistName) ||
+      isChineseGenre(attr.genreNames) ||
+      tracks.some(t => /[\u4e00-\u9fa5]/.test(t.attributes?.name || '') || /^(zh|cmn|yue)/i.test(t.attributes?.audioLocale || ''));
+    const tracksMissingZh = tracks.some(t => !/[\u4e00-\u9fa5]/.test(t.attributes?.name || ''));
+    if (isGenuineChinese && (!/[\u4e00-\u9fa5]/.test(artistName) || !/[\u4e00-\u9fa5]/.test(albumName) || tracksMissingZh)) {
+      for (const zhSf of ['cn', 'us', 'hk', 'tw']) {
+        try {
+          const zhLang = catalogLangFor(zhSf, false);
+          const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${zhSf}/albums/${albumId}?l=${zhLang}`, { signal: AbortSignal.timeout(4000) });
+          if (cnRes.ok) {
+            const cData = await cnRes.json();
+            const cAlb = cData.data?.[0];
+            const cAttr = cAlb?.attributes;
+            if (cAttr) {
+              if (!/[\u4e00-\u9fa5]/.test(artistName) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
+                artistName = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
+              }
+              if (!/[\u4e00-\u9fa5]/.test(albumName) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
+                albumName = toSimplifiedChinese(cAttr.name);
+              }
+              const cTracks = cAlb?.relationships?.tracks?.data || [];
+              if (cTracks.length && cTracks.some(ct => /[\u4e00-\u9fa5]/.test(ct.attributes?.name || ''))) {
+                for (const ct of cTracks) {
+                  if (ct.id && ct.attributes?.name && /[\u4e00-\u9fa5]/.test(ct.attributes.name)) {
+                    zhTrackTitleById.set(String(ct.id), toSimplifiedChinese(ct.attributes.name));
+                  }
+                }
+                if (cTracks.length === tracks.length) {
+                  zhTrackTitleByIndex = cTracks.map(ct => ct.attributes?.name ? toSimplifiedChinese(ct.attributes.name) : '');
+                }
+              }
+              if (/[\u4e00-\u9fa5]/.test(artistName) && /[\u4e00-\u9fa5]/.test(albumName) && zhTrackTitleById.size > 0) {
+                break;
+              }
+            }
           }
-          if (!/[\u4e00-\u9fa5]/.test(albumName) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
-            albumName = toSimplifiedChinese(cAttr.name);
-          }
-          // 注意：cn 嗅探只补全中文元数据（艺人名/专辑名），绝不覆盖 tracks——
-          // 曲目 ID 必须保持从 tr 区解析，否则跨区 adamId 不匹配导致批量转存误判无版权
-        }
+        } catch {}
       }
-    } catch {}
+    }
   }
 
   return {
@@ -1289,23 +1398,29 @@ async function fetchAlbumDetails(albumId, storefront = 'hk') {
     artistName: artistName,
     releaseDate: attr.releaseDate,
     coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
-    tracks: tracks.map(t => ({
-      id: t.id,
-      name: toSimplifiedChinese(t.attributes?.name || 'Track'),
-      trackNumber: t.attributes?.trackNumber,
-      artistName: normalizeArtistName(t.attributes?.artistName || artistName)
-    }))
+    tracks: tracks.map((t, idx) => {
+      const rawTrackName = t.attributes?.name || 'Track';
+      const zhName = !isEn ? (zhTrackTitleById.get(String(t.id)) || zhTrackTitleByIndex[idx] || toSimplifiedChinese(rawTrackName)) : rawTrackName;
+      return {
+        id: t.id,
+        name: isEn ? rawTrackName : zhName,
+        trackNumber: t.attributes?.trackNumber,
+        artistName: normalizeArtistName(t.attributes?.artistName || artistName, isEn)
+      };
+    })
   };
 }
 
-async function fetchPlaylistDetails(playlistId, storefront = 'hk') {
+async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh') {
+  const isEn = lang === 'en';
   // tr 优先：wrapper-lite 是土区账号，曲目 ID 必须从土区目录解析，否则跨区 adamId 不匹配导致误判无版权
-  let storefronts = ['tr', storefront, 'cn', 'hk', 'tw', 'us'].filter((v, i, a) => a.indexOf(v) === i);
+  let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
   let plResolved = null;
   let plSf = null;
   for (const sf of storefronts) {
     try {
-      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/playlists/${playlistId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(6000) });
+      const l = catalogLangFor(sf, isEn);
+      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/playlists/${playlistId}?l=${l}`, { signal: AbortSignal.timeout(6000) });
       if (res.ok) {
         const data = await res.json();
         if (data.data?.[0]) {
@@ -1318,21 +1433,21 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk') {
   }
 
   if (!plResolved) {
-    throw new Error(`未能获取到歌单信息 (${playlistId})`);
+    throw new Error(isEn ? `Failed to fetch playlist details (${playlistId})` : `未能获取到歌单信息 (${playlistId})`);
   }
 
   const attr = plResolved.attributes || {};
 
-  // 分页拉取全部曲目：Apple Music 目录 API 对 tracks relationship 默认每页 100 首，
-  // 通过 /playlists/{id}/tracks?offset=N 翻页直到 next 为空，彻底解决 >100 首歌单只取到前 100 首的问题
+  // 分页拉取全部曲目
   const allTracks = [];
   let nextOffset = 0;
   let guard = 0;
-  while (guard < 60) { // 防死循环保险（最多 60 页）
+  const plLang = catalogLangFor(plSf, isEn);
+  while (guard < 60) {
     guard++;
     let page = null;
     try {
-      const tRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${plSf}/playlists/${playlistId}/tracks?l=zh-Hans-CN&offset=${nextOffset}`, { signal: AbortSignal.timeout(6000) });
+      const tRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${plSf}/playlists/${playlistId}/tracks?l=${plLang}&offset=${nextOffset}`, { signal: AbortSignal.timeout(6000) });
       if (tRes.ok) page = await tRes.json();
     } catch {}
     if (!page || !page.data || !page.data.length) break;
@@ -1341,34 +1456,35 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk') {
     if (!next) break;
     const m = String(next).match(/offset=(\d+)/);
     const newOffset = m ? parseInt(m[1], 10) : NaN;
-    // 翻页未前进则视为已拉完（部分端点 next 指向当前页自身）
     if (!(newOffset > nextOffset)) break;
     nextOffset = newOffset;
   }
 
   return {
-    albumId: playlistId, // 统一走批量转存调度
+    albumId: playlistId,
     isPlaylist: true,
-    name: toSimplifiedChinese(attr.name || 'Playlist'),
-    artistName: toSimplifiedChinese(attr.curatorName || 'Apple Music'),
-    releaseDate: attr.lastModifiedDate ? attr.lastModifiedDate.slice(0, 10) : '近期',
+    name: isEn ? (attr.name || 'Playlist') : toSimplifiedChinese(attr.name || 'Playlist'),
+    artistName: isEn ? (attr.curatorName || 'Apple Music') : toSimplifiedChinese(attr.curatorName || 'Apple Music'),
+    releaseDate: attr.lastModifiedDate ? attr.lastModifiedDate.slice(0, 10) : (isEn ? 'Recent' : '近期'),
     coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
     tracks: allTracks.map((t, idx) => ({
       id: t.id,
-      name: toSimplifiedChinese(t.attributes?.name || 'Track'),
+      name: isEn ? (t.attributes?.name || 'Track') : toSimplifiedChinese(t.attributes?.name || 'Track'),
       trackNumber: idx + 1,
-      artistName: normalizeArtistName(t.attributes?.artistName || 'Various Artists')
+      artistName: normalizeArtistName(t.attributes?.artistName || 'Various Artists', isEn)
     }))
   };
 }
 
-async function fetchArtistDetails(artistId, storefront = 'hk') {
+async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
+  const isEn = lang === 'en';
   // tr 优先：top-songs/full-albums 里的曲目 ID 必须与土区 wrapper 账号一致
-  let storefronts = ['tr', storefront, 'cn', 'hk', 'tw', 'us'].filter((v, i, a) => a.indexOf(v) === i);
+  let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
   let artistData = null;
   for (const sf of storefronts) {
     try {
-      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/artists/${artistId}?views=top-songs,full-albums&l=zh-Hans-CN`, { signal: AbortSignal.timeout(6000) });
+      const l = catalogLangFor(sf, isEn);
+      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/artists/${artistId}?views=top-songs,full-albums&l=${l}`, { signal: AbortSignal.timeout(6000) });
       if (res.ok) {
         const data = await res.json();
         if (data.data?.[0]) {
@@ -1380,27 +1496,27 @@ async function fetchArtistDetails(artistId, storefront = 'hk') {
   }
 
   if (!artistData) {
-    throw new Error(`未能获取到艺人信息 (${artistId})`);
+    throw new Error(isEn ? `Failed to fetch artist details (${artistId})` : `未能获取到艺人信息 (${artistId})`);
   }
 
   const attr = artistData.attributes || {};
   const topSongs = (artistData.views?.['top-songs']?.data || []).map(s => ({
     id: s.id,
-    name: toSimplifiedChinese(s.attributes?.name || 'Song'),
-    artistName: normalizeArtistName(s.attributes?.artistName || attr.name || ''),
+    name: isEn ? (s.attributes?.name || 'Song') : toSimplifiedChinese(s.attributes?.name || 'Song'),
+    artistName: normalizeArtistName(s.attributes?.artistName || attr.name || '', isEn),
     durationInMillis: s.attributes?.durationInMillis || 0
   }));
 
   const albums = (artistData.views?.['full-albums']?.data || []).map(al => ({
     id: al.id,
-    name: toSimplifiedChinese(al.attributes?.name || 'Album'),
+    name: isEn ? (al.attributes?.name || 'Album') : toSimplifiedChinese(al.attributes?.name || 'Album'),
     releaseDate: al.attributes?.releaseDate || '',
     trackCount: al.attributes?.trackCount || 0
   }));
 
   return {
     artistId,
-    name: normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist')),
+    name: isEn ? (attr.name || 'Artist') : normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist')),
     genre: (attr.genreNames && attr.genreNames[0]) || '',
     coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
     topSongs,
@@ -1602,11 +1718,12 @@ function getSelection(chatId, kind, id) {
   return entry.set;
 }
 
-async function getArtistData(artistId, storefront = 'hk') {
-  const hit = artistCache.get(artistId);
+async function getArtistData(artistId, storefront = 'hk', lang = 'zh') {
+  const cacheKey = `${artistId}_${lang}`;
+  const hit = artistCache.get(cacheKey);
   if (hit && Date.now() - hit.createdAt < 10 * 60 * 1000) return hit.data;
-  const data = await fetchArtistDetails(artistId, storefront);
-  artistCache.set(artistId, { data, createdAt: Date.now() });
+  const data = await fetchArtistDetails(artistId, storefront, lang);
+  artistCache.set(cacheKey, { data, createdAt: Date.now() });
   return data;
 }
 
@@ -1635,7 +1752,7 @@ function buildSongCard(details, selectedQuality = 'Lossless', needLrc = true, is
   const embedMode = ['lrc', 'ttml', 'off'].includes(embedLyricsMode) ? embedLyricsMode : 'lrc';
   const saveFormats = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
   const isEn = lang === 'en';
-  const cacheKey = `${details.songId}_${selectedQuality.toLowerCase()}_${isZip ? 'zip' : 'audio'}`;
+  const cacheKey = `${details.songId}_${selectedQuality.toLowerCase()}_${isZip ? 'zip' : 'audio'}${isEn ? '_en' : ''}`;
   const isCached = Boolean(db.get(cacheKey));
 
   let traitsDesc = [];
@@ -1781,10 +1898,10 @@ function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true,
   const saveFormats = Array.isArray(saveLyricsFormats) ? saveLyricsFormats.filter((f) => f === 'lrc' || f === 'ttml') : [];
   const isEn = lang === 'en';
   const isPl = albumData.isPlaylist === true;
-  const cacheKey = `album_${albumData.albumId}_${selectedQuality.toLowerCase()}_${deliveryMode}`;
+  const cacheKey = `album_${albumData.albumId}_${selectedQuality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
   const isCached = Boolean(db.get(cacheKey));
-  // 权限：普通用户可下载歌手单专辑 (单张专辑)；歌单整辑批量转存仍为站长专属
-  const canFullDownload = isOwner || !isPl;
+  // 权限：仅歌手全专辑批量（Discography）为站长专属；单张专辑、歌单、单曲所有用户均可下载（统一计入每日 200 首额度）
+  const canFullDownload = true;
 
   const typeLabel = isPl ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
   const text = isEn ?
@@ -1944,6 +2061,7 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
       translateLyrics: Boolean(needTranslate),
       ruby: Boolean(needRuby),
       rubyMode: rubyMode || 'roman',
+      lang: userLang,
       noUpload: true
     };
     const res = await fetch(CLOUD_API, {
@@ -1954,13 +2072,13 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
     });
     const data = await res.json();
     if (data.status !== 'ok' || !data.data?.lyricsFiles?.length) {
-      throw new Error(data.error || '无歌词可下载（纯音乐或地区无歌词资源）');
+      throw new Error(data.error || (isEn ? 'No lyrics available (instrumental or unavailable in region)' : '无歌词可下载（纯音乐或地区无歌词资源）'));
     }
     // cloud-service 在「无外置格式」时会把内嵌格式当主文件返回，仅歌词场景必须严格按 want 过滤，
     // 否则用户选「仅歌词 TTML」却收到 .lrc（内嵌模式默认 LRC 造成串味）
     const files = data.data.lyricsFiles.filter((f) => wantFormats.some((w) => String(f.filename || '').toLowerCase().endsWith(`.${w}`)));
     if (!files.length) {
-      throw new Error(data.error || '无歌词可下载（纯音乐或地区无歌词资源）');
+      throw new Error(data.error || (isEn ? 'No lyrics available (instrumental or unavailable in region)' : '无歌词可下载（纯音乐或地区无歌词资源）'));
     }
     const sentIds = [];
     for (const f of files) {
@@ -2088,7 +2206,7 @@ async function handleDownload(chatId, messageId, details, quality, needLrc, isZi
   // 外置歌词文件 = 内嵌模式对应的主格式 + 用户额外勾选的格式
   saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
   const songId = details.songId;
-  const cacheKey = `${songId}_${quality.toLowerCase()}_${isZip ? 'zip' : 'audio'}`;
+  const cacheKey = `${songId}_${quality.toLowerCase()}_${isZip ? 'zip' : 'audio'}${isEn ? '_en' : ''}`;
   const cached = db.get(cacheKey);
 
   // 1. 命中缓存秒传 (0秒直发，完全无需进入排队队列)
@@ -2300,6 +2418,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
         translateLyrics: needTranslate || false,
         ruby: needRuby || false,
         rubyMode: rubyMode || 'roman',
+        lang: userLang,
         zip: Boolean(isZip),
         noUpload: true
       };
@@ -2314,7 +2433,7 @@ ${artistTag} ${titleTag} ${albumTag}`);
         });
         const data = await res.json();
         if (data.status !== 'ok' || !data.data) {
-          throw new Error(data.error || '解析中枢返回异常');
+          throw new Error(data.error || (isEn ? 'Transfer service returned an error' : '解析中枢返回异常'));
         }
         transferResult = data.data;
       } catch (err) {
@@ -2573,7 +2692,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
 
         for (let i = 0; i < tracks.length; i++) {
           const track = tracks[i];
-          const cacheKey = `${track.id}_${quality.toLowerCase()}_${isZip ? 'zip' : 'audio'}`;
+          const cacheKey = `${track.id}_${quality.toLowerCase()}_${isZip ? 'zip' : 'audio'}${isEn ? '_en' : ''}`;
           const cached = db.get(cacheKey);
 
           // 1. 命中单曲缓存秒传: 直接收集群消息 ID，跳过下载
@@ -2601,7 +2720,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
           // 2. 未缓存: 解析单曲并下载归档到频道 (不立即推私聊)
           let details;
           try {
-            details = await fetchSongDetails(track.id, 'hk');
+            details = await fetchSongDetails(track.id, 'hk', userLang);
           } catch (err) {
             console.warn(`[TG-Bot] 批量曲目 ${track.name} 元数据解析失败: ${err.message}`);
             skippedTracks.push({ track, error: err.message });
@@ -2632,6 +2751,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
               translateLyrics: needTranslate || false,
               ruby: needRuby || false,
               rubyMode: rubyMode || 'roman',
+              lang: userLang,
               zip: Boolean(isZip),
               noUpload: true
             };
@@ -2643,7 +2763,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
             });
             const data = await res.json();
             if (data.status !== 'ok' || !data.data) {
-              throw new Error(data.error || '解析中枢返回异常');
+              throw new Error(data.error || (isEn ? 'Transfer service returned an error' : '解析中枢返回异常'));
             }
             transferResult = data.data;
           } catch (err) {
@@ -2861,7 +2981,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
 
   let artistData;
   try {
-    artistData = await getArtistData(artistId);
+    artistData = await getArtistData(artistId, 'hk', userLang);
   } catch (err) {
     await tgCall('editMessageText', {
       chat_id: chatId,
@@ -2879,7 +2999,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
   const cachedMeta = [];
   const toDownload = [];
   for (const al of selectedAlbums) {
-    const cacheKey = `album_${al.id}_${quality.toLowerCase()}_${deliveryMode}`;
+    const cacheKey = `album_${al.id}_${quality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
     const cached = db.get(cacheKey);
     const validCache = cached && (
       (deliveryMode === 'zip' && (cached.groupMsgId || cached.zipFileId)) ||
@@ -2935,7 +3055,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
           const prefix = `📀 [${i + 1}/${toDownload.length}] ${escapeHtml(al.name)}：`;
           let albumData = null;
           try {
-            albumData = await fetchAlbumDetails(al.id);
+            albumData = await fetchAlbumDetails(al.id, 'hk', userLang);
           } catch (err) {
             console.warn(`[TG-Bot] 批量专辑 ${al.name} 解析失败: ${err.message}`);
             failedAlbums.push({ name: al.name, error: err.message });
@@ -3104,6 +3224,7 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
         translateLyrics: Boolean(needTranslate),
         ruby: Boolean(needRuby),
         rubyMode: rubyMode || 'roman',
+        lang: userLang,
         noUpload: true
       };
       const res = await fetch(CLOUD_API, {
@@ -3114,7 +3235,7 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
       });
       const data = await res.json();
       if (data.status !== 'ok' || !data.data?.lyricsFiles?.length) {
-        failList.push(`${i + 1}. ${title}（无歌词）`);
+        failList.push(`${i + 1}. ${title} (${isEn ? 'no lyrics' : '无歌词'})`);
         continue;
       }
       for (const f of data.data.lyricsFiles) {
@@ -3133,12 +3254,14 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
       }
     } catch (err) {
       console.warn(`[TG-Bot] 仅歌词 ${title} 失败:`, err.message);
-      failList.push(`${i + 1}. ${title}（${err.message}）`);
+      failList.push(`${i + 1}. ${title} (${err.message})`);
     }
   }
 
   const failNote = failList.length
-    ? `\n❌ ${isEn ? 'Skipped' : '未收录'} ${failList.length} 首：\n${failList.slice(0, 12).join('\n')}${failList.length > 12 ? `\n…等 ${failList.length} 首` : ''}`
+    ? (isEn
+      ? `\n❌ Skipped ${failList.length} tracks:\n${failList.slice(0, 12).join('\n')}${failList.length > 12 ? `\n…and ${failList.length - 12} more` : ''}`
+      : `\n❌ 未收录 ${failList.length} 首：\n${failList.slice(0, 12).join('\n')}${failList.length > 12 ? `\n…等 ${failList.length} 首` : ''}`)
     : '';
   await tgCall('editMessageText', {
     chat_id: chatId,
@@ -3157,7 +3280,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
   const albumId = albumData.albumId;
   const isPl = albumData.isPlaylist === true;
   const typeLabel = isPl ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
-  const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}`;
+  const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
   const cached = db.get(cacheKey);
 
   // 1. 命中全辑缓存秒传 (直接直发，无需进入排队队列)
@@ -3340,7 +3463,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
   const isPl = albumData.isPlaylist === true;
   saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
   const typeLabel = isPl ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
-  const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}`;
+  const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
   const totalTracks = albumData.tracks.length;
   // 专辑整包（zip / media 交付）：每首歌的音频+歌词已打进压缩包，再单独发 .lrc 纯属冗余，
   // 这里把外置文件收敛为空，只保留内嵌歌词；单曲勾选/逐曲推送的路径不受影响。
@@ -3389,6 +3512,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
               translateLyrics: needTranslate || false,
               ruby: needRuby || false,
               rubyMode: rubyMode || 'roman',
+              lang: userLang,
               noUpload: true
             };
 
@@ -3402,7 +3526,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 });
                 const data = await res.json();
                 if (data.status !== 'ok' || !data.data) {
-                  throw new Error(data.error || '解析异常');
+                  throw new Error(data.error || (isEn ? 'Transfer service error' : '解析异常'));
                 }
                 allDownloadedFiles.push({ ...data.data, track, orderIndex: trackOrder });
                 completedCount++;
@@ -3410,7 +3534,9 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                   await tgCall('editMessageText', {
                     chat_id: chatId,
                     message_id: messageId,
-                    text: `${progressPrefix}⏳ <b>正在高速打包全辑 [${completedCount}/${totalTracks}]</b>\n🎵 ${escapeHtml(track.name)}${skippedTracks.length ? `\n(已跳过 ${skippedTracks.length} 首不可用歌曲)` : ''}`,
+                    text: isEn
+                      ? `${progressPrefix}⏳ <b>Downloading & tagging ${typeLabel.toLowerCase()} [${completedCount}/${totalTracks}]</b>\n🎵 ${escapeHtml(track.name)}${skippedTracks.length ? `\n(${skippedTracks.length} unavailable skipped)` : ''}`
+                      : `${progressPrefix}⏳ <b>正在高速打包全辑 [${completedCount}/${totalTracks}]</b>\n🎵 ${escapeHtml(track.name)}${skippedTracks.length ? `\n(已跳过 ${skippedTracks.length} 首不可用歌曲)` : ''}`,
                     parse_mode: 'HTML'
                   });
                 } catch {}
@@ -3428,7 +3554,9 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           });
 
           if (allDownloadedFiles.length === 0) {
-            throw new Error(`整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
+            throw new Error(isEn
+              ? `All tracks in this ${typeLabel.toLowerCase()} are unavailable in the resolving region or failed to download.`
+              : `整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
           }
 
           allDownloadedFiles.sort((a, b) => a.orderIndex - b.orderIndex);
@@ -3454,6 +3582,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 artist: albumData.artistName
               },
               zipFilename: `${albumData.artistName} - ${albumData.name}.zip`,
+              lang: userLang,
               noUpload: true,
               splitMaxMB: 1900
             }),
@@ -3462,7 +3591,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           });
           const finData = await finRes.json();
           if (finData.status !== 'ok' || !finData.data) {
-            throw new Error(`封装全辑 ZIP 失败: ${finData.error || '未知错误'}`);
+            throw new Error(isEn ? `Failed to package ${typeLabel} ZIP: ${finData.error || 'Unknown error'}` : `封装全辑 ZIP 失败: ${finData.error || '未知错误'}`);
           }
 
           const zipParts = Array.isArray(finData.data.zipParts) && finData.data.zipParts.length ? finData.data.zipParts : null;
@@ -3485,9 +3614,9 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
 
           const baseCaption = safeCaption(
 `📦 <b>${escapeHtml(albumData.name)} [${typeLabel}ZIP]</b>
-👤 ${isEn ? 'Artist' : '艺人'}：${escapeHtml(albumData.artistName)}
-🎵 ${isEn ? 'Tracks' : '曲目数'}：共 ${allDownloadedFiles.length} 首${skippedTracks.length ? ` (已跳过 ${skippedTracks.length} 首无版权歌曲)` : ''}
-🎧 ${isEn ? 'Format' : '规格'}：${escapeHtml(quality)}
+👤 ${isEn ? 'Artist: ' : '艺人：'}${escapeHtml(albumData.artistName)}
+🎵 ${isEn ? `Tracks: ${allDownloadedFiles.length}${skippedTracks.length ? ` (${skippedTracks.length} unavailable skipped)` : ''}` : `曲目数：共 ${allDownloadedFiles.length} 首${skippedTracks.length ? ` (已跳过 ${skippedTracks.length} 首无版权歌曲)` : ''}`}
+🎧 ${isEn ? 'Format: ' : '规格：'}${escapeHtml(quality)}
 
 ${artistTag} ${albumTag} #${typeLabel}ZIP`);
 
@@ -3502,9 +3631,9 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`);
             const partCaption = zipPartList.length > 1
               ? safeCaption(
 `📦 <b>${escapeHtml(albumData.name)} [${typeLabel}ZIP ${zi + 1}/${zipPartList.length}]</b>
-👤 ${isEn ? 'Artist' : '艺人'}：${escapeHtml(albumData.artistName)}
-🎵 ${isEn ? 'Tracks' : '曲目数'}：本卷 ${partTrackCount} 首 / 共 ${allDownloadedFiles.length} 首${skippedTracks.length ? ` (已跳过 ${skippedTracks.length} 首无版权歌曲)` : ''}
-🎧 ${isEn ? 'Format' : '规格'}：${escapeHtml(quality)}
+👤 ${isEn ? 'Artist: ' : '艺人：'}${escapeHtml(albumData.artistName)}
+🎵 ${isEn ? `Tracks: ${partTrackCount} in part / ${allDownloadedFiles.length} total${skippedTracks.length ? ` (${skippedTracks.length} unavailable skipped)` : ''}` : `曲目数：本卷 ${partTrackCount} 首 / 共 ${allDownloadedFiles.length} 首${skippedTracks.length ? ` (已跳过 ${skippedTracks.length} 首无版权歌曲)` : ''}`}
+🎧 ${isEn ? 'Format: ' : '规格：'}${escapeHtml(quality)}
 
 ${artistTag} ${albumTag} #${typeLabel}ZIP`)
               : baseCaption;
@@ -3520,7 +3649,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             });
 
             if (!sendResult.groupMsgId) {
-              throw new Error('全辑 ZIP 归档上传失败，未能获取群消息 ID');
+              throw new Error(isEn ? 'Failed to archive ZIP to channel' : '全辑 ZIP 归档上传失败，未能获取群消息 ID');
             }
             allZipMsgIds.push(sendResult.groupMsgId);
             lastSendResult = sendResult;
@@ -3615,6 +3744,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
               translateLyrics: needTranslate || false,
               ruby: needRuby || false,
               rubyMode: rubyMode || 'roman',
+              lang: userLang,
               noUpload: true
             };
 
@@ -3628,7 +3758,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
                 });
                 const data = await res.json();
                 if (data.status !== 'ok' || !data.data) {
-                  throw new Error(data.error || '解析异常');
+                  throw new Error(data.error || (isEn ? 'Transfer service error' : '解析异常'));
                 }
                 const fileObj = { ...data.data, track, orderIndex: globalIdx };
                 chunkFiles.push(fileObj);
@@ -3787,12 +3917,16 @@ ${artistTag} ${albumTag} #${typeLabel}`);
         }
 
         if (allDownloadedFiles.length === 0) {
-          throw new Error(`整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
+          throw new Error(isEn
+            ? `All tracks in this ${typeLabel.toLowerCase()} are unavailable in the resolving region or failed to download.`
+            : `整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
         }
 
         // 频道归档全部完成（私聊推送由调用方统一执行，保证批量场景最后一起发送）
         if (allGroupMsgIds.length === 0) {
-          throw new Error(`整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
+          throw new Error(isEn
+            ? `All tracks in this ${typeLabel.toLowerCase()} are unavailable in the resolving region or failed to download.`
+            : `整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
         }
 
         db.set(cacheKey, {
@@ -4041,6 +4175,38 @@ async function handleUpdate(update) {
       const stats = getTrafficStats();
       const isOwner = String(chatId) === String(OWNER_USER_ID);
       const userQuota = quotaManager.checkQuota(chatId);
+      const isEnStats = getUserLang(chatId, msg.from?.language_code) === 'en';
+
+      if (isEnStats) {
+        const roleText = isOwner ? '👑 <b>Admin (100% Unlimited)</b>' : '👤 <b>Standard Member</b>';
+        const quotaText = isOwner
+          ? '• Download Quota: <code>Unlimited (100% Exempt)</code>\n• Artist Discography: <code>✅ Available (Admin Only)</code>\n• Cooldown: <code>0s</code>'
+          : `• Today's Usage: <code>${userQuota.current} / ${userQuota.max} tracks</code> (<code>${userQuota.remaining}</code> left)\n• Scope: <code>Shared across Single Tracks / Albums / Playlists</code>\n• Artist Discography: <code>🔒 Admin Only</code>\n• Cooldown: <code>5s between requests</code>`;
+
+        const msgText =
+`📊 <b>VPS Bandwidth & Quota Monitor</b>
+
+📡 <b>Oracle Cloud (OCI) Monthly Bandwidth:</b>
+• Progress: [<code>${stats.progressBar}</code>] <code>${stats.usagePercent}%</code>
+• Outbound (TX): <code>${stats.txGB} GB</code> / <code>${stats.maxQuotaGB} GB (10TB)</code>
+• Remaining Quota: <code>${stats.remainingGB} GB</code>
+• Inbound (RX): <code>${stats.rxGB} GB</code> (✨ Free & unlimited on OCI)
+
+👤 <b>Your Account & Daily Quota:</b>
+• Role: ${roleText}
+${quotaText}
+
+💡 <b>Bandwidth Notes:</b>
+1. <b>Inbound (Apple Music -> VPS)</b>: 100% free and does not count toward the 10TB outbound cap.
+2. <b>Instant Delivery</b>: Cached tracks/albums are forwarded directly inside Telegram with <b>0 bytes of VPS upload</b> and <b>0 quota cost</b>.`;
+
+        await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: msgText,
+          parse_mode: 'HTML'
+        });
+        return;
+      }
 
       const roleText = isOwner ? '👑 <b>站长/管理员 (拥有 100% 全面豁免权)</b>' : '👤 <b>讨论组成员</b>';
       const quotaText = isOwner
@@ -4620,7 +4786,7 @@ ${quotaText}
         parse_mode: 'HTML'
       });
       try {
-        const artistData = await getArtistData(parsed.artistId, parsed.storefront);
+        const artistData = await getArtistData(parsed.artistId, parsed.storefront, userLang);
         const card = buildArtistCard(artistData, userLang);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
           isArtist: true,
@@ -4657,8 +4823,8 @@ ${quotaText}
       });
       try {
         const albumData = isPl
-          ? await fetchPlaylistDetails(parsed.playlistId, parsed.storefront)
-          : await fetchAlbumDetails(parsed.albumId, parsed.storefront);
+          ? await fetchPlaylistDetails(parsed.playlistId, parsed.storefront, userLang)
+          : await fetchAlbumDetails(parsed.albumId, parsed.storefront, userLang);
 
         const card = buildAlbumCard(albumData, 'Lossless', true, 'zip', userLang, isOwnerUser);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
@@ -4699,7 +4865,7 @@ ${quotaText}
     });
 
     try {
-      const details = await fetchSongDetails(parsed.songId, parsed.storefront);
+      const details = await fetchSongDetails(parsed.songId, parsed.storefront, userLang);
       const card = buildSongCard(details, 'Lossless', true, false, userLang, parsed.albumId || null);
 
       userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
@@ -4775,7 +4941,7 @@ ${quotaText}
       const artistId = data.split(':')[1];
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const artistData = await getArtistData(artistId);
+        const artistData = await getArtistData(artistId, 'hk', userLang);
         if (data.startsWith('art_songs:')) {
           await showArtistSongs(chatId, artistData, userLang, messageId);
         } else if (data.startsWith('art_albums:')) {
@@ -4858,7 +5024,7 @@ ${quotaText}
 
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const artistData = await getArtistData(artistId);
+        const artistData = await getArtistData(artistId, 'hk', userLang);
         const selection = getSelection(chatId, 'art', artistId);
         if (data.startsWith('atsel_art_toggle:')) {
           const albumId = parts[2];
@@ -4887,7 +5053,7 @@ ${quotaText}
       const artistId = parts[2] || null;
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const albumData = await fetchAlbumDetails(albumId);
+        const albumData = await fetchAlbumDetails(albumId, 'hk', userLang);
         const card = buildAlbumCard(albumData, 'Lossless', true, 'zip', userLang, isOwner, artistId);
         userSessions.set(sessionKey, {
           isAlbum: true,
@@ -4929,7 +5095,7 @@ ${quotaText}
         parse_mode: 'HTML'
       });
       try {
-        const details = await fetchSongDetails(songId, 'hk');
+        const details = await fetchSongDetails(songId, 'hk', userLang);
         const card = buildSongCard(details, 'Lossless', true, false, userLang, backAlbumId);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
           isAlbum: false,
@@ -4966,7 +5132,7 @@ ${quotaText}
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId); } catch {}
+        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
       }
       if (albumData) {
         await showAlbumTracks(chatId, albumData, userLang, messageId);
@@ -4986,7 +5152,7 @@ ${quotaText}
       const selection = getSelection(chatId, 'trk', albumId);
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId); } catch {}
+        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
       }
 
       if (data.startsWith('tsel_dl:')) {
@@ -5053,7 +5219,7 @@ ${quotaText}
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId); } catch {}
+        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
       }
       if (albumData) {
         const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman');
@@ -5195,7 +5361,9 @@ ${quotaText}
         });
         await tgCall('answerCallbackQuery', {
           callback_query_id: cb.id,
-          text: session.needRuby ? '✅ 已开启注音（仅日文歌曲生效）' : '已关闭注音'
+          text: session.needRuby
+            ? (isEn ? '✅ Ruby phonetic enabled (Japanese tracks)' : '✅ 已开启注音（仅日文歌曲生效）')
+            : (isEn ? 'Ruby phonetic disabled' : '已关闭注音')
         });
         return;
       }
@@ -5212,24 +5380,14 @@ ${quotaText}
         });
         await tgCall('answerCallbackQuery', {
           callback_query_id: cb.id,
-          text: session.rubyMode === 'kana' ? '注音模式：平假名' : '注音模式：罗马音'
+          text: session.rubyMode === 'kana'
+            ? (isEn ? 'Ruby mode: Hiragana' : '注音模式：平假名')
+            : (isEn ? 'Ruby mode: Romaji' : '注音模式：罗马音')
         });
         return;
       }
 
       if (data.startsWith('adl:')) {
-        // 歌单整辑批量转存仍为站长专属；歌手单张专辑所有用户均可下载
-        if (!isOwner && session.albumData?.isPlaylist) {
-          await tgCall('answerCallbackQuery', {
-            callback_query_id: cb.id,
-            text: isEn
-              ? '⚠️ Full playlist download is reserved for the bot admin. Please select individual tracks.'
-              : '⚠️ 歌单整辑下载为站长专属特权，普通用户请单独点选单曲下载。',
-            show_alert: true
-          });
-          return;
-        }
-
         const btnCd = quotaManager.checkCooldown(chatId, 3000);
         if (!btnCd.ok) {
           await tgCall('answerCallbackQuery', {
@@ -5344,7 +5502,9 @@ ${quotaText}
       });
       await tgCall('answerCallbackQuery', {
         callback_query_id: cb.id,
-        text: session.needRuby ? '✅ 已开启注音（仅日文歌曲生效）' : '已关闭注音'
+        text: session.needRuby
+          ? (isEn ? '✅ Ruby phonetic enabled (Japanese tracks)' : '✅ 已开启注音（仅日文歌曲生效）')
+          : (isEn ? 'Ruby phonetic disabled' : '已关闭注音')
       });
       return;
     }
@@ -5361,7 +5521,9 @@ ${quotaText}
       });
       await tgCall('answerCallbackQuery', {
         callback_query_id: cb.id,
-        text: session.rubyMode === 'kana' ? '注音模式：平假名' : '注音模式：罗马音'
+        text: session.rubyMode === 'kana'
+          ? (isEn ? 'Ruby mode: Hiragana' : '注音模式：平假名')
+          : (isEn ? 'Ruby mode: Romaji' : '注音模式：罗马音')
       });
       return;
     }
@@ -5371,7 +5533,7 @@ ${quotaText}
       if (!btnCd.ok) {
         await tgCall('answerCallbackQuery', {
           callback_query_id: cb.id,
-          text: `操作太频繁，请稍候 ${btnCd.waitSec} 秒！`,
+          text: isEn ? `Too fast, please wait ${btnCd.waitSec}s!` : `操作太频繁，请稍候 ${btnCd.waitSec} 秒！`,
           show_alert: true
         });
         return;

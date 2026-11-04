@@ -308,18 +308,87 @@ const CHINESE_ARTIST_ALIASES = {
   'mavis fan': '范晓萱',
   'shunza': '顺子',
   'wanfang': '万芳',
-  'peggy hsu': '许哲珮'
+  'peggy hsu': '许哲珮',
+  // 港台经典与独立音乐人补充
+  'anthony wong': '黄耀明',
+  'wong yiu-ming': '黄耀明',
+  'denise ho': '何韵诗',
+  'hocc': '何韵诗',
+  'tat ming pair': '达明一派',
+  'tom chang': '张雨生',
+  'chang yu-sheng': '张雨生',
+  'bobby chen': '陈升',
+  'chen sheng': '陈升',
+  'samuel hui': '许冠杰',
+  'paula tsui': '徐小凤',
+  'roman tam': '罗文',
+  'danny chan': '陈百强',
+  'alan tam': '谭咏麟',
+  'kenny bee': '钟镇涛',
+  'shirley kwan': '关淑怡',
+  'cass phang': '彭羚',
+  'f.i.r.': '飞儿乐团',
+  'power station': '动力火车',
+  'charlene choi': '蔡卓妍',
+  'gillian chung': '钟欣潼',
+  'fiona sit': '薛凯琪',
+  'kay tse': '谢安琪',
+  'ivana wong': '王菀之',
+  'endy chau': '周国贤',
+  'juno mak': '麦浚龙',
+  'ellen loo': '卢凯彤',
+  'eman lam': '林二汶',
+  'lo ta-yu': '罗大佑',
+  'luo dayou': '罗大佑',
+  'wu bai': '伍佰',
+  'wubai': '伍佰',
+  'richie jen': '任贤齐',
+  'ronald cheng': '郑中基',
+  'andy hui': '许志安',
+  'william so': '苏永康',
+  'edmond leung': '梁汉文',
+  'dicky cheung': '张卫健',
+  'nicholas tse': '谢霆锋',
+  'jordan chan': '陈小春',
+  'ekin cheng': '郑伊健',
+  'raymond lam': '林峯',
+  'alfred hui': '许廷铿',
+  'hubert wu': '胡鸿钧',
+  'jinny ng': '吴若希',
+  'hana kuk': '菊梓乔'
 };
 
 /**
- * 规范化艺人名称：
- * 1. 优先查阅港台英文艺名/官方别名映射表 (如 aMEI -> 张惠妹, Eason Chan -> 陈奕迅)
- * 2. 支持合唱形式拆分处理 (如 "aMEI & Jay Chou" -> "张惠妹 & 周杰伦")
- * 3. 繁体中文自动规范为简体 (日语平假名/片假名保持原貌)
+ * 判定艺人名（含合唱拆分后的任一成员）是否命中华语艺人别名表
  */
-function normalizeArtistName(rawArtist) {
+function isChineseArtistAlias(rawArtist) {
+  if (!rawArtist || typeof rawArtist !== 'string') return false;
+  const trimmed = rawArtist.trim();
+  if (CHINESE_ARTIST_ALIASES[trimmed.toLowerCase()]) return true;
+  const parts = trimmed.split(/\s*(?:,|&|\/|feat\.|ft\.)\s*/i);
+  return parts.some((p) => Boolean(CHINESE_ARTIST_ALIASES[p.trim().toLowerCase()]));
+}
+
+/**
+ * 判定流派名称是否属于华语音乐范畴
+ */
+function isChineseGenre(genre) {
+  if (!genre) return false;
+  const text = Array.isArray(genre) ? genre.join(' ') : String(genre);
+  return /国语|粤语|华语|中国|台湾|香港|台语|mandopop|cantopop|c-pop|chinese|taiwan|hong\s*kong|hokkien/i.test(text);
+}
+
+/**
+ * 规范化艺人名称：
+ * 1. 英文模式 (isEn=true) 下原样保留，不做任何华语别名映射与繁简转换
+ * 2. 中文模式下优先查阅港台英文艺名/官方别名映射表 (如 aMEI -> 张惠妹, Eason Chan -> 陈奕迅)
+ * 3. 支持合唱形式拆分处理 (如 "aMEI & Jay Chou" -> "张惠妹 & 周杰伦")
+ * 4. 繁体中文自动规范为简体 (日语平假名/片假名保持原貌)
+ */
+function normalizeArtistName(rawArtist, isEn = false) {
   if (!rawArtist || typeof rawArtist !== 'string') return rawArtist;
   const trimmed = rawArtist.trim();
+  if (isEn) return trimmed;
   const lower = trimmed.toLowerCase();
 
   // 1. 直接命中别名映射
@@ -1777,16 +1846,19 @@ async function processTransfer(body) {
     finalizeBatch = false,
     noUpload = false,
     outputDir,
-    failedTracks
+    failedTracks,
+    lang = 'zh'
   } = body;
+  const isEn = String(lang || 'zh').toLowerCase().startsWith('en');
 
   // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
   if (finalizeBatch && batchId) {
     const sessionDir = `/tmp/am_sessions/${batchId}`;
     if (!fs.existsSync(sessionDir)) {
-      throw new Error(`批处理会话不存在或已过期: ${batchId}`);
+      throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
     }
-    const finalZipName = sanitizeFilename(toSimplifiedChinese(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip')));
+    const rawZipName = zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip');
+    const finalZipName = sanitizeFilename(isEn ? rawZipName : toSimplifiedChinese(rawZipName));
     const zipFilePath = `/tmp/${batchId}.zip`;
     // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
     const errorLogName = writeBatchErrorLog(sessionDir, failedTracks, meta.album || meta.title || finalZipName);
@@ -1993,7 +2065,9 @@ async function processTransfer(body) {
               // 与「杜比无版本回退 ALAC」保持一致，避免用户以为拿到的是无损
               const wantsLossless = !/aac/i.test(quality || '');
               if (wantsLossless) {
-                qualityFallback = '该曲目仅提供 AAC 256k 单文件源（无无损/Hi-Res 版本），已回退为 AAC (webplayback)';
+                qualityFallback = isEn
+                  ? 'This track only has an AAC 256kbps single-file source (no Lossless/Hi-Res variant), fell back to AAC (webplayback)'
+                  : '该曲目仅提供 AAC 256k 单文件源（无无损/Hi-Res 版本），已回退为 AAC (webplayback)';
               }
               console.log(`[Cloud-Transfer] master 为 M4P 单文件，回退 webplayback CENC HLS 拉流+解密: ${adamId}（请求音质 ${quality}）`);
             }
@@ -2006,14 +2080,16 @@ async function processTransfer(body) {
         // `failed to get m3u8` 在 ui.rs 会被改写成中文提示，故一并匹配中文关键词
         const rawMsg = parseErr.msg || '';
         if (rawMsg === 'failed to get m3u8' || rawMsg.includes('无资源') || rawMsg.includes('无版权') || rawMsg.includes('无资源或未上架') || parseRes.status === 404 || parseRes.status === 500) {
-          throw new Error('此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
+          throw new Error(isEn
+            ? 'This track is unavailable in the resolving account region (Turkey storefront; may be a JP/US regional exclusive)'
+            : '此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
         }
-        throw new Error(`解析歌曲失败: ${rawMsg || 'HTTP ' + parseRes.status}`);
+        throw new Error(isEn ? `Failed to parse track: ${rawMsg || 'HTTP ' + parseRes.status}` : `解析歌曲失败: ${rawMsg || 'HTTP ' + parseRes.status}`);
       }
     } else {
       const parseData = await parseRes.json();
       const variants = parseData.variants || [];
-      if (!variants.length) throw new Error('未找到可用的音频流（该地区可能无播放版权）');
+      if (!variants.length) throw new Error(isEn ? 'No playable audio streams found (regional copyright restriction)' : '未找到可用的音频流（该地区可能无播放版权）');
 
       const base = (parseData.masterUrl || '').replace(/[^\/]+$/, '');
 
@@ -2027,7 +2103,9 @@ async function processTransfer(body) {
                    variants.find(v => v.codecs === 'alac');
         // 该曲目无杜比版本时回退 ALAC：记下来，避免专辑批量时静默降级
         if (selected && !(selected.codecs && selected.codecs.includes('ec-3')) && !(selected.group_id && selected.group_id.includes('atmos'))) {
-          qualityFallback = '该曲目无杜比全景声版本，已回退为无损 ALAC';
+          qualityFallback = isEn
+            ? 'No Dolby Atmos variant for this track, fell back to Lossless ALAC'
+            : '该曲目无杜比全景声版本，已回退为无损 ALAC';
         }
       } else if (qLower.includes('aac')) {
         selected = variants.find(v => (v.codecs && v.codecs.includes('mp4a')) || (v.group_id && v.group_id.includes('256'))) || variants[0];
@@ -2200,115 +2278,152 @@ async function processTransfer(body) {
   const tFetch = performance.now();
   console.log(`[Cloud-Transfer] 资源获取完成 (${((tFetch - t0) / 1000).toFixed(2)}s, 音频大小: ${(rawAudioBuf.length / (1024 * 1024)).toFixed(1)}MB)`);
 
-  // 智能日区元数据嗅探：若为日语曲目且标题或艺人为罗马音，自动向日区 /amp/v1/catalog/jp/songs/${adamId}?l=ja 抓取正统日文名
-  const isLikelyJapanese = (meta.genre && /j-pop|anime|japanese|アニメ/i.test(meta.genre)) ||
-    Boolean(meta.isJapanese) ||
-    /[\u3040-\u309F\u30A0-\u30FF]/.test((meta.title || '') + (meta.artist || '') + (meta.album || ''));
-
-  if (adamId && isLikelyJapanese && (!meta.title || !/[\u3040-\u309F\u30A0-\u30FF]/.test(meta.title))) {
-    try {
-      const jpRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/jp/songs/${adamId}?l=ja`, { signal: AbortSignal.timeout(3000) });
-      if (jpRes.ok) {
-        const jData = await jpRes.json();
-        const jAttr = jData.data?.[0]?.attributes;
-        if (jAttr) {
-          if (jAttr.name) meta.title = jAttr.name;
-          if (jAttr.artistName) meta.artist = jAttr.artistName;
-          if (jAttr.albumName) meta.album = jAttr.albumName;
-          console.log(`[Cloud-Transfer] 成功从日区同步日文原名: ${meta.artist} - ${meta.title}`);
-        }
-      }
-    } catch {}
-  }
-
-  // 智能华语元数据嗅探：若歌曲标题或艺人名缺少中文，自动跨区优先向 (cn -> tw -> hk -> us) 同步正统中文名
-  //
-  // ⚠️ 合唱场景必须按「单个艺人」判断，不能看整体：
-  //    例 "Anthony Wong & 容祖儿" —— 整体含中文（容祖儿），旧逻辑据此跳过同步，
-  //    导致英文艺名 "Anthony Wong" 永远得不到中文名「黄耀明」。
+  // ==================== 元数据按用户语言精准分流 (en: 英文标签 / zh: 华语转简中、外语保原名) ====================
   const splitArtists = (s) => String(s || '').split(/(\s*(?:,|&|\/|feat\.|ft\.)\s*)/i).filter((x) => x && !/^[\s,&/]*$/.test(x));
-  const artistSegments = splitArtists(meta.artist);
   const hasChinese = (t) => /[\u4e00-\u9fa5]/.test(t || '');
   const hasLatin = (t) => /[a-z]/i.test(t || '');
-  const hasChineseInTitle = hasChinese(meta.title);
-  const hasChineseInArtist = hasChinese(meta.artist);
-  // 存在「纯英文的艺人片段」时才需要跨区补中文名
-  const artistNeedsChinese = artistSegments.some((p) => hasLatin(p) && !hasChinese(p));
-  if (adamId && (!hasChineseInTitle || !hasChineseInArtist || artistNeedsChinese) && !isLikelyJapanese) {
-    for (const sf of ['cn', 'tw', 'hk', 'us']) {
+  const catalogLangFor = (sf, wantEn) => {
+    const c = String(sf || 'us').toLowerCase();
+    if (wantEn) return (c === 'us' || c === 'jp') ? 'en-US' : 'en-GB';
+    if (c === 'hk') return 'zh-Hant-HK';
+    if (c === 'tw') return 'zh-Hant-TW';
+    if (c === 'cn' || c === 'us') return 'zh-Hans-CN';
+    return 'en-GB';
+  };
+
+  if (isEn) {
+    // 外国用户 (lang=en)：音乐标签一律使用英文 / 原曲罗马化名称，绝不转中文！
+    // 若传入的 meta 因源链接来自 cn/hk/tw 而带有汉字，主动按各区支持的英文语言码 (en-US / en-GB) 替换为官方英文标签。
+    if (adamId && (hasChinese(meta.title) || hasChinese(meta.artist) || hasChinese(meta.album) || hasChinese(meta.genre))) {
+      for (const sf of ['us', 'gb', 'hk', 'tw', 'cn', 'tr']) {
+        try {
+          const enLang = catalogLangFor(sf, true);
+          const enRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${adamId}?l=${enLang}`, { signal: AbortSignal.timeout(3000) });
+          if (enRes.ok) {
+            const enData = await enRes.json();
+            const enAttr = enData.data?.[0]?.attributes;
+            if (enAttr) {
+              if (enAttr.name) meta.title = enAttr.name;
+              if (enAttr.artistName) meta.artist = enAttr.artistName;
+              if (enAttr.albumName) meta.album = enAttr.albumName;
+              if (enAttr.albumArtistName || enAttr.artistName) meta.albumArtist = enAttr.albumArtistName || enAttr.artistName;
+              if (enAttr.composerName) meta.composer = enAttr.composerName;
+              if (enAttr.genreNames?.length) meta.genre = enAttr.genreNames[0];
+              console.log(`[Cloud-Transfer] [EN] Synced English metadata from ${sf.toUpperCase()} (${enLang}): ${meta.artist} - ${meta.title}`);
+              if (!hasChinese(meta.title) && !hasChinese(meta.artist)) break;
+            }
+          }
+        } catch {}
+      }
+    }
+  } else {
+    // 中文用户 (lang=zh)：
+    // 1) 日语曲目：向日区抓取正统日文名
+    const isLikelyJapanese = (meta.genre && /j-pop|anime|japanese|アニメ/i.test(meta.genre)) ||
+      Boolean(meta.isJapanese) ||
+      /[\u3040-\u309F\u30A0-\u30FF]/.test((meta.title || '') + (meta.artist || '') + (meta.album || ''));
+
+    if (adamId && isLikelyJapanese && (!meta.title || !/[\u3040-\u309F\u30A0-\u30FF]/.test(meta.title))) {
       try {
-        const sfRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${adamId}?l=zh-Hans-CN`, { signal: AbortSignal.timeout(3000) });
-        if (sfRes.ok) {
-          const sData = await sfRes.json();
-          const sAttr = sData.data?.[0]?.attributes;
-          if (sAttr) {
-            let updated = false;
-            if (!hasChineseInTitle && sAttr.name && hasChinese(sAttr.name)) {
-              meta.title = toSimplifiedChinese(sAttr.name);
-              updated = true;
-            }
-            // 艺人名：按片段逐个替换，只补纯英文的片段，中文片段原样保留
-            if (artistNeedsChinese && sAttr.artistName && hasChinese(sAttr.artistName)) {
-              const remoteSegs = splitArtists(sAttr.artistName);
-              const srcSegs = splitArtists(meta.artist);
-              // 中文段落数一致时才做逐段对齐，避免结构不同导致错位
-              if (remoteSegs.length === srcSegs.length) {
-                const merged = srcSegs.map((seg, i) => {
-                  if (hasLatin(seg) && !hasChinese(seg)) {
-                    const cand = remoteSegs[i];
-                    return cand && hasChinese(cand) ? cand : seg;
-                  }
-                  return seg;
-                });
-                const mergedName = normalizeArtistName(merged.join(' & '));
-                if (mergedName !== meta.artist) {
-                  meta.artist = mergedName;
-                  updated = true;
-                }
-              } else {
-                // 结构不一致：仅当整个远端艺人名都含中文且本地完全无中文时才整体采用
-                if (!hasChinese(meta.artist)) {
-                  meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
-                  updated = true;
-                }
-              }
-            }
-            if (sAttr.albumName && (!meta.album || !hasChinese(meta.album))) {
-              meta.album = toSimplifiedChinese(sAttr.albumName);
-              updated = true;
-            }
-            if (updated) {
-              console.log(`[Cloud-Transfer] 成功从 ${sf.toUpperCase()} 华语区同步正统中文元数据: ${meta.artist} - ${meta.title}`);
-              if (hasChinese(meta.title) && hasChinese(meta.artist)) {
-                break;
-              }
-            }
+        const jpRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/jp/songs/${adamId}?l=ja`, { signal: AbortSignal.timeout(3000) });
+        if (jpRes.ok) {
+          const jData = await jpRes.json();
+          const jAttr = jData.data?.[0]?.attributes;
+          if (jAttr) {
+            if (jAttr.name) meta.title = jAttr.name;
+            if (jAttr.artistName) meta.artist = jAttr.artistName;
+            if (jAttr.albumName) meta.album = jAttr.albumName;
+            console.log(`[Cloud-Transfer] 成功从日区同步日文原名: ${meta.artist} - ${meta.title}`);
           }
         }
       } catch {}
     }
-  }
 
-  // 华语艺人英文名与官方别名规范化 + 繁简转换 (智能保护日文与英文曲名)
-  if (meta.artist) meta.artist = normalizeArtistName(meta.artist);
-  if (meta.albumArtist) meta.albumArtist = normalizeArtistName(meta.albumArtist || meta.artist);
-  if (meta.composer) meta.composer = normalizeArtistName(meta.composer);
-  if (meta.title) meta.title = toSimplifiedChinese(meta.title);
-  if (meta.album) meta.album = toSimplifiedChinese(meta.album);
-  if (meta.genre) meta.genre = toSimplifiedChinese(meta.genre);
-  if (meta.copyright) meta.copyright = toSimplifiedChinese(meta.copyright);
-  if (lyricsData.hasLyrics) {
-    // ⚠️ 注音模式下 lrc 是「原文 / 罗马音 / 译文」逐行交错，罗马音行不含假名，
-    //    逐行过 toSimplifiedChinese 会把罗马音行拆成单字，且与原文行的假名判定不一致，
-    //    导致上下行最终被转换成不同的字形体系。此时整体跳过简繁转换（日文歌本来也不需要）。
-    const hasRuby = shouldRuby && lyricsData.rubyApplied;
-    // ⚠️ 双语繁简对照（原文繁体 + 译文简体）时同样必须跳过：整体转简体会把原文行也转成简体，
-    //    结果变成「简体 + 简体」两行重复，繁简对照彻底消失。
-    const isZhPair = shouldTranslateLyrics && lyricsData.lines?.some((l) => l.translation);
-    if (!hasRuby && !isZhPair) {
-      if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
-      if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
-      if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
+    // 2) 智能华语元数据嗅探：仅对【确属华语曲目/华语歌手】同步简体中文名，
+    //    欧美/古典/印度等外国歌手保持英文原名（杜绝把 Igor Levit 变成「伊戈尔・列维特」、Varun Grover 变成「维伦·格罗弗」）。
+    const artistSegments = splitArtists(meta.artist);
+    const hasChineseInTitle = hasChinese(meta.title);
+    const hasChineseInArtist = hasChinese(meta.artist);
+    const knownChinese = hasChineseInTitle || hasChineseInArtist || hasChinese(meta.album) ||
+      isChineseArtistAlias(meta.artist) || isChineseArtistAlias(meta.albumArtist) || isChineseGenre(meta.genre);
+    const artistNeedsChinese = artistSegments.some((p) => hasLatin(p) && !hasChinese(p));
+
+    if (adamId && (!hasChineseInTitle || !hasChineseInArtist || artistNeedsChinese) && !isLikelyJapanese) {
+      for (const sf of ['cn', 'us', 'hk', 'tw']) {
+        try {
+          const zhLang = catalogLangFor(sf, false);
+          const sfRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${adamId}?l=${zhLang}`, { signal: AbortSignal.timeout(3000) });
+          if (sfRes.ok) {
+            const sData = await sfRes.json();
+            const sAttr = sData.data?.[0]?.attributes;
+            if (sAttr) {
+              // 关键守门：若原先无任何华语特征，必须核验 Apple 返回的 audioLocale 或 genreNames 是否确属华语；
+              // 若是欧美/古典/宝莱坞等非华语曲目，立即终止华语嗅探，保留英文原名！
+              const localeIsZh = /^(zh|cmn|yue|hak|nan)/i.test(sAttr.audioLocale || '');
+              const attrIsChinese = knownChinese || localeIsZh || isChineseGenre(sAttr.genreNames) || isChineseArtistAlias(sAttr.artistName);
+              if (!attrIsChinese) {
+                break;
+              }
+
+              let updated = false;
+              if (!hasChineseInTitle && sAttr.name && hasChinese(sAttr.name)) {
+                meta.title = toSimplifiedChinese(sAttr.name);
+                updated = true;
+              }
+              // 艺人名：按片段逐个替换，只补纯英文的片段，中文片段原样保留
+              if (artistNeedsChinese && sAttr.artistName && hasChinese(sAttr.artistName)) {
+                const remoteSegs = splitArtists(sAttr.artistName);
+                const srcSegs = splitArtists(meta.artist);
+                if (remoteSegs.length === srcSegs.length) {
+                  const merged = srcSegs.map((seg, i) => {
+                    if (hasLatin(seg) && !hasChinese(seg)) {
+                      const cand = remoteSegs[i];
+                      return cand && hasChinese(cand) ? cand : seg;
+                    }
+                    return seg;
+                  });
+                  const mergedName = normalizeArtistName(merged.join(' & '));
+                  if (mergedName !== meta.artist) {
+                    meta.artist = mergedName;
+                    updated = true;
+                  }
+                } else if (!hasChinese(meta.artist)) {
+                  meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
+                  updated = true;
+                }
+              }
+              if (sAttr.albumName && (!meta.album || !hasChinese(meta.album))) {
+                meta.album = toSimplifiedChinese(sAttr.albumName);
+                updated = true;
+              }
+              if (updated) {
+                console.log(`[Cloud-Transfer] 成功从 ${sf.toUpperCase()} 华语区同步正统中文元数据: ${meta.artist} - ${meta.title}`);
+                if (hasChinese(meta.title) && hasChinese(meta.artist)) {
+                  break;
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 3) 华语艺人别名规范化 + 繁简转换（仅中文模式下执行）
+    if (meta.artist) meta.artist = normalizeArtistName(meta.artist);
+    if (meta.albumArtist) meta.albumArtist = normalizeArtistName(meta.albumArtist || meta.artist);
+    if (meta.composer) meta.composer = normalizeArtistName(meta.composer);
+    if (meta.title) meta.title = toSimplifiedChinese(meta.title);
+    if (meta.album) meta.album = toSimplifiedChinese(meta.album);
+    if (meta.genre) meta.genre = toSimplifiedChinese(meta.genre);
+    if (meta.copyright) meta.copyright = toSimplifiedChinese(meta.copyright);
+    if (lyricsData.hasLyrics) {
+      const hasRuby = shouldRuby && lyricsData.rubyApplied;
+      const isZhPair = shouldTranslateLyrics && lyricsData.lines?.some((l) => l.translation);
+      if (!hasRuby && !isZhPair) {
+        if (lyricsData.lrc) lyricsData.lrc = toSimplifiedChinese(lyricsData.lrc);
+        if (lyricsData.plain) lyricsData.plain = toSimplifiedChinese(lyricsData.plain);
+        if (lyricsData.ttml) lyricsData.ttml = toSimplifiedChinese(lyricsData.ttml);
+      }
     }
   }
 
@@ -2917,7 +3032,7 @@ function getWebQuota(clientIp) {
  * 开跑前一次性预留整单额度（原子操作）。额度不足直接返回 ok=false，调用方必须在此中止、
  * 绝不触发任何下载，避免跑一半才发现不够、白烧带宽和用户时间。
  */
-function reserveWebQuota(clientIp, tracks) {
+function reserveWebQuota(clientIp, tracks, isEn = false) {
   const count = Math.max(0, Math.floor(Number(tracks) || 0));
   const rec = getDailyRecord(clientIp);
   const remaining = Math.max(0, WEB_DAILY_TRACK_QUOTA - rec.dailyCount);
@@ -2928,7 +3043,9 @@ function reserveWebQuota(clientIp, tracks) {
       used: rec.dailyCount,
       max: WEB_DAILY_TRACK_QUOTA,
       remaining,
-      error: `⚠️ 今日转存配额不足：本单共 ${count} 首，今日仅剩 ${remaining} 首 (每日上限 ${WEB_DAILY_TRACK_QUOTA} 首，已用 ${rec.dailyCount} 首)。已取消下载，未消耗任何额度。配额将在明日北京时间 00:00 重置。`
+      error: isEn
+        ? `⚠️ Daily transfer quota insufficient: this request needs ${count} tracks, only ${remaining} left today (daily limit ${WEB_DAILY_TRACK_QUOTA}, used ${rec.dailyCount}). Download cancelled without consuming quota. Resets at 00:00 UTC+8.`
+        : `⚠️ 今日转存配额不足：本单共 ${count} 首，今日仅剩 ${remaining} 首 (每日上限 ${WEB_DAILY_TRACK_QUOTA} 首，已用 ${rec.dailyCount} 首)。已取消下载，未消耗任何额度。配额将在明日北京时间 00:00 重置。`
     };
   }
   rec.dailyCount += count;
@@ -2943,7 +3060,7 @@ function refundWebQuota(clientIp, tracks) {
   rec.dailyCount = Math.max(0, rec.dailyCount - refund);
 }
 
-function checkWebRateLimit(clientIp, adminKeyHeader) {
+function checkWebRateLimit(clientIp, adminKeyHeader, isEn = false) {
   // 1. 特权（站长 IP / 管理员 Key）-> 100% 豁免放行
   if (isPrivilegedClient(clientIp, adminKeyHeader)) {
     return { ok: true, isOwner: true };
@@ -2954,7 +3071,12 @@ function checkWebRateLimit(clientIp, adminKeyHeader) {
   // 否则整单并发入队会被逐首计费、也无法在下载前准确拦截。
   const rec = getDailyRecord(clientIp);
   if (rec.count >= 60) {
-    return { ok: false, error: '⚠️ 请求提交过快，已触发服务器安全保护。请稍候 1 分钟后再试 (429 Too Many Requests)' };
+    return {
+      ok: false,
+      error: isEn
+        ? '⚠️ Too many requests. Please wait 1 minute and try again (429 Too Many Requests)'
+        : '⚠️ 请求提交过快，已触发服务器安全保护。请稍候 1 分钟后再试 (429 Too Many Requests)'
+    };
   }
   rec.count++;
   return { ok: true };
@@ -3031,11 +3153,13 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => chunks.push(chunk));
     req.on('end', () => {
       let tracks = 1;
+      let isEn = false;
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
         tracks = Math.max(1, parseInt(body.tracks, 10) || 1);
+        isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
       } catch {}
-      const reserved = reserveWebQuota(clientIp, tracks);
+      const reserved = reserveWebQuota(clientIp, tracks, isEn);
       if (!reserved.ok) {
         res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: reserved.error }));
@@ -3053,7 +3177,8 @@ const server = http.createServer(async (req, res) => {
       clientIp = clientIp.slice(7);
     }
     const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
-    const rateCheck = checkWebRateLimit(clientIp, adminKey);
+    const reqIsEn = String(u.searchParams.get('lang') || req.headers['accept-language'] || '').toLowerCase().startsWith('en');
+    const rateCheck = checkWebRateLimit(clientIp, adminKey, reqIsEn);
     if (!rateCheck.ok) {
       console.warn(`[WebRateLimit] ⚠️ 拦截请求来源 IP: ${clientIp}, 原因: ${rateCheck.error}`);
       res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3073,9 +3198,10 @@ const server = http.createServer(async (req, res) => {
         body = JSON.parse(raw);
       } catch (jsonErr) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', error: `请求体 JSON 格式不合法: ${jsonErr.message}` }));
+        res.end(JSON.stringify({ status: 'error', error: `Invalid JSON body: ${jsonErr.message}` }));
         return;
       }
+      const isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
 
       // ---------- 整单额度：开跑前一次性预留，不足则直接拒绝，不触发任何下载 ----------
       // 网页批量 ZIP 模式是一次「整单请求」+ N 次逐首请求 + 1 次 finalize，逐首扣费既不准也会
@@ -3089,7 +3215,9 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({
             status: 'error',
-            error: '🔒 歌手全辑批量转存为站长专属功能。您仍可单独转存该歌手的单张专辑、歌单或单曲。'
+            error: isEn
+              ? '🔒 Artist discography batch transfer is admin-only. You can still transfer individual albums, playlists, or single tracks.'
+              : '🔒 歌手全辑批量转存为站长专属功能。您仍可单独转存该歌手的单张专辑、歌单或单曲。'
           }));
           return;
         }
@@ -3100,7 +3228,7 @@ const server = http.createServer(async (req, res) => {
           if (!webBatchQuotaLedger.has(batchKey) && !privileged) {
             const tracks = Math.max(0, parseInt(body.quotaTracks, 10) || 0);
             if (tracks > 0) {
-              const r = reserveWebQuota(clientIp, tracks);
+              const r = reserveWebQuota(clientIp, tracks, isEn);
               if (!r.ok) {
                 res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
                 res.end(JSON.stringify({ status: 'error', error: r.error }));
@@ -3112,7 +3240,7 @@ const server = http.createServer(async (req, res) => {
         } else if (!privileged && !batchKey) {
           // 非批量路径（单曲直转）：按本请求曲目数预留
           const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
-          const r = reserveWebQuota(clientIp, tracks);
+          const r = reserveWebQuota(clientIp, tracks, isEn);
           if (!r.ok) {
             console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
             res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3125,7 +3253,7 @@ const server = http.createServer(async (req, res) => {
           // 若台账不存在（首请求失败/服务重启），退化为按单首计费，杜绝整单免费跑。
           if (!webBatchQuotaLedger.has(batchKey)) {
             const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
-            const r = reserveWebQuota(clientIp, tracks);
+            const r = reserveWebQuota(clientIp, tracks, isEn);
             if (!r.ok) {
               console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
               res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3194,7 +3322,9 @@ const server = http.createServer(async (req, res) => {
         const wrapperStuck = /terminated|internal error|Fairplay|KDCanProcessCKC|-42786/i.test(rawMsg);
         console.error(wrapperStuck ? '[Cloud-Transfer] 错误(wrapper卡死):' : '[Cloud-Transfer] 错误:', rawMsg);
         const userErr = wrapperStuck
-          ? `解密鉴权服务(wrapper)临时卡死，已自动重启。请稍候重试本次下载。（原始: ${rawMsg.slice(0, 80)}）`
+          ? (isEn
+              ? `Decryption service (wrapper) temporarily stalled and was automatically restarted. Please retry in a moment. (${rawMsg.slice(0, 80)})`
+              : `解密鉴权服务(wrapper)临时卡死，已自动重启。请稍候重试本次下载。（原始: ${rawMsg.slice(0, 80)}）`)
           : rawMsg;
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: userErr }));
