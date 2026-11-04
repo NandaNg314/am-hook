@@ -1,11 +1,35 @@
 {
-  "latestVersion": "2.6",
+  "latestVersion": "2.7",
   "date": "2026-11-04",
   "oneLiner": {
-    "zh": "支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包开放与歌手全辑完整分页",
-    "en": "Direct song/artist search in bot, native English .m4a tags, open playlist downloads & full artist discography pagination"
+    "zh": "新增 /tags 命令：可为 .m4a 指定任意 BCP-47 标签语言（如 ar-EG、ja-JP），界面语言与文件标签语言彻底解耦",
+    "en": "New /tags command: pick any BCP-47 tag language (ar-EG, ja-JP…) for your .m4a files — UI and tag language are now fully independent"
   },
   "releases": [
+    {
+      "version": "2.7",
+      "date": "2026-11-04",
+      "title": {
+        "zh": "自定义音乐标签语言 (BCP-47)",
+        "en": "Custom Audio Tag Language (BCP-47)"
+      },
+      "items": {
+        "zh": [
+          "🏷 新增 /tags 命令：内置 19 种常用语言预设，也可直接输入任意 BCP-47 代码（如 ar-EG、ja-JP、zh-Hant-HK）",
+          "🔀 界面语言与标签语言解耦：可以「英文界面 + 日语标签」，两者互不影响",
+          "🔍 智能语言探测：自动跨地区寻找真正匹配目标语言的官方名称，避免 Apple Music 静默回退造成的语言错乱",
+          "©️ 显式语言下完全保留原名：不转简体、不做华语艺名映射、不做跨区嗅探，你要什么语言就给什么语言",
+          "📋 指令菜单补全：/ 菜单现可正常提示 /tags、/changelog 等全部命令"
+        ],
+        "en": [
+          "🏷 New /tags command: 19 built-in language presets, plus any custom BCP-47 code (ar-EG, ja-JP, zh-Hant-HK…)",
+          "🔀 UI and tag language decoupled: run an English interface while tagging files in Japanese",
+          "🔍 Smart language probing: tries multiple storefronts to find the genuinely matching localized names, avoiding Apple Music's silent fallbacks",
+          "©️ Explicit language keeps names verbatim: no simplification, no artist-alias mapping, no cross-region sniffing",
+          "📋 Slash commands complete: /tags and /changelog now show up in the / menu"
+        ]
+      }
+    },
     {
       "version": "2.6",
       "date": "2026-11-04",
@@ -16,19 +40,17 @@
       "items": {
         "zh": [
           "🏷️ 智能中英音乐标签：英文模式（English）下导出的 .m4a 内嵌标签与文件名全英文；中文模式下仅对华语曲目转简体中文，欧美/古典歌手保持英文原名",
-          "🏷 自定义标签语言 (BCP-47)：TG 机器人新增 /tags 命令，可直接设定 ar-EG、ja-JP、zh-Hant-HK 等任意语言标签，界面语言与文件标签语言解耦",
           "🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌",
           "💿 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，自动拉取歌手名下全部录音室专辑、Live 与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
           "🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）",
-          "📱 手机与电脑双端优化：修复手机端专辑/歌单按钮横向溢出，移除冗余口令框，新增双语历史更新日志"
+          "📱 手机与电脑双端优化：修复手机端专辑/歌单按钮横向溢出，移除冗余口令框，首页下载偏好设置正式接通并新增双语历史更新日志"
         ],
         "en": [
           "🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English",
-          "🏷 Custom Tag Language (BCP-47): New /tags command in the TG bot lets you pick tags like ar-EG, ja-JP or zh-Hant-HK — UI language and file tag language are now independent",
           "🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link",
           "💿 Full Artist Discography Pagination: Loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
           "🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)",
-          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and bilingual release history"
+          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, home download preferences now actually wired up, and a bilingual release history"
         ]
       }
     },
