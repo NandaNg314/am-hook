@@ -676,33 +676,66 @@ body.detail-themed.joe-light :is(.page, .navigation) {
 @media (min-width: 1000px) {
   .detail-header .album-notes { align-self: end; min-height: 54px; margin: 0 0 15px; }
 }
-/* 播放（白底黑字 / 黑底白字胶囊，36px，触屏 48px）居中，随机播放（圆形）在其左侧 */
+/* 播放（白底黑字 / 黑底白字胶囊，36px，触屏 48px）与扩展批量按钮自适应布局（手机折行居中，电脑单行左对齐） */
 .detail-actions {
-  grid-area: actions; width: 100%; margin-top: 14px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px;
+  grid-area: actions; width: 100%; margin-top: 14px;
+  display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px;
 }
+.detail-actions > #shuffle { order: 1; }
+.detail-actions > #play-all { order: 2; }
+.detail-actions > .detail-extra { order: 3; display: inline-flex; gap: 10px; }
+.detail-actions > .btn-cloud-batch { order: 4; }
+.detail-actions > .btn-batch-dl { order: 5; }
 .detail-play-btn {
-  grid-column: 2; grid-row: 1; height: 36px; min-width: 130px; padding: 0 12px;
+  height: 36px; min-width: 120px; padding: 0 16px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  border: 0; border-radius: 24px; background: var(--text); color: var(--bg); font-size: 15px; line-height: 1.3333; font-weight: 600;
-  transition: transform .15s ease;
+  border: 0; border-radius: 24px; background: var(--text); color: var(--bg); font-size: 14px; line-height: 1.3333; font-weight: 600;
+  transition: transform .15s ease, opacity .15s ease;
 }
 .detail-play-btn svg { width: 15px; height: 15px; }
 .detail-circle-btn {
-  grid-column: 1; grid-row: 1; justify-self: end; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; border-radius: 50%;
+  width: 36px; height: 36px; padding: 0; display: grid; place-items: center; border-radius: 50%;
   border: .75px solid color-mix(in srgb, var(--text) 10%, transparent); background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text);
-  transition: transform .15s ease;
+  transition: transform .15s ease, background .15s ease;
 }
 .detail-circle-btn svg { width: 15px; height: 15px; }
-.detail-play-btn:disabled, .detail-circle-btn:disabled { opacity: .4; cursor: default; }
-.detail-play-btn:hover:not(:disabled), .detail-circle-btn:hover:not(:disabled) { transform: scale(1.03); }
+.btn-cloud-batch, .btn-batch-dl {
+  height: 36px !important; padding: 0 14px !important; border-radius: 24px !important;
+  display: inline-flex !important; align-items: center; justify-content: center; gap: 6px;
+  font-size: 13px !important; font-weight: 600 !important;
+  transition: transform .15s ease, background .15s ease, border-color .15s ease !important;
+}
+.btn-cloud-batch {
+  background: var(--accent-soft) !important; color: var(--accent) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent) !important;
+}
+.btn-cloud-batch:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+}
+.btn-batch-dl {
+  background: color-mix(in srgb, var(--text) 8%, transparent) !important; color: var(--text) !important;
+  border: .75px solid color-mix(in srgb, var(--text) 12%, transparent) !important;
+}
+.btn-batch-dl:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 14%, transparent) !important;
+}
+.detail-play-btn:disabled, .detail-circle-btn:disabled, .btn-cloud-batch:disabled, .btn-batch-dl:disabled { opacity: .4; cursor: default; }
+.detail-play-btn:hover:not(:disabled), .detail-circle-btn:hover:not(:disabled), .btn-cloud-batch:hover:not(:disabled), .btn-batch-dl:hover:not(:disabled) { transform: scale(1.02); }
+.detail-play-btn:active:not(:disabled), .detail-circle-btn:active:not(:disabled), .btn-cloud-batch:active:not(:disabled), .btn-batch-dl:active:not(:disabled) { transform: scale(.97); }
 @media (pointer: coarse) {
-  .detail-play-btn { height: 48px; min-width: 160px; font-size: 17px; }
-  .detail-play-btn svg { width: 17px; height: 17px; }
-  .detail-circle-btn { width: 48px; height: 48px; }
-  .detail-circle-btn svg { width: 18px; height: 18px; }
+  .detail-play-btn { height: 42px; min-width: 128px; font-size: 15px; }
+  .detail-play-btn svg { width: 16px; height: 16px; }
+  .detail-circle-btn { width: 42px; height: 42px; }
+  .detail-circle-btn svg { width: 17px; height: 17px; }
+  .btn-cloud-batch, .btn-batch-dl { height: 40px !important; padding: 0 14px !important; font-size: 13px !important; }
 }
 @media (min-width: 1000px) {
-  .detail-actions { align-self: end; margin-top: 0; display: flex; gap: 10px; }
+  .detail-actions { align-self: end; margin-top: 0; justify-content: flex-start; gap: 10px; }
+  .detail-actions > #play-all { order: 1; }
+  .detail-actions > #shuffle { order: 2; }
+  .detail-actions > .btn-cloud-batch { order: 3; }
+  .detail-actions > .btn-batch-dl { order: 4; }
+  .detail-actions > .detail-extra { order: 5; }
 }
 
 .tracklist { margin-top: 0; }
@@ -2017,23 +2050,109 @@ body.lyrics-open { overflow: hidden; }
   .nav-folder-toggle svg { width: 14px; height: 14px; }
 }
 
-/* 批量选项弹窗 & Gofile 结果弹窗基础样式与高对比度适配 */
-.am-modal, .gofile-dialog {
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--text);
+/* 批量选项弹窗 & Gofile 结果弹窗 & 更新日志弹窗基础样式与深浅色自适应 */
+.am-modal, .gofile-dialog, .batch-modal {
+  border: 1px solid var(--line) !important;
+  border-radius: 16px !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  box-shadow: var(--shadow) !important;
+  max-height: 86dvh;
+  overflow-y: auto;
 }
-.am-modal::backdrop, .gofile-dialog::backdrop {
+.am-modal::backdrop, .gofile-dialog::backdrop, .batch-modal::backdrop {
   background: rgba(0, 0, 0, .45);
   backdrop-filter: blur(4px);
 }
-.am-modal select, .gofile-dialog select, .variants-options select {
-  background-color: var(--surface-2);
+.am-modal select, .gofile-dialog select, .batch-modal select, .variants-options select {
+  background-color: var(--surface-2) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+}
+.am-modal select option, .gofile-dialog select option, .batch-modal select option, .variants-options select option {
+  background-color: var(--surface) !important;
+  color: var(--text) !important;
+}
+
+/* 更新日志胶囊按钮与未读小红点（兼顾桌面与手机） */
+.whatsnew-pill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
   color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .12s ease;
+}
+.whatsnew-pill:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
+.whatsnew-pill:active {
+  transform: scale(.97);
+}
+.whatsnew-pill svg {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.whatsnew-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  flex-shrink: 0;
+}
+.whatsnew-dot[hidden] {
+  display: none;
+}
+.changelog-release {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
   border: 1px solid var(--line);
 }
-.am-modal select option, .gofile-dialog select option, .variants-options select option {
-  background-color: var(--surface-2);
+.changelog-release + .changelog-release {
+  margin-top: 10px;
+}
+.changelog-release-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.changelog-ver {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.changelog-date {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.changelog-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.changelog-list li {
   color: var(--text);
 }
 

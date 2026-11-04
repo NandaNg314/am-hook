@@ -1,0 +1,54 @@
+{
+  "latestVersion": "2.6",
+  "date": "2026-11-04",
+  "oneLiner": {
+    "zh": "支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包向所有用户开放",
+    "en": "Direct song/artist search in bot, native English .m4a tags, and full playlist downloads for all users"
+  },
+  "releases": [
+    {
+      "version": "2.6",
+      "date": "2026-11-04",
+      "title": {
+        "zh": "语言感知音乐标签 · TG 搜索点歌 · 歌单全面开放",
+        "en": "Language-Aware Audio Tags · TG Search · Open Playlists"
+      },
+      "items": {
+        "zh": [
+          "🏷️ 智能中英音乐标签：英文模式（English）下导出的 .m4a 内嵌标签与文件名全英文；中文模式下仅对华语曲目转简体中文，欧美/古典歌手保持英文原名",
+          "🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌",
+          "🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）",
+          "💿 TG 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，现自动拉取歌手名下全部录音室专辑、Live 专辑与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
+          "📱 手机与电脑双端优化：优化手机端专辑/歌单按钮自适应排版，移除冗余口令框，打通网页首页「下载偏好设置」全站同步"
+        ],
+        "en": [
+          "🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English",
+          "🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link",
+          "🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)",
+          "💿 Full Artist Discography Pagination in TG Bot: Now loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
+          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and 100% English UI"
+        ]
+      }
+    },
+    {
+      "version": "2.5",
+      "date": "2026-10-29",
+      "title": {
+        "zh": "超大容量自动分卷 · 断线结果找回 · 零丢歌保障",
+        "en": "Auto-Split >4GB Archives · Disconnect Recovery · Zero-Loss Batch"
+      },
+      "items": {
+        "zh": [
+          "📦 Gofile 4GB 自动分卷：超过 3.8GB 的大型歌单/全辑自动切卷并归集至同一分享文件夹，彻底解决大包上传断连",
+          "🛡️ 断线自动找回链接：大歌单后台打包期间即使手机锁屏或网络切换，前端也会自动轮询取回成品下载链接",
+          "🔒 同名防覆盖与错误清单：并发下载同名曲目自动编号绝不漏歌；若含无版权跳过曲目，包内自动附带 _INTERNAL_error.log.txt"
+        ],
+        "en": [
+          "📦 Auto-Split >4GB Archives: Large playlists/albums over 3.8GB automatically split into parts inside a single Gofile share folder",
+          "🛡️ Disconnect Recovery: Even if your phone sleeps or network switches during a large batch, the Gofile link is automatically recovered",
+          "🔒 Zero-Overwrite & Error Log: Duplicate track titles are safely numbered; any unavailable regional tracks are listed in _INTERNAL_error.log.txt"
+        ]
+      }
+    }
+  ]
+}

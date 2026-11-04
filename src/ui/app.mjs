@@ -539,6 +539,7 @@ async function render(url, { scroll = 0, initial = false } = {}) {
   const root = Object.assign(document.createElement('div'), { className: 'app-page', innerHTML: html });
   viewRoot.replaceChildren(root);
   AmI18n.apply(root);
+  syncChangelogUI();
   settings.close(false);
   settings.renderValues();
   player.layout();
@@ -652,6 +653,120 @@ document.addEventListener('click', (event) => {
   if (history.state && history.state.amBack) history.back();
   else navigate('/');
 });
+
+/* ---------- 双语更新日志 (What's New / 更新说明)：胶囊按钮 + 未读小红点 + 自适应弹窗 ---------- */
+const SEEN_CHANGELOG_KEY = 'am_seen_changelog_ver';
+let changelogData = {
+  latestVersion: '2.6',
+  date: '2026-11-04',
+  releases: [
+    {
+      version: '2.6',
+      date: '2026-11-04',
+      title: {
+        zh: '语言感知音乐标签 · TG 搜索点歌 · 歌单全面开放',
+        en: 'Language-Aware Audio Tags · TG Search · Open Playlists',
+      },
+      items: {
+        zh: [
+          '🏷️ 智能中英音乐标签：英文模式（English）下导出的 .m4a 内嵌标签与文件名全英文；中文模式下仅对华语曲目转简体中文，欧美/古典歌手保持英文原名',
+          '🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌',
+          '🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）',
+          '📱 手机与电脑双端优化：优化手机端专辑/歌单按钮自适应排版，打通网页首页「下载偏好设置」全站同步',
+        ],
+        en: [
+          '🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English',
+          '🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link',
+          '🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)',
+          '📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and 100% English UI',
+        ],
+      },
+    },
+  ],
+};
+
+function syncChangelogUI() {
+  const isEn = AmI18n.lang === 'en';
+  const ver = changelogData.latestVersion || '2.6';
+  let seenVer = '';
+  try { seenVer = localStorage.getItem(SEEN_CHANGELOG_KEY) || ''; } catch {}
+  const isUnread = seenVer !== ver;
+
+  document.querySelectorAll('[data-changelog-nav-caption]').forEach((el) => {
+    el.textContent = isEn ? "What's New" : '更新日志';
+  });
+  document.querySelectorAll('[data-changelog-ver]').forEach((el) => {
+    el.textContent = `v${ver}`;
+  });
+  document.querySelectorAll('[data-changelog-pill-text]').forEach((el) => {
+    el.textContent = isEn ? `v${ver} What's New` : `v${ver} 更新说明`;
+  });
+  document.querySelectorAll('[data-changelog-dot]').forEach((el) => {
+    el.hidden = !isUnread;
+  });
+
+  const dialog = $('changelog-dialog');
+  if (dialog) {
+    const titleEl = $('changelog-dialog-title');
+    const langBtn = $('changelog-lang-btn');
+    const doneBtn = $('changelog-done-btn');
+    const closeBtn = $('changelog-close-btn');
+    const bodyEl = $('changelog-dialog-body');
+    if (titleEl) titleEl.textContent = isEn ? `What's New (v${ver})` : `更新说明 (v${ver})`;
+    if (langBtn) langBtn.textContent = isEn ? '中文' : 'English';
+    if (doneBtn) doneBtn.textContent = isEn ? 'Got it' : '知道了';
+    if (closeBtn) closeBtn.setAttribute('aria-label', isEn ? 'Close' : '关闭');
+    if (bodyEl) {
+      bodyEl.replaceChildren(...(changelogData.releases || []).map((rel) => {
+        const relTitle = (isEn ? rel.title?.en : rel.title?.zh) || '';
+        const relItems = (isEn ? rel.items?.en : rel.items?.zh) || [];
+        const card = el('div', { className: 'changelog-release' },
+          el('div', { className: 'changelog-release-head' },
+            el('span', { className: 'changelog-ver', textContent: `v${rel.version}${relTitle ? ' · ' + relTitle : ''}` }),
+            el('span', { className: 'changelog-date', textContent: rel.date || '' }),
+          ),
+          el('ul', { className: 'changelog-list' },
+            ...relItems.map((txt) => el('li', { textContent: txt })),
+          ),
+        );
+        return card;
+      }));
+    }
+  }
+}
+
+function openChangelogDialog() {
+  try { localStorage.setItem(SEEN_CHANGELOG_KEY, changelogData.latestVersion || '2.6'); } catch {}
+  syncChangelogUI();
+  setNavExpanded(false);
+  const dialog = $('changelog-dialog');
+  if (dialog && !dialog.open) dialog.showModal();
+}
+
+document.addEventListener('click', (event) => {
+  const trigger = event.target instanceof Element && event.target.closest('[data-open-changelog]');
+  if (trigger) {
+    event.preventDefault();
+    openChangelogDialog();
+  }
+});
+$('changelog-close-btn')?.addEventListener('click', () => $('changelog-dialog')?.close());
+$('changelog-done-btn')?.addEventListener('click', () => $('changelog-dialog')?.close());
+$('changelog-lang-btn')?.addEventListener('click', () => {
+  AmI18n.toggle();
+});
+AmI18n.onChange(syncChangelogUI);
+syncChangelogUI();
+
+fetch('/api/quota/changelog', { signal: AbortSignal.timeout(6000) })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((j) => {
+    if (j && j.status === 'ok' && j.data && j.data.latestVersion) {
+      changelogData = j.data;
+      syncChangelogUI();
+    }
+  })
+  .catch(() => {});
 
 entryKey();
 render(new URL(location.href), { initial: true });

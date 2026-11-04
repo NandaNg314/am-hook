@@ -478,13 +478,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
   player.onChange(syncRows);
 
-  /* ---------- 艺人全作品批量转存至 Gofile (密码保护 + 顺序防 OOM 机制) ---------- */
+  /* ---------- 艺人全作品批量转存至 Gofile (站长 IP 鉴权 + 顺序防 OOM 机制) ---------- */
   const discoBtn = $('disco-btn');
   const discoModal = $('disco-modal');
   const discoModalClose = $('disco-modal-close');
   const discoModalCancel = $('disco-modal-cancel');
   const discoModalConfirm = $('disco-modal-confirm');
-  const discoPasswordInput = $('disco-password');
   const discoCard = $('disco-card');
   const discoCancelBtn = $('disco-cancel-btn');
   const discoStatusTitle = $('disco-status-title');
@@ -496,7 +495,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   function renderCustomArtistI18n() {
     const isEn = AmI18n.lang === 'en';
     if (discoBtn) {
-      discoBtn.title = isEn ? '☁️ Transfer Full Discography to Gofile (Admin Password Protected)' : '☁️ 一键转存全作品至 Gofile (密码保护)';
+      discoBtn.title = isEn ? '☁️ Transfer Full Discography to Gofile (Admin Only)' : '☁️ 一键转存歌手全辑至 Gofile (站长专属)';
       discoBtn.setAttribute('aria-label', isEn ? 'Transfer Full Discography to Gofile' : '转存全作品至 Gofile');
     }
     if (discoCard && discoCard.hidden) {
@@ -507,11 +506,6 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (discoModal) {
       const h3 = discoModal.querySelector('h3');
       if (h3) h3.textContent = isEn ? '☁️ Transfer Full Discography to Gofile' : '☁️ 转存全作品至 Gofile (极速云端)';
-      if (discoPasswordInput) {
-        discoPasswordInput.placeholder = isEn ? 'Enter admin passphrase...' : '请输入专属口令...';
-        const lbl = discoPasswordInput.previousElementSibling;
-        if (lbl) lbl.textContent = isEn ? '🔒 Admin Passphrase (Discography Protection)' : '🔒 专属安全口令 (防误触与带宽控制)';
-      }
       const incFull = $('disco-include-full');
       if (incFull) {
         const scopeTitle = incFull.closest('div')?.previousElementSibling;
@@ -566,15 +560,24 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         if (opts[1]) opts[1].textContent = isEn ? 'Hiragana' : '平假名';
       }
       if (discoModalCancel) discoModalCancel.textContent = isEn ? 'Cancel' : '取消';
-      if (discoModalConfirm) discoModalConfirm.textContent = isEn ? 'Verify & Start' : '验证并开始';
+      if (discoModalConfirm) discoModalConfirm.textContent = isEn ? 'Start Now' : '立即开始';
     }
   }
   renderCustomArtistI18n();
 
-  discoBtn?.addEventListener('click', () => {
+  discoBtn?.addEventListener('click', async () => {
+    try {
+      const qRes = await fetch('/api/quota', { signal: AbortSignal.timeout(5000) });
+      const qJson = await qRes.json();
+      if (qJson.status === 'ok' && qJson.data && !qJson.data.unlimited) {
+        toast(AmI18n.lang === 'en'
+          ? '🔒 Artist discography batch transfer is admin-only. Please download individual albums, playlists, or tracks instead.'
+          : '🔒 歌手全辑批量转存为站长专属功能，请改为下载单张专辑、歌单或单曲');
+        return;
+      }
+    } catch {}
     if (discoModal) {
       renderCustomArtistI18n();
-      if (discoPasswordInput) discoPasswordInput.value = '';
       discoModal.showModal();
     }
   });
@@ -589,26 +592,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
   });
 
-  async function verifyPassword(pwd) {
-    if (!pwd) return false;
-    try {
-      const data = new TextEncoder().encode(pwd);
-      const hashBuf = await crypto.subtle.digest('SHA-256', data);
-      const hashHex = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
-      return hashHex === '43667160ecb19b31c474bfd7f02a6dc33afd31311d60956c8d190d7228bf6236';
-    } catch {
-      return false;
-    }
-  }
-
   discoModalConfirm?.addEventListener('click', async () => {
-    const pwd = discoPasswordInput?.value?.trim() || '';
-    const pass = await verifyPassword(pwd);
-    if (!pass) {
-      toast(AmI18n.lang === 'en' ? '❌ Invalid admin passphrase' : '❌ 专属口令错误，仅限授权使用');
-      return;
-    }
-
     discoModal?.close();
 
     const quality = $('disco-quality-select')?.value || 'Lossless';

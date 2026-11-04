@@ -3126,6 +3126,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 双语更新日志（唯一事实源 changelog.json，Web 端与 TG Bot 共用，支持热修改免重编）
+  if (req.method === 'GET' && (u.pathname === '/api/quota/changelog' || u.pathname === '/api/changelog')) {
+    try {
+      const clPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'changelog.json');
+      const raw = fs.readFileSync(clPath, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.end(JSON.stringify({ status: 'ok', data: JSON.parse(raw) }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: e.message }));
+    }
+    return;
+  }
+
   // 只读配额查询：供批量转存前置预检查，不消耗任何配额（绝不调用 checkWebRateLimit，其内部会 rec.count++）
   if (req.method === 'GET' && u.pathname === '/api/quota') {
     const clientIp = getClientIp(req);

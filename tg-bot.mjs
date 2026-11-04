@@ -261,6 +261,77 @@ class JsonDb {
 const db = new JsonDb(DB_FILE);
 
 // ==================== 国际化双语支持 (i18n) ====================
+const CHANGELOG_FILE = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'changelog.json');
+
+function loadChangelog() {
+  try {
+    return JSON.parse(fs.readFileSync(CHANGELOG_FILE, 'utf8'));
+  } catch {
+    return {
+      latestVersion: '2.6',
+      date: '2026-11-04',
+      oneLiner: {
+        zh: '支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包向所有用户开放',
+        en: 'Direct song/artist search in bot, native English .m4a tags, and full playlist downloads for all users'
+      },
+      releases: []
+    };
+  }
+}
+
+function buildChangelogCard(lang = 'zh') {
+  const isEn = lang === 'en';
+  const cl = loadChangelog();
+  const blocks = (cl.releases || []).slice(0, 3).map((rel) => {
+    const title = (isEn ? rel.title?.en : rel.title?.zh) || '';
+    const items = (isEn ? rel.items?.en : rel.items?.zh) || [];
+    const lines = items.map((it) => `• ${escapeHtml(it)}`).join('\n');
+    return `<b>v${escapeHtml(rel.version)} (${escapeHtml(rel.date)}) — ${escapeHtml(title)}</b>\n${lines}`;
+  });
+  const header = isEn
+    ? `✨ <b>What's New in Apple Music Bot & Web (v${escapeHtml(cl.latestVersion)})</b>\n\n`
+    : `✨ <b>Apple Music 助手与网页端更新日志 (v${escapeHtml(cl.latestVersion)})</b>\n\n`;
+  return {
+    text: header + blocks.join('\n\n'),
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: isEn ? '🌐 切换为中文' : '🌐 Switch to English',
+            callback_data: isEn ? 'show_changelog:zh' : 'show_changelog:en'
+          },
+          {
+            text: isEn ? '🔙 Back to Guide' : '🔙 返回使用说明',
+            callback_data: `set_lang:${isEn ? 'en' : 'zh'}`
+          }
+        ]
+      ]
+    }
+  };
+}
+
+/**
+ * 每个大版本仅在用户首次完成点歌时，在完成消息末尾顺带附一行简短的更新提示（绝不重复打扰）
+ */
+function consumeOneTimeUpdateNotice(chatId, lang = 'zh') {
+  try {
+    const cl = loadChangelog();
+    const ver = String(cl.latestVersion || '');
+    if (!ver) return '';
+    const key = `seen_ver_${chatId}`;
+    if (db.get(key) === ver) return '';
+    db.set(key, ver);
+    const isEn = lang === 'en';
+    const line = (isEn ? cl.oneLiner?.en : cl.oneLiner?.zh) || '';
+    if (!line) return '';
+    return isEn
+      ? `\n\n✨ <i>New in v${escapeHtml(ver)}: ${escapeHtml(line)} (Send /changelog for details)</i>`
+      : `\n\n✨ <i>v${escapeHtml(ver)} 更新提示：${escapeHtml(line)}（发送 /changelog 查看详情）</i>`;
+  } catch {
+    return '';
+  }
+}
+
 const inferredUserLang = new Map(); // chatId -> 'zh' | 'en'（记住客户端 language_code 推断结果，供无 from 参数的内部调用使用）
 
 function getUserLang(chatId, fromLangCode = '') {
@@ -1478,14 +1549,17 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
   // tr 优先：top-songs/full-albums 里的曲目 ID 必须与土区 wrapper 账号一致
   let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
   let artistData = null;
+  let resolvedSf = 'tr';
+  const viewNames = 'top-songs,full-albums,live-albums,singles,compilation-albums';
   for (const sf of storefronts) {
     try {
       const l = catalogLangFor(sf, isEn);
-      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/artists/${artistId}?views=top-songs,full-albums&l=${l}`, { signal: AbortSignal.timeout(6000) });
+      const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/artists/${artistId}?views=${viewNames}&l=${l}`, { signal: AbortSignal.timeout(8000) });
       if (res.ok) {
         const data = await res.json();
         if (data.data?.[0]) {
           artistData = data.data[0];
+          resolvedSf = sf;
           break;
         }
       }
@@ -1496,46 +1570,149 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
     throw new Error(isEn ? `Failed to fetch artist details (${artistId})` : `未能获取到艺人信息 (${artistId})`);
   }
 
-  const attr = artistData.attributes || {};
-  const topSongs = (artistData.views?.['top-songs']?.data || []).map(s => ({
-    id: s.id,
-    name: isEn ? (s.attributes?.name || 'Song') : toSimplifiedChinese(s.attributes?.name || 'Song'),
-    artistName: normalizeArtistName(s.attributes?.artistName || attr.name || '', isEn),
-    durationInMillis: s.attributes?.durationInMillis || 0
-  }));
+  // 分页拉取指定 view 的全部条目（解决默认只返回前 10 张专辑的问题）
+  async function fetchAllViewItems(viewObj, maxPages = 10) {
+    if (!viewObj) return [];
+    const items = [...(viewObj.data || [])];
+    let nextUrl = viewObj.next;
+    let pageCount = 0;
+    while (nextUrl && pageCount < maxPages) {
+      pageCount++;
+      try {
+        const sep = nextUrl.includes('?') ? '&' : '?';
+        const pageRes = await fetch(`${HOOK_BASE}/amp${nextUrl}${sep}limit=100`, { signal: AbortSignal.timeout(6000) });
+        if (!pageRes.ok) break;
+        const pageJson = await pageRes.json();
+        if (!pageJson.data?.length) break;
+        items.push(...pageJson.data);
+        nextUrl = pageJson.next;
+      } catch {
+        break;
+      }
+    }
+    return items;
+  }
 
-  const albums = (artistData.views?.['full-albums']?.data || []).map(al => ({
-    id: al.id,
-    name: isEn ? (al.attributes?.name || 'Album') : toSimplifiedChinese(al.attributes?.name || 'Album'),
-    releaseDate: al.attributes?.releaseDate || '',
-    trackCount: al.attributes?.trackCount || 0
-  }));
+  const attr = artistData.attributes || {};
+  const views = artistData.views || {};
+  const [rawTopSongs, fullAlbums, liveAlbums, singleAlbums, compAlbums] = await Promise.all([
+    fetchAllViewItems(views['top-songs'], 2),
+    fetchAllViewItems(views['full-albums'], 10),
+    fetchAllViewItems(views['live-albums'], 5),
+    fetchAllViewItems(views['singles'], 10),
+    fetchAllViewItems(views['compilation-albums'], 5)
+  ]);
+
+  // 中文模式下：若确属华语歌手，向 us/hk/cn 拉取全量中文专辑名与歌名映射（保留 tr 曲目/专辑 ID）
+  const zhAlbumNameMap = new Map();
+  const zhSongNameMap = new Map();
+  let zhArtistName = '';
+  const isGenuineChinese = !isEn && (
+    /[\u4e00-\u9fa5]/.test(attr.name || '') ||
+    isChineseArtistAlias(attr.name) ||
+    isChineseGenre(attr.genreNames)
+  );
+  if (isGenuineChinese) {
+    for (const zhSf of ['us', 'hk', 'cn', 'tw']) {
+      if (zhSf === resolvedSf && /[\u4e00-\u9fa5]/.test(attr.name || '')) break;
+      try {
+        const zhLang = catalogLangFor(zhSf, false);
+        const zhRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${zhSf}/artists/${artistId}?views=${viewNames}&l=${zhLang}`, { signal: AbortSignal.timeout(6000) });
+        if (!zhRes.ok) continue;
+        const zhData = (await zhRes.json()).data?.[0];
+        if (!zhData) continue;
+        if (zhData.attributes?.name && /[\u4e00-\u9fa5]/.test(zhData.attributes.name)) {
+          zhArtistName = normalizeArtistName(toSimplifiedChinese(zhData.attributes.name));
+        }
+        const zViews = zhData.views || {};
+        const zLists = await Promise.all([
+          fetchAllViewItems(zViews['full-albums'], 5),
+          fetchAllViewItems(zViews['live-albums'], 3),
+          fetchAllViewItems(zViews['singles'], 5),
+          fetchAllViewItems(zViews['compilation-albums'], 3)
+        ]);
+        for (const list of zLists) {
+          for (const al of list) {
+            if (al.id && al.attributes?.name && /[\u4e00-\u9fa5]/.test(al.attributes.name)) {
+              zhAlbumNameMap.set(String(al.id), toSimplifiedChinese(al.attributes.name));
+            }
+          }
+        }
+        for (const s of (zViews['top-songs']?.data || [])) {
+          if (s.id && s.attributes?.name && /[\u4e00-\u9fa5]/.test(s.attributes.name)) {
+            zhSongNameMap.set(String(s.id), toSimplifiedChinese(s.attributes.name));
+          }
+        }
+        if (zhAlbumNameMap.size > 0) break;
+      } catch {}
+    }
+  }
+
+  const finalArtistName = isEn
+    ? (attr.name || 'Artist')
+    : (zhArtistName || normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist')));
+
+  const topSongs = rawTopSongs.slice(0, 40).map(s => {
+    const rawName = s.attributes?.name || 'Song';
+    return {
+      id: s.id,
+      name: isEn ? rawName : (zhSongNameMap.get(String(s.id)) || toSimplifiedChinese(rawName)),
+      artistName: normalizeArtistName(s.attributes?.artistName || finalArtistName, isEn),
+      durationInMillis: s.attributes?.durationInMillis || 0
+    };
+  });
+
+  // 按「录音室专辑 -> Live 专辑 -> 单曲与 EP -> 精选辑」顺序合并去重
+  const albumMap = new Map();
+  const pushAlbums = (list, kind) => {
+    for (const al of list) {
+      if (!al || !al.id || albumMap.has(String(al.id))) continue;
+      const rawName = al.attributes?.name || 'Album';
+      albumMap.set(String(al.id), {
+        id: al.id,
+        kind, // 'full' | 'live' | 'single' | 'comp'
+        name: isEn ? rawName : (zhAlbumNameMap.get(String(al.id)) || toSimplifiedChinese(rawName)),
+        releaseDate: al.attributes?.releaseDate || '',
+        trackCount: al.attributes?.trackCount || 0
+      });
+    }
+  };
+  pushAlbums(fullAlbums, 'full');
+  pushAlbums(liveAlbums, 'live');
+  pushAlbums(singleAlbums, 'single');
+  pushAlbums(compAlbums, 'comp');
+  const albums = Array.from(albumMap.values());
+  const studioCount = albums.filter(a => a.kind === 'full').length;
 
   return {
     artistId,
-    name: isEn ? (attr.name || 'Artist') : normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist')),
+    name: finalArtistName,
     genre: (attr.genreNames && attr.genreNames[0]) || '',
     coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
     topSongs,
-    albums
+    albums,
+    studioCount
   };
 }
 
 function buildArtistCard(artistData, lang = 'zh') {
   const isEn = lang === 'en';
+  const totalReleases = artistData.albums.length;
+  const studioCount = artistData.studioCount || totalReleases;
+  const otherCount = Math.max(0, totalReleases - studioCount);
   const text = isEn ?
 `👤 <b>Artist Profile: ${escapeHtml(artistData.name)}</b>
 🎸 <b>Genre:</b> ${artistData.genre || 'Various'}
 🔥 <b>Top Songs:</b> ${artistData.topSongs.length} tracks available
-💿 <b>Studio Albums:</b> ${artistData.albums.length} releases
+💿 <b>All Releases:</b> ${totalReleases} total (${studioCount} Studio Albums${otherCount ? ` + ${otherCount} Live/Singles/EPs` : ''})
 
-Please choose to browse top songs or albums below:` :
+Please choose to browse top songs or full discography below:` :
 `👤 <b>艺人主页：${escapeHtml(artistData.name)}</b>
 🎸 <b>流派风格：</b>${artistData.genre || '综合'}
 🔥 <b>热门曲目：</b>共 ${artistData.topSongs.length} 首收录
-💿 <b>发行专辑：</b>共 ${artistData.albums.length} 张录音室专辑
+💿 <b>全部作品：</b>共 ${totalReleases} 张（含 ${studioCount} 张录音室专辑${otherCount ? ` + ${otherCount} 张 Live/单曲/EP` : ''}）
 
-请在下方选择浏览热门曲目或专辑：`;
+请在下方选择浏览热门曲目或全部专辑：`;
 
   const inlineKeyboard = [];
   if (artistData.topSongs.length > 0) {
@@ -1549,7 +1726,7 @@ Please choose to browse top songs or albums below:` :
   if (artistData.albums.length > 0) {
     inlineKeyboard.push([
       {
-        text: isEn ? `💿 Browse Albums (${artistData.albums.length}) ⬇️` : `💿 浏览发行专辑 (${artistData.albums.length}张) ⬇️`,
+        text: isEn ? `💿 Browse All Releases (${artistData.albums.length}) ⬇️` : `💿 浏览全部专辑与作品 (${artistData.albums.length}张) ⬇️`,
         callback_data: `art_albums:${artistData.artistId}`
       }
     ]);
@@ -1612,44 +1789,79 @@ async function showArtistSongs(chatId, artistData, lang = 'zh', messageId = null
   }
 }
 
-// 艺人专辑列表 (勾选模式：⬜/✅ 勾选专辑、点专辑名进专辑卡；管理员可一键批量下载勾选的专辑)
-async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = null, isOwner = false) {
+// 记录用户在每个艺人专辑列表当前所处的页码: key=`${chatId}:${artistId}` -> pageIndex
+const artistPageMap = new Map();
+
+// 艺人专辑列表 (完整分页 + 分类勾选模式：⬜/✅ 勾选专辑、支持一键全选或仅选录音室专辑、支持翻页)
+async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = null, isOwner = false, page = null) {
   const isEn = lang === 'en';
   const albums = artistData.albums || [];
+  const studioAlbums = albums.filter(a => a.kind === 'full' || !a.kind);
   const selection = getSelection(chatId, 'art', artistData.artistId);
+  const pageKey = `${chatId}:${artistData.artistId}`;
+  const PAGE_SIZE = 20;
+  const totalPages = Math.max(1, Math.ceil(albums.length / PAGE_SIZE));
+  let curPage = page !== null && page !== undefined ? Number(page) : (artistPageMap.get(pageKey) || 0);
+  if (Number.isNaN(curPage) || curPage < 0) curPage = 0;
+  if (curPage >= totalPages) curPage = totalPages - 1;
+  artistPageMap.set(pageKey, curPage);
+
   const inlineKeyboard = [];
 
-  // 顶部：全选 / 全不选
-  inlineKeyboard.push([
+  // 顶部快捷勾选栏：全选所有 / 仅选录音室专辑 / 取消全部
+  const topRow = [
     {
-      text: isEn ? '✅ Select All Albums' : '✅ 勾选全部专辑',
+      text: isEn ? `✅ All (${albums.length})` : `✅ 全选 (${albums.length}张)`,
       callback_data: `atsel_art_all:${artistData.artistId}`
-    },
-    {
-      text: isEn ? '⬜ Unselect All' : '⬜ 取消全部',
-      callback_data: `atsel_art_none:${artistData.artistId}`
     }
-  ]);
+  ];
+  if (studioAlbums.length > 0 && studioAlbums.length < albums.length) {
+    topRow.push({
+      text: isEn ? `💿 Studio (${studioAlbums.length})` : `💿 仅录音室 (${studioAlbums.length}张)`,
+      callback_data: `atsel_art_studio:${artistData.artistId}`
+    });
+  }
+  topRow.push({
+    text: isEn ? '⬜ None' : '⬜ 取消全部',
+    callback_data: `atsel_art_none:${artistData.artistId}`
+  });
+  inlineKeyboard.push(topRow);
 
-  // 专辑行: [勾选] + [💿 专辑名 -> 专辑卡]
-  // Telegram inline_keyboard 上限 100 个按钮：头部 2 + 底部 3 = 5，专辑行每行 2 按钮 → 最多 47 行
-  const maxAlbumRows = 47;
-  const visibleAlbums = albums.slice(0, maxAlbumRows);
+  // 当前页专辑列表 (每页 20 张，完全避开 Telegram 100 按钮上限)
+  const startIdx = curPage * PAGE_SIZE;
+  const visibleAlbums = albums.slice(startIdx, startIdx + PAGE_SIZE);
+  const kindIcon = (k) => (k === 'live' ? '🎤' : k === 'single' ? '🎵' : k === 'comp' ? '📚' : '💿');
   for (let i = 0; i < visibleAlbums.length; i++) {
     const al = visibleAlbums[i];
     const year = al.releaseDate ? ` (${al.releaseDate.slice(0, 4)})` : '';
     const checked = selection.has(String(al.id));
-    const title = `💿 ${al.name}${year}`;
+    const title = `${kindIcon(al.kind)} ${al.name}${year}`;
     inlineKeyboard.push([
       { text: checked ? '✅' : '⬜', callback_data: `atsel_art_toggle:${artistData.artistId}:${al.id}` },
       { text: title.length > 36 ? title.slice(0, 34) + '..' : title, callback_data: `art_album:${al.id}:${artistData.artistId}` }
     ]);
   }
-  if (albums.length > visibleAlbums.length) {
-    inlineKeyboard.push([{
-      text: isEn ? `… and ${albums.length - visibleAlbums.length} more albums` : `… 及另外 ${albums.length - visibleAlbums.length} 张专辑`,
+
+  // 分页导航栏（当总页数 > 1 时展示）
+  if (totalPages > 1) {
+    const navRow = [];
+    if (curPage > 0) {
+      navRow.push({
+        text: isEn ? '⬅️ Prev' : '⬅️ 上一页',
+        callback_data: `atsel_art_page:${artistData.artistId}:${curPage - 1}`
+      });
+    }
+    navRow.push({
+      text: `📄 ${curPage + 1} / ${totalPages}`,
       callback_data: 'atsel_art_more'
-    }]);
+    });
+    if (curPage + 1 < totalPages) {
+      navRow.push({
+        text: isEn ? '➡️ Next' : '➡️ 下一页',
+        callback_data: `atsel_art_page:${artistData.artistId}:${curPage + 1}`
+      });
+    }
+    inlineKeyboard.push(navRow);
   }
 
   // 底部：管理员一键批量下载所选专辑 (已缓存的秒传跳过) / 普通用户锁定提示
@@ -1657,7 +1869,7 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
     inlineKeyboard.push([
       {
         text: selection.size > 0
-          ? (isEn ? `🚀 Batch Download Selected Albums (${selection.size})` : `🚀 一键下载勾选的专辑 (${selection.size} 张)`)
+          ? (isEn ? `🚀 Batch Download Selected (${selection.size})` : `🚀 一键下载已勾选专辑 (${selection.size} 张)`)
           : (isEn ? '🚀 Batch Download Selected Albums' : '🚀 一键下载勾选的专辑'),
         callback_data: `atsel_art_dl:${artistData.artistId}`
       }
@@ -1679,8 +1891,8 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
   ]);
 
   const text = isEn
-    ? `💿 <b>Albums by ${escapeHtml(artistData.name)}:</b>\nTotal ${albums.length} releases. Tick albums then tap [Batch Download] (admin only, cached albums will be skipped & sent instantly); tap an album name to open it:`
-    : `💿 <b>${escapeHtml(artistData.name)} 专辑列表：</b>\n共 ${albums.length} 张专辑。勾选专辑后可一键批量下载（站长专属，已缓存专辑自动秒传跳过）；点击专辑名进入专辑下载与选歌：`;
+    ? `💿 <b>All Releases by ${escapeHtml(artistData.name)} (Page ${curPage + 1}/${totalPages}):</b>\nTotal <code>${albums.length}</code> releases (💿 Studio: ${studioAlbums.length} | 🎤 Live / 🎵 Singles & EPs: ${albums.length - studioAlbums.length}).\nSelected: <code>${selection.size}</code>. Tick releases across pages then tap [Batch Download], or tap a title to open it:`
+    : `💿 <b>${escapeHtml(artistData.name)} 全部专辑与作品 (第 ${curPage + 1}/${totalPages} 页)：</b>\n共 <code>${albums.length}</code> 张（💿 录音室专辑 ${studioAlbums.length} 张 | 🎤 Live / 🎵 单曲与 EP ${albums.length - studioAlbums.length} 张）。\n当前已勾选：<code>${selection.size}</code> 张。支持跨页勾选后一键批量下载（已归档专辑自动秒传跳过）；点击专辑名可单独进入：`;
 
   if (messageId) {
     await tgCall('editMessageText', {
@@ -1688,14 +1900,14 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
       message_id: messageId,
       text,
       parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: inlineKeyboard.slice(0, 52) }
+      reply_markup: { inline_keyboard: inlineKeyboard }
     });
   } else {
     await tgCall('sendMessage', {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: inlineKeyboard.slice(0, 52) }
+      reply_markup: { inline_keyboard: inlineKeyboard }
     });
   }
 }
@@ -2354,10 +2566,11 @@ ${artistTag} ${titleTag} ${albumTag}`);
     }
 
     if (copySuccess) {
+      const updateTip = consumeOneTimeUpdateNotice(chatId, userLang);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: isEn ? `🎉 <b>Delivered!</b> File sent directly to your chat.` : `🎉 <b>秒传推送完成！</b> 已将文件直接发送给您。`,
+        text: (isEn ? `🎉 <b>Delivered!</b> File sent directly to your chat.` : `🎉 <b>秒传推送完成！</b> 已将文件直接发送给您。`) + updateTip,
         parse_mode: 'HTML'
       });
       return;
@@ -2605,13 +2818,14 @@ ${artistTag} ${titleTag} ${albumTag}`);
 
         // 单曲额度已在开跑前预留 1 首，成功即消耗（失败路径在 catch 中退回）
         settleQuotaReservation(chatId, 1);
+        const updateTip = consumeOneTimeUpdateNotice(chatId, userLang);
 
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
-          text: isEn
+          text: (isEn
             ? `🎉 <b>Transfer complete!</b>\nDirectly delivered via official Local Bot API.${statsText}`
-            : `🎉 <b>转存完成！</b>\n已通过官方 Local Bot API 专线为您直发。${statsText}`,
+            : `🎉 <b>转存完成！</b>\n已通过官方 Local Bot API 专线为您直发。${statsText}`) + updateTip,
           parse_mode: 'HTML'
         });
 
@@ -3364,10 +3578,11 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
     }
 
     if (albumCopySuccess) {
+      const updateTip = consumeOneTimeUpdateNotice(chatId, userLang);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: isEn ? `🎉 <b>Instant ${typeLabel.toLowerCase()} delivery complete!</b>` : `🎉 <b>全辑秒传推送完成！</b>`,
+        text: (isEn ? `🎉 <b>Instant ${typeLabel.toLowerCase()} delivery complete!</b>` : `🎉 <b>全辑秒传推送完成！</b>`) + updateTip,
         parse_mode: 'HTML'
       });
       return;
@@ -3413,6 +3628,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
             : `\n\n⚠️ <b>注明：</b>有 ${res.skippedTracks.length} 首歌曲未能收录：\n${res.skippedTracks.map(s => `• ${escapeHtml(s.track?.name || s.track || '未知曲目')}— ${escapeHtml((s.error || '不可用').split('\n')[0])}`).join('\n')}`
         ) : '';
 
+        const updateTip = consumeOneTimeUpdateNotice(chatId, userLang);
         await tgCall('editMessageText', {
           chat_id: chatId,
           message_id: messageId,
@@ -3422,7 +3638,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
               : `🎉 <b>全辑转存完成！</b>\n整张${typeLabel}已作为完整合辑消息推送给您。${skipNote}${statsText}`)
             : (isEn
               ? `🎉 <b>Full ${typeLabel.toLowerCase()} transfer complete!</b>\nAll tracks archived and pushed to your private chat as clean playlist bubbles (Total elapsed: <code>${res.totalDurationSec}s</code>).${skipNote}`
-              : `🎉 <b>全辑转存完成！</b>\n整张${typeLabel}已作为统一播放列表合辑同步存入频道并推送到您的私聊 (总耗时: <code>${res.totalDurationSec}s</code>)。${skipNote}`)),
+              : `🎉 <b>全辑转存完成！</b>\n整张${typeLabel}已作为统一播放列表合辑同步存入频道并推送到您的私聊 (总耗时: <code>${res.totalDurationSec}s</code>)。${skipNote}`)) + updateTip,
           parse_mode: 'HTML'
         });
       } catch (err) {
@@ -4155,6 +4371,7 @@ async function handleUpdate(update) {
         return;
       }
 
+      const clVer = loadChangelog().latestVersion || '2.6';
       await tgCall('sendMessage', {
         chat_id: chatId,
         text: t.welcome,
@@ -4162,10 +4379,31 @@ async function handleUpdate(update) {
         reply_markup: {
           inline_keyboard: [
             [
-              { text: userLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文', callback_data: userLang === 'zh' ? 'set_lang:en' : 'set_lang:zh' }
+              {
+                text: userLang === 'zh' ? `✨ 最新更新 (v${clVer})` : `✨ What's New (v${clVer})`,
+                callback_data: `show_changelog:${userLang}`
+              },
+              {
+                text: userLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文',
+                callback_data: userLang === 'zh' ? 'set_lang:en' : 'set_lang:zh'
+              }
             ]
           ]
         }
+      });
+      return;
+    }
+
+    if (text === '/changelog' || text === '/whatsnew' || text === '/updates') {
+      const userLang = getUserLang(chatId, msg.from?.language_code);
+      const cl = loadChangelog();
+      if (cl.latestVersion) db.set(`seen_ver_${chatId}`, String(cl.latestVersion));
+      const card = buildChangelogCard(userLang);
+      await tgCall('sendMessage', {
+        chat_id: chatId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
       });
       return;
     }
@@ -4968,6 +5206,23 @@ ${quotaText}
     const messageId = cb.message?.message_id;
     const sessionKey = `${chatId}_${messageId}`;
 
+    // 处理更新日志查看回调
+    if (data.startsWith('show_changelog')) {
+      const targetLang = data.split(':')[1] || getUserLang(chatId, cb.from?.language_code);
+      const cl = loadChangelog();
+      if (cl.latestVersion) db.set(`seen_ver_${chatId}`, String(cl.latestVersion));
+      await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      const card = buildChangelogCard(targetLang);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
+      });
+      return;
+    }
+
     // 处理中英双语切换按钮回调
     if (data.startsWith('set_lang:')) {
       const selectedLang = data.split(':')[1];
@@ -4977,6 +5232,7 @@ ${quotaText}
         text: selectedLang === 'en' ? 'Language switched to English! 🇬🇧' : '已切换为简体中文！🇨🇳'
       });
       const t = I18N[selectedLang] || I18N.zh;
+      const clVer = loadChangelog().latestVersion || '2.6';
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -4985,7 +5241,14 @@ ${quotaText}
         reply_markup: {
           inline_keyboard: [
             [
-              { text: selectedLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文', callback_data: selectedLang === 'zh' ? 'set_lang:en' : 'set_lang:zh' }
+              {
+                text: selectedLang === 'zh' ? `✨ 最新更新 (v${clVer})` : `✨ What's New (v${clVer})`,
+                callback_data: `show_changelog:${selectedLang}`
+              },
+              {
+                text: selectedLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文',
+                callback_data: selectedLang === 'zh' ? 'set_lang:en' : 'set_lang:zh'
+              }
             ]
           ]
         }
@@ -5088,16 +5351,22 @@ ${quotaText}
       try {
         const artistData = await getArtistData(artistId, 'hk', userLang);
         const selection = getSelection(chatId, 'art', artistId);
-        if (data.startsWith('atsel_art_toggle:')) {
+        let targetPage = null;
+        if (data.startsWith('atsel_art_page:')) {
+          targetPage = parseInt(parts[2], 10) || 0;
+        } else if (data.startsWith('atsel_art_toggle:')) {
           const albumId = parts[2];
           if (selection.has(String(albumId))) selection.delete(String(albumId));
           else selection.add(String(albumId));
         } else if (data.startsWith('atsel_art_all:')) {
           artistData.albums.forEach(al => selection.add(String(al.id)));
+        } else if (data.startsWith('atsel_art_studio:')) {
+          selection.clear();
+          artistData.albums.filter(al => al.kind === 'full' || !al.kind).forEach(al => selection.add(String(al.id)));
         } else if (data.startsWith('atsel_art_none:')) {
           selection.clear();
         }
-        await showArtistAlbums(chatId, artistData, userLang, messageId, isOwner);
+        await showArtistAlbums(chatId, artistData, userLang, messageId, isOwner, targetPage);
       } catch (err) {
         await tgCall('editMessageText', {
           chat_id: chatId,
@@ -5654,6 +5923,7 @@ async function startBot() {
       await tgCall('setMyCommands', {
         commands: [
           { command: 'start', description: 'Start Bot & Language Guide / 启动与语言切换' },
+          { command: 'changelog', description: "What's New / 最新更新日志" },
           { command: 'help', description: 'Usage & Tips / 使用帮助与格式说明' },
           { command: 'stats', description: 'Bandwidth & Quotas / 带宽流量与配额' },
           { command: 'lang', description: 'Switch Language / 切换中英语言' }
