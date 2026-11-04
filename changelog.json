@@ -16,6 +16,7 @@
       "items": {
         "zh": [
           "🏷️ 智能中英音乐标签：英文模式（English）下导出的 .m4a 内嵌标签与文件名全英文；中文模式下仅对华语曲目转简体中文，欧美/古典歌手保持英文原名",
+          "🏷 自定义标签语言 (BCP-47)：TG 机器人新增 /tags 命令，可直接设定 ar-EG、ja-JP、zh-Hant-HK 等任意语言标签，界面语言与文件标签语言解耦",
           "🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌",
           "💿 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，自动拉取歌手名下全部录音室专辑、Live 与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
           "🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）",
@@ -23,6 +24,7 @@
         ],
         "en": [
           "🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English",
+          "🏷 Custom Tag Language (BCP-47): New /tags command in the TG bot lets you pick tags like ar-EG, ja-JP or zh-Hant-HK — UI language and file tag language are now independent",
           "🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link",
           "💿 Full Artist Discography Pagination: Loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
           "🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)",

@@ -369,6 +369,94 @@ function getUserLang(chatId, fromLangCode = '') {
   return 'zh';
 }
 
+/* ==================== 音乐标签语言 (BCP-47) ====================
+ * 与「界面语言」解耦：界面只有中英，但 .m4a 内嵌标签 + 文件名可以按用户指定的任意
+ * BCP-47 标签（en-US / ja-JP / ar-EG / zh-Hant-HK …）向 Apple Music 请求官方本地化名称。
+ *
+ * ⚠️ 实测结论（2026-11-04，用周杰伦 1721449919 验证）：
+ *   Apple Music 对「地区不支持的语言」不会报错，而是静默回退到该区默认语言。
+ *   同一首歌 us 区 l=ar-EG 返回繁体（回退默认），l=en-US 返回英文，l=zh-Hans-CN 返回简体。
+ *   因此必须按地区挨个试，从返回结果里挑**真正匹配目标语言**的那一份，不能只发一次。
+ */
+
+/** 常用标签快捷选择（按语言分组，实际可输入任意 BCP-47） */
+const TAG_LANG_PRESETS = [
+  { tag: 'auto', zh: '🌐 自动（跟随界面语言）', en: '🌐 Auto (follow UI language)' },
+  { tag: 'en-US', zh: '🇺🇸 English (US)', en: '🇺🇸 English (US)' },
+  { tag: 'en-GB', zh: '🇬🇧 English (UK)', en: '🇬🇧 English (UK)' },
+  { tag: 'zh-Hans-CN', zh: '🇨🇳 简体中文', en: '🇨🇳 Chinese (Simplified)' },
+  { tag: 'zh-Hant-TW', zh: '🇹🇼 繁體中文（台灣）', en: '🇹🇼 Chinese (Traditional, TW)' },
+  { tag: 'zh-Hant-HK', zh: '🇭🇰 繁體中文（香港）', en: '🇭🇰 Chinese (Traditional, HK)' },
+  { tag: 'ja', zh: '🇯🇵 日本語', en: '🇯🇵 Japanese' },
+  { tag: 'ko', zh: '🇰🇷 한국어', en: '🇰🇷 Korean' },
+  { tag: 'es-MX', zh: '🇲🇽 Español', en: '🇲🇽 Spanish' },
+  { tag: 'fr-FR', zh: '🇫🇷 Français', en: '🇫🇷 French' },
+  { tag: 'de-DE', zh: '🇩🇪 Deutsch', en: '🇩🇪 German' },
+  { tag: 'pt-BR', zh: '🇧🇷 Português', en: '🇧🇷 Portuguese' },
+  { tag: 'ru', zh: '🇷🇺 Русский', en: '🇷🇺 Russian' },
+  { tag: 'ar-EG', zh: '🇪🇬 العربية', en: '🇪🇬 Arabic' },
+  { tag: 'hi', zh: '🇮🇳 हिन्दी', en: '🇮🇳 Hindi' },
+  { tag: 'vi', zh: '🇻🇳 Tiếng Việt', en: '🇻🇳 Vietnamese' },
+  { tag: 'th', zh: '🇹🇭 ไทย', en: '🇹🇭 Thai' },
+  { tag: 'tr', zh: '🇹🇷 Türkçe', en: '🇹🇷 Turkish' },
+  { tag: 'id', zh: '🇮🇩 Bahasa Indonesia', en: '🇮🇩 Indonesian' },
+];
+
+/** BCP-47 语法校验（够用即可：primary(-subtag)*，仅 ASCII 字母数字） */
+function isValidBcp47(tag) {
+  return /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/.test(String(tag || ''));
+}
+
+/** 取语言主标签，如 zh-Hant-HK -> zh，en-US -> en */
+function primarySubtag(tag) {
+  return String(tag || '').toLowerCase().split('-')[0];
+}
+
+/** 用户设置的标签语言；未设置（或设为 auto）时返回 'auto' */
+function getUserTagLang(chatId) {
+  const saved = db.get(`taglang_${chatId}`);
+  if (saved && typeof saved === 'string') return saved;
+  return 'auto';
+}
+
+/** 解析出实际要用的 BCP-47：auto 时跟随界面语言（保持旧行为） */
+function resolveTagLang(chatId, uiLang = null) {
+  const saved = getUserTagLang(chatId);
+  if (saved !== 'auto') return saved;
+  const lang = uiLang || getUserLang(chatId);
+  return lang === 'en' ? 'en-US' : 'zh-Hans-CN';
+}
+
+/**
+ * 多地区尝试取到「真正匹配目标语言」的属性：命中目标语言就提前返回。
+ * @returns {Promise<object|null>} 命中的 attributes；一个都没命中时返回第一个拿到的（保证有数据可用）
+ */
+async function fetchAttrsInTargetLang(pathBuilder, tagLang) {
+  const targetPrimary = primarySubtag(tagLang);
+  // 地区顺序按目标语言优化：中文优先大中华区，日文优先日区，英文优先美/英区，其余先用全球大库
+  let storefronts;
+  if (targetPrimary === 'zh') storefronts = ['cn', 'tw', 'hk', 'us', 'tr', 'jp'];
+  else if (targetPrimary === 'ja') storefronts = ['jp', 'us', 'tr', 'hk', 'tw', 'cn'];
+  else if (targetPrimary === 'ko') storefronts = ['kr', 'us', 'tr', 'hk', 'tw', 'cn'];
+  else storefronts = ['us', 'gb', 'tr', 'hk', 'tw', 'cn', 'jp'];
+
+  let firstSeen = null;
+  for (const sf of storefronts) {
+    try {
+      const res = await fetch(`${HOOK_BASE}${pathBuilder(sf, tagLang)}`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) continue;
+      const attr = (await res.json()).data?.[0]?.attributes;
+      if (!attr) continue;
+      if (!firstSeen) firstSeen = attr;
+      // 命中目标语言：audioLocale 主标签一致，或返回文本确实是该语言脚本
+      const localeHit = primarySubtag(attr.audioLocale) === targetPrimary;
+      if (localeHit) return attr;
+    } catch {}
+  }
+  return firstSeen;
+}
+
+
 const I18N = {
   zh: {
     code: 'zh',
@@ -1272,8 +1360,60 @@ function catalogLangFor(sf, isEn = false) {
   return 'en-GB';
 }
 
-async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
+/**
+ * 用户显式设定了标签语言（不是 auto）时，用它作为「首选语言」；
+ * 但需按地区做一次可用性探测：Apple Music 对不支持的语言会静默回退，
+ * 所以要先确认该地区返回的 audioLocale 主标签与目标一致，否则不采用。
+ * @returns {Promise<string|null>} 该地区可安全使用的语言标签；null 表示沿用默认策略
+ */
+async function probeCatalogLang(sf, tagLang) {
+  const target = String(tagLang || '').toLowerCase().split('-')[0];
+  if (!target) return null;
+  const fallback = catalogLangFor(sf, true);
+  const candidates = [tagLang, target === String(fallback).toLowerCase().split('-')[0] ? null : fallback].filter(Boolean);
+  for (const cand of candidates) {
+    try {
+      const res = await fetch(`${HOOK_BASE}/amp/v1/storefronts/${sf}`, { signal: AbortSignal.timeout(2500) });
+      if (res.ok) {
+        const info = (await res.json()).data?.[0]?.attributes;
+        const tags = info?.supportedLanguageTags || [];
+        if (tags.length) {
+          const hit = tags.find((t) => String(t).toLowerCase() === String(cand).toLowerCase()) ||
+            tags.find((t) => String(t).toLowerCase().split('-')[0] === String(cand).toLowerCase().split('-')[0]);
+          if (hit) return hit;
+          return tags.includes(fallback) ? fallback : tags[0];
+        }
+      }
+    } catch {}
+    return cand;
+  }
+  return null;
+}
+
+async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh', tagLang = null) {
   const isEn = lang === 'en';
+  const explicitTag = tagLang && tagLang !== 'auto' ? String(tagLang) : null;
+  const tagPrimary = explicitTag ? primarySubtag(explicitTag) : null;
+
+  let variants = [];
+  try {
+    const pRes = await fetch(`${HOOK_BASE}/parse/song/${songId}`, { signal: AbortSignal.timeout(8000) });
+    if (pRes.ok) {
+      const pData = await pRes.json();
+      variants = pData.variants || [];
+    }
+  } catch {}
+  const traits = buildTraits(variants);
+
+  // 用户显式指定了标签语言（非中文/英文两条既定策略）：按该语言跨区扫描取匹配结果
+  if (explicitTag && tagPrimary !== 'zh' && tagPrimary !== 'en') {
+    const attr = await fetchAttrsInTargetLang(
+      (sf, l) => `/amp/v1/catalog/${sf}/songs/${songId}?l=${encodeURIComponent(l)}`,
+      explicitTag
+    );
+    if (attr) return buildSongDetailsResult(songId, attr, { isEn, explicitTag, traits });
+  }
+
   let storefronts;
   if (isEn) {
     // 外国用户：优先美区/原区/英区/港区拉取官方英文元数据
@@ -1289,7 +1429,9 @@ async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
   let songAttr = null;
   for (const sf of storefronts) {
     try {
-      const l = (sf === 'jp' && !isEn) ? 'ja' : catalogLangFor(sf, true);
+      // 显式标签语言优先（经可用性探测），否则沿用中英策略
+      const probed = explicitTag ? await probeCatalogLang(sf, explicitTag) : null;
+      const l = probed || ((sf === 'jp' && !isEn) ? 'ja' : catalogLangFor(sf, true));
       const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${songId}?l=${l}`, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const data = await res.json();
@@ -1307,19 +1449,17 @@ async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
       : `未能从 Apple Music 获取到歌曲 (${songId}) 的元数据，请检查链接或版权`);
   }
 
-  let variants = [];
-  try {
-    const pRes = await fetch(`${HOOK_BASE}/parse/song/${songId}`, { signal: AbortSignal.timeout(8000) });
-    if (pRes.ok) {
-      const pData = await pRes.json();
-      variants = pData.variants || [];
+  // 显式标签语言：若当前结果不是目标语言，再跨区找一份真正匹配的
+  if (explicitTag) {
+    if (primarySubtag(songAttr.audioLocale) !== tagPrimary) {
+      const better = await fetchAttrsInTargetLang(
+        (sf, l) => `/amp/v1/catalog/${sf}/songs/${songId}?l=${encodeURIComponent(l)}`,
+        explicitTag
+      );
+      if (better && primarySubtag(better.audioLocale) === tagPrimary) songAttr = better;
     }
-  } catch {}
-
-  const hasHiRes = variants.some(v => v.codecs === 'alac' && (v.sample_rate > 48000 || v.bit_depth > 16));
-  const hasAtmos = variants.some(v => (v.codecs && v.codecs.includes('ec-3')) || (v.group_id && v.group_id.includes('atmos')));
-  const hasLossless = variants.some(v => v.codecs === 'alac') || true;
-  const hasAac = variants.some(v => v.codecs && v.codecs.includes('mp4a')) || true;
+    return buildSongDetailsResult(songId, songAttr, { isEn, explicitTag, traits });
+  }
 
   let title = isEn ? (songAttr.name || '') : toSimplifiedChinese(songAttr.name);
   let artist = normalizeArtistName(songAttr.artistName, isEn);
@@ -1425,19 +1565,75 @@ async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
     composer,
     hasLyrics: Boolean(songAttr.hasLyrics),
     coverUrl: (songAttr.artwork?.url || '').replace('{w}x{h}', '600x600'),
-    traits: {
-      lossless: hasLossless,
-      hires: hasHiRes,
-      atmos: hasAtmos,
-      aac: hasAac
-    }
+    traits
   };
 }
 
-async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh') {
+/** 从 parse/song 的 variants 推导可用的音质标记 */
+function buildTraits(variants) {
+  return {
+    lossless: variants.some(v => v.codecs === 'alac') || true,
+    hires: variants.some(v => v.codecs === 'alac' && (v.sample_rate > 48000 || v.bit_depth > 16)),
+    atmos: variants.some(v => (v.codecs && v.codecs.includes('ec-3')) || (v.group_id && v.group_id.includes('atmos'))),
+    aac: variants.some(v => v.codecs && v.codecs.includes('mp4a')) || true
+  };
+}
+
+/**
+ * 显式标签语言命中时，直接由远端 attributes 组装结果：
+ * 名字**不做**繁简转换、不做华语别名映射、不做跨区嗅探——用户要的就是这个语言的原样。
+ */
+function buildSongDetailsResult(songId, attr, { isEn, explicitTag, traits }) {
+  return {
+    songId,
+    title: attr.name || '',
+    artist: attr.artistName || '',
+    album: attr.albumName || '',
+    albumArtist: attr.albumArtistName || attr.artistName || '',
+    releaseDate: attr.releaseDate,
+    durationInMillis: attr.durationInMillis,
+    trackNumber: attr.trackNumber,
+    discNumber: attr.discNumber,
+    genre: (attr.genreNames || []).join('/'),
+    composer: attr.composerName || '',
+    hasLyrics: Boolean(attr.hasLyrics),
+    coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
+    traits,
+    tagLang: explicitTag || null
+  };
+}
+
+async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh', tagLang = null) {
   const isEn = lang === 'en';
+  const explicitTag = tagLang && tagLang !== 'auto' ? String(tagLang) : null;
   // tr 优先：专辑曲目 ID 必须与土区 wrapper 账号一致，避免跨区 adamId 不匹配
   let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
+
+  // 显式标签语言：先用本地化名称（专辑名/艺人名/曲目名），但**曲目 ID 仍取自 tr**（不改结构）
+  let locByName = new Map();
+  let locArtistName = null;
+  let locAlbumName = null;
+  if (explicitTag) {
+    const target = primarySubtag(explicitTag);
+    for (const sf of ['tr', 'us', 'hk', 'tw', 'cn', 'jp']) {
+      try {
+        const l = await probeCatalogLang(sf, explicitTag) || explicitTag;
+        const r = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/albums/${albumId}?l=${encodeURIComponent(l)}`, { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) continue;
+        const d = (await r.json()).data?.[0];
+        if (!d?.attributes) continue;
+        // 用 album 的 audioLocale 判断这份是不是真的目标语言
+        const hit = primarySubtag(d.attributes.audioLocale || '') === target;
+        if (hit) {
+          if (d.attributes.name) locAlbumName = d.attributes.name;
+          if (d.attributes.artistName) locArtistName = d.attributes.artistName;
+          const trs = d.relationships?.tracks?.data || [];
+          for (const t of trs) if (t.id && t.attributes?.name) locByName.set(String(t.id), t.attributes.name);
+          break;
+        }
+      } catch {}
+    }
+  }
 
   let albumData = null;
   for (const sf of storefronts) {
@@ -1460,6 +1656,24 @@ async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh') {
 
   const attr = albumData.attributes || {};
   let tracks = albumData.relationships?.tracks?.data || [];
+
+  // 显式标签语言：直接返回本地化名称，不做繁简转换与嗅探
+  if (explicitTag) {
+    return {
+      albumId,
+      name: locAlbumName || attr.name || '',
+      artistName: locArtistName || attr.artistName || '',
+      releaseDate: attr.releaseDate,
+      coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
+      tracks: tracks.map((t) => ({
+        id: t.id,
+        name: locByName.get(String(t.id)) || t.attributes?.name || 'Track',
+        trackNumber: t.attributes?.trackNumber,
+        artistName: t.attributes?.artistName || locArtistName || attr.artistName || ''
+      })),
+      tagLang: explicitTag
+    };
+  }
   let albumName = isEn ? (attr.name || '') : toSimplifiedChinese(attr.name);
   let artistName = normalizeArtistName(attr.artistName, isEn);
 
@@ -1528,10 +1742,34 @@ async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh') {
   };
 }
 
-async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh') {
+async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh', tagLang = null) {
   const isEn = lang === 'en';
+  const explicitTag = tagLang && tagLang !== 'auto' ? String(tagLang) : null;
   // tr 优先：wrapper-lite 是土区账号，曲目 ID 必须从土区目录解析，否则跨区 adamId 不匹配导致误判无版权
   let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
+  // 显式标签语言：歌单名/策展人/曲目名优先用本地化版本，曲目 ID 仍取自列表结构
+  let locByName = new Map();
+  let locName = null;
+  let locCurator = null;
+  if (explicitTag) {
+    const target = primarySubtag(explicitTag);
+    for (const sf of ['tr', 'us', 'hk', 'tw', 'cn', 'jp']) {
+      try {
+        const l = await probeCatalogLang(sf, explicitTag) || explicitTag;
+        const r = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/playlists/${playlistId}?l=${encodeURIComponent(l)}`, { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) continue;
+        const d = (await r.json()).data?.[0];
+        if (!d?.attributes) continue;
+        if (primarySubtag(d.attributes.audioLocale || '') !== target) continue;
+        locName = d.attributes.name || null;
+        locCurator = d.attributes.curatorName || null;
+        for (const t of (d.relationships?.tracks?.data || [])) {
+          if (t.id && t.attributes?.name) locByName.set(String(t.id), t.attributes.name);
+        }
+        break;
+      } catch {}
+    }
+  }
   let plResolved = null;
   let plSf = null;
   for (const sf of storefronts) {
@@ -1577,6 +1815,24 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh') 
     nextOffset = newOffset;
   }
 
+  if (explicitTag) {
+    return {
+      albumId: playlistId,
+      isPlaylist: true,
+      name: locName || attr.name || 'Playlist',
+      artistName: locCurator || attr.curatorName || 'Apple Music',
+      releaseDate: attr.lastModifiedDate ? attr.lastModifiedDate.slice(0, 10) : 'Recent',
+      coverUrl: (attr.artwork?.url || '').replace('{w}x{h}', '600x600'),
+      tracks: allTracks.map((t, idx) => ({
+        id: t.id,
+        name: locByName.get(String(t.id)) || t.attributes?.name || 'Track',
+        trackNumber: idx + 1,
+        artistName: t.attributes?.artistName || 'Various Artists'
+      })),
+      tagLang: explicitTag
+    };
+  }
+
   return {
     albumId: playlistId,
     isPlaylist: true,
@@ -1593,8 +1849,9 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh') 
   };
 }
 
-async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
+async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh', tagLang = null) {
   const isEn = lang === 'en';
+  const explicitTag = tagLang && tagLang !== 'auto' ? String(tagLang) : null;
   // tr 优先：top-songs/full-albums 里的曲目 ID 必须与土区 wrapper 账号一致
   let storefronts = ['tr', storefront, 'us', 'cn', 'hk', 'tw'].filter((v, i, a) => a.indexOf(v) === i);
   let artistData = null;
@@ -1602,7 +1859,7 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
   const viewNames = 'top-songs,full-albums,live-albums,singles,compilation-albums';
   for (const sf of storefronts) {
     try {
-      const l = catalogLangFor(sf, isEn);
+      const l = (explicitTag ? await probeCatalogLang(sf, explicitTag) : null) || catalogLangFor(sf, isEn);
       const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/artists/${artistId}?views=${viewNames}&l=${l}`, { signal: AbortSignal.timeout(8000) });
       if (res.ok) {
         const data = await res.json();
@@ -1697,16 +1954,23 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
     }
   }
 
-  const finalArtistName = isEn
-    ? (attr.name || 'Artist')
-    : (zhArtistName || normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist')));
+  const finalArtistName = explicitTag
+    ? (zhArtistName || attr.name || 'Artist')
+    : (isEn
+      ? (attr.name || 'Artist')
+      : (zhArtistName || normalizeArtistName(toSimplifiedChinese(attr.name || 'Artist'))));
 
   const topSongs = rawTopSongs.slice(0, 40).map(s => {
     const rawName = s.attributes?.name || 'Song';
     return {
       id: s.id,
-      name: isEn ? rawName : (zhSongNameMap.get(String(s.id)) || toSimplifiedChinese(rawName)),
-      artistName: normalizeArtistName(s.attributes?.artistName || finalArtistName, isEn),
+      name: explicitTag
+        ? (zhSongNameMap.get(String(s.id)) || rawName)
+        : (isEn ? rawName : (zhSongNameMap.get(String(s.id)) || toSimplifiedChinese(rawName))),
+      // 显式标签语言时不做华语艺名映射，保持官方原样
+      artistName: explicitTag
+        ? (s.attributes?.artistName || finalArtistName)
+        : normalizeArtistName(s.attributes?.artistName || finalArtistName, isEn),
       durationInMillis: s.attributes?.durationInMillis || 0
     };
   });
@@ -1720,7 +1984,9 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
       albumMap.set(String(al.id), {
         id: al.id,
         kind, // 'full' | 'live' | 'single' | 'comp'
-        name: isEn ? rawName : (zhAlbumNameMap.get(String(al.id)) || toSimplifiedChinese(rawName)),
+        name: explicitTag
+          ? (zhAlbumNameMap.get(String(al.id)) || rawName)
+          : (isEn ? rawName : (zhAlbumNameMap.get(String(al.id)) || toSimplifiedChinese(rawName))),
         releaseDate: al.attributes?.releaseDate || '',
         trackCount: al.attributes?.trackCount || 0
       });
@@ -1733,6 +1999,7 @@ async function fetchArtistDetails(artistId, storefront = 'hk', lang = 'zh') {
   const albums = Array.from(albumMap.values());
   const studioCount = albums.filter(a => a.kind === 'full').length;
 
+  rememberArtistName(artistId, finalArtistName);
   return {
     artistId,
     name: finalArtistName,
@@ -1961,9 +2228,54 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
   }
 }
 
+/** 标签语言设置面板的键盘与文案（命令与回调共用，避免两处维护漂移） */
+function buildTagLangPanel(chatId, uiLang, expanded = false) {
+  const isEn = uiLang === 'en';
+  const curTag = getUserTagLang(chatId);
+  const resolvedTag = resolveTagLang(chatId, uiLang);
+  const label = curTag === 'auto' ? (isEn ? `Auto → ${resolvedTag}` : `自动 → ${resolvedTag}`) : curTag;
+  const visible = expanded ? TAG_LANG_PRESETS : TAG_LANG_PRESETS.slice(0, 10);
+  const kb = [];
+  for (let i = 0; i < visible.length; i += 2) {
+    kb.push(visible.slice(i, i + 2).map((p) => ({
+      text: `${curTag === p.tag ? '✅ ' : ''}${isEn ? p.en : p.zh}`,
+      callback_data: p.tag === 'auto' ? 'taglang:auto' : `taglang:pick:${p.tag}`
+    })));
+  }
+  kb.push([
+    expanded
+      ? { text: isEn ? '▲ Show less' : '▲ 收起', callback_data: 'taglang:menu' }
+      : { text: isEn ? '▼ More languages' : '▼ 更多语言', callback_data: 'taglang:more' },
+    { text: isEn ? '⌨️ Enter custom code' : '⌨️ 手动输入代码', callback_data: 'taglang:custom' }
+  ]);
+  if (curTag !== 'auto') {
+    kb.push([{ text: isEn ? '↩️ Reset to auto' : '↩️ 恢复自动', callback_data: 'taglang:auto' }]);
+  }
+  const text = isEn
+    ? `🏷 <b>Audio Tag Language</b>\n\nYour <code>.m4a</code> title/artist/album/genre tags and filenames will be written in the language you pick here.\n\nCurrent: <code>${escapeHtml(label)}</code>\n\nPick a preset below, or just send any BCP-47 code (e.g. <code>ar-EG</code>, <code>ja-JP</code>) as a message.`
+    : `🏷 <b>音乐标签语言</b>\n\n这里决定下载的 <code>.m4a</code> 里歌名/歌手/专辑/流派标签与文件名用哪种语言。\n\n当前：<code>${escapeHtml(label)}</code>\n\n点下方预设，或直接发送任意 BCP-47 代码（如 <code>ar-EG</code>、<code>ja-JP</code>）。`;
+  return { text, reply_markup: { inline_keyboard: kb } };
+}
+
+/** 发送标签语言设置面板（/tags 命令用） */
+async function sendTagLangPanel(chatId, uiLang) {
+  const panel = buildTagLangPanel(chatId, uiLang, false);
+  await tgCall('sendMessage', {
+    chat_id: chatId,
+    text: panel.text,
+    parse_mode: 'HTML',
+    reply_markup: panel.reply_markup
+  });
+}
+
 // ==================== 会话状态管理 (含 TTL 防内存泄漏) ====================
 const userSessions = new Map();
 const artistCache = new Map(); // artistId -> { data, createdAt }
+/** artistId -> 艺人显示名（用作回调按钮文案，回调数据里只放 ID） */
+const artistNameMap = new Map();
+function rememberArtistName(artistId, name) {
+  if (artistId && name) artistNameMap.set(String(artistId), name);
+}
 // 批量勾选状态: key=`${chatId}:${kind}:${id}` (kind: 'art' 艺人专辑 | 'trk' 专辑曲目) -> { set: Set, createdAt }
 const selectionMap = new Map();
 function getSelection(chatId, kind, id) {
@@ -1976,11 +2288,11 @@ function getSelection(chatId, kind, id) {
   return entry.set;
 }
 
-async function getArtistData(artistId, storefront = 'hk', lang = 'zh') {
-  const cacheKey = `${artistId}_${lang}`;
+async function getArtistData(artistId, storefront = 'hk', lang = 'zh', tagLang = null) {
+  const cacheKey = `${artistId}_${lang}_${tagLang || 'auto'}`;
   const hit = artistCache.get(cacheKey);
   if (hit && Date.now() - hit.createdAt < 10 * 60 * 1000) return hit.data;
-  const data = await fetchArtistDetails(artistId, storefront, lang);
+  const data = await fetchArtistDetails(artistId, storefront, lang, tagLang);
   artistCache.set(cacheKey, { data, createdAt: Date.now() });
   return data;
 }
@@ -1989,7 +2301,9 @@ function cleanStaleUserSessions() {
   const now = Date.now();
   const maxAge = 60 * 60 * 1000; // 1 小时过期
   for (const [key, session] of userSessions.entries()) {
-    if (session.createdAt && (now - session.createdAt > maxAge)) {
+    // "等待用户输入标签语言"的状态 10 分钟即可失效，避免长期占位
+    const limit = session.awaitingTagLang ? 10 * 60 * 1000 : maxAge;
+    if (session.createdAt && (now - session.createdAt > limit)) {
       userSessions.delete(key);
     }
   }
@@ -2980,7 +3294,7 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
           // 2. 未缓存: 解析单曲并下载归档到频道 (不立即推私聊)
           let details;
           try {
-            details = await fetchSongDetails(track.id, 'hk', userLang);
+            details = await fetchSongDetails(track.id, 'hk', userLang, getUserTagLang(chatId));
           } catch (err) {
             console.warn(`[TG-Bot] 批量曲目 ${track.name} 元数据解析失败: ${err.message}`);
             skippedTracks.push({ track, error: err.message });
@@ -3241,7 +3555,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
 
   let artistData;
   try {
-    artistData = await getArtistData(artistId, 'hk', userLang);
+    artistData = await getArtistData(artistId, 'hk', userLang, getUserTagLang(chatId));
   } catch (err) {
     await tgCall('editMessageText', {
       chat_id: chatId,
@@ -3315,7 +3629,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
           const prefix = `📀 [${i + 1}/${toDownload.length}] ${escapeHtml(al.name)}：`;
           let albumData = null;
           try {
-            albumData = await fetchAlbumDetails(al.id, 'hk', userLang);
+            albumData = await fetchAlbumDetails(al.id, 'hk', userLang, getUserTagLang(chatId));
           } catch (err) {
             console.warn(`[TG-Bot] 批量专辑 ${al.name} 解析失败: ${err.message}`);
             failedAlbums.push({ name: al.name, error: err.message });
@@ -4401,23 +4715,80 @@ async function handleUpdate(update) {
       return;
     }
 
-    // 语言切换命令
+    /* ---------- 音乐标签语言：等待用户直接输入 BCP-47 ---------- */
+    const tagLangWait = userSessions.get(`${chatId}_taglang_wait`);
+    if (tagLangWait && tagLangWait.awaitingTagLang) {
+      // 用户中途发 /lang 之类命令则视为取消
+      if (text.startsWith('/')) {
+        userSessions.delete(`${chatId}_taglang_wait`);
+      } else {
+        const rawTag = text.trim();
+        const userLangW = getUserLang(chatId, msg.from?.language_code);
+        const isEnW = userLangW === 'en';
+        // 规范的 BCP-47（允许用户大小写随意，例如 ar-eg / JA-jp）
+        const normalized = rawTag.split('-').map((seg, i) => (i === 0 ? seg.toLowerCase() : (seg.length === 2 ? seg.toUpperCase() : seg))).join('-');
+        if (!isValidBcp47(normalized)) {
+          await tgCall('sendMessage', {
+            chat_id: chatId,
+            text: isEnW
+              ? `❌ <b>Invalid BCP-47 language code:</b> <code>${escapeHtml(rawTag)}</code>\n\nExpected something like <code>ar-EG</code>, <code>ja-JP</code>, <code>zh-Hant-HK</code>.\nTry again, or send /lang to cancel.`
+              : `❌ <b>语言代码格式不正确：</b><code>${escapeHtml(rawTag)}</code>\n\n应形如 <code>ar-EG</code>、<code>ja-JP</code>、<code>zh-Hant-HK</code>。\n请重新输入，或发送 /lang 取消。`,
+            parse_mode: 'HTML'
+          });
+          return;
+        }
+        db.set(`taglang_${chatId}`, normalized);
+        userSessions.delete(`${chatId}_taglang_wait`);
+        await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: isEnW
+            ? `✅ <b>Audio tag language set to</b> <code>${escapeHtml(normalized)}</code>\n\nFrom now on, downloaded <code>.m4a</code> tags and filenames will use Apple Music's official <b>${escapeHtml(normalized)}</b> names.\n\n<i>Note: Apple Music only has localized names for some combinations; for rare codes it may fall back to the catalog's default language.</i>\nSend /lang to change or reset.`
+            : `✅ <b>音乐标签语言已设置为</b> <code>${escapeHtml(normalized)}</code>\n\n今后下载的 <code>.m4a</code> 标签与文件名将使用 Apple Music 官方的 <b>${escapeHtml(normalized)}</b> 名称。\n\n<i>说明：Apple Music 并非所有语言组合都有本地化名称，生僻代码可能回退到曲库默认语言。</i>\n发送 /lang 可修改或恢复。`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: isEnW ? '🏷 Tag language settings' : '🏷 标签语言设置', callback_data: 'taglang:menu' }
+            ]]
+          }
+        });
+        return;
+      }
+    }
+
+    /* ---------- 语言命令 ---------- */
     if (text === '/lang' || text === '/language') {
       const userLang = getUserLang(chatId, msg.from?.language_code);
       const t = I18N[userLang] || I18N.zh;
+      const isEnL = userLang === 'en';
+      const curTag = getUserTagLang(chatId);
+      const resolvedTag = resolveTagLang(chatId, userLang);
+      const tagLine = isEnL
+        ? `\n\n🏷 <b>Audio tags:</b> <code>${escapeHtml(curTag === 'auto' ? `Auto → ${resolvedTag}` : curTag)}</code>`
+        : `\n\n🏷 <b>音乐标签语言：</b><code>${escapeHtml(curTag === 'auto' ? `自动 → ${resolvedTag}` : curTag)}</code>`;
       await tgCall('sendMessage', {
         chat_id: chatId,
-        text: t.chooseLang || '🌐 <b>请选择您的显示语言 / Please choose your display language:</b>',
+        text: (t.chooseLang || '🌐 <b>请选择您的显示语言 / Please choose your display language:</b>') + tagLine,
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
             [
               { text: '🇨🇳 简体中文', callback_data: 'set_lang:zh' },
               { text: '🇬🇧 English', callback_data: 'set_lang:en' }
+            ],
+            [
+              { text: isEnL ? '🏷 Audio Tag Language (BCP-47)' : '🏷 音乐标签语言 (BCP-47)', callback_data: 'taglang:menu' }
             ]
           ]
         }
       });
+      return;
+    }
+
+    // 独立命令：/tags /taglang /metadata —— 直接展示标签语言设置面板
+    if (text === '/tags' || text === '/taglang' || text === '/metadata') {
+      const userLang = getUserLang(chatId, msg.from?.language_code);
+      const isEnT0 = userLang === 'en';
+      await sendTagLangPanel(chatId, userLang);
       return;
     }
 
@@ -5179,7 +5550,7 @@ ${quotaText}
         parse_mode: 'HTML'
       });
       try {
-        const artistData = await getArtistData(parsed.artistId, parsed.storefront, userLang);
+        const artistData = await getArtistData(parsed.artistId, parsed.storefront, userLang, getUserTagLang(chatId));
         const card = buildArtistCard(artistData, userLang);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
           isArtist: true,
@@ -5216,8 +5587,8 @@ ${quotaText}
       });
       try {
         const albumData = isPl
-          ? await fetchPlaylistDetails(parsed.playlistId, parsed.storefront, userLang)
-          : await fetchAlbumDetails(parsed.albumId, parsed.storefront, userLang);
+          ? await fetchPlaylistDetails(parsed.playlistId, parsed.storefront, userLang, getUserTagLang(chatId))
+          : await fetchAlbumDetails(parsed.albumId, parsed.storefront, userLang, getUserTagLang(chatId));
 
         const card = buildAlbumCard(albumData, 'Lossless', true, 'zip', userLang, isOwnerUser);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
@@ -5258,7 +5629,7 @@ ${quotaText}
     });
 
     try {
-      const details = await fetchSongDetails(parsed.songId, parsed.storefront, userLang);
+      const details = await fetchSongDetails(parsed.songId, parsed.storefront, userLang, getUserTagLang(chatId));
       const card = buildSongCard(details, 'Lossless', true, false, userLang, parsed.albumId || null);
 
       userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
@@ -5344,9 +5715,99 @@ ${quotaText}
                 text: selectedLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文',
                 callback_data: selectedLang === 'zh' ? 'set_lang:en' : 'set_lang:zh'
               }
+            ],
+            [
+              {
+                text: selectedLang === 'zh' ? '🏷 设置音乐标签语言' : '🏷 Set Audio Tag Language',
+                callback_data: 'taglang:menu'
+              }
             ]
           ]
         }
+      });
+      return;
+    }
+
+    /* ==================== 音乐标签语言 (BCP-47) 回调 ====================
+     * 前缀 taglang: 全部在这里处理，不走 session：
+     *   taglang:menu          打开设置面板
+     *   taglang:pick:<tag>    选中预设标签
+     *   taglang:more          展开冷门语言
+     *   taglang:custom        提示用户手动输入
+     *   taglang:auto          恢复跟随界面语言
+     */
+    if (data.startsWith('taglang:')) {
+      const uiLang = getUserLang(chatId, cb.from?.language_code);
+      const isEnT = uiLang === 'en';
+      const action = data.split(':')[1] || 'menu';
+      const renderTagLangMenu = (expanded) => buildTagLangPanel(chatId, uiLang, expanded);
+
+      if (action === 'custom') {
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        userSessions.set(`${chatId}_taglang_wait`, {
+          awaitingTagLang: true,
+          createdAt: Date.now(),
+          messageId
+        });
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: isEnT
+            ? '⌨️ <b>Send me a BCP-47 language code</b>\n\nExamples:\n• <code>ar-EG</code> — Arabic (Egypt)\n• <code>ja-JP</code> — Japanese\n• <code>zh-Hant-HK</code> — Traditional Chinese (HK)\n• <code>es-MX</code> — Spanish (Mexico)\n\nSend /lang to cancel.'
+            : '⌨️ <b>请直接发送 BCP-47 语言代码</b>\n\n示例：\n• <code>ar-EG</code> — 阿拉伯语（埃及）\n• <code>ja-JP</code> — 日语\n• <code>zh-Hant-HK</code> — 繁体中文（香港）\n• <code>es-MX</code> — 西班牙语（墨西哥）\n\n发送 /lang 可取消。',
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: isEnT ? '🔙 Back' : '🔙 返回', callback_data: 'taglang:menu' }
+            ]]
+          }
+        });
+        return;
+      }
+
+      if (action === 'auto') {
+        db.delete(`taglang_${chatId}`);
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: isEnT ? 'Tags now follow UI language' : '标签语言已恢复跟随界面'
+        });
+      } else if (action === 'pick') {
+        const tag = data.split(':').slice(2).join(':');
+        if (!isValidBcp47(tag)) {
+          await tgCall('answerCallbackQuery', {
+            callback_query_id: cb.id,
+            text: isEnT ? 'Invalid language code' : '无效的语言代码',
+            show_alert: true
+          });
+          return;
+        }
+        db.set(`taglang_${chatId}`, tag);
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: `${isEnT ? 'Tag language' : '标签语言'}: ${tag}`
+        });
+      } else if (action === 'more') {
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        const card = renderTagLangMenu(true);
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: card.text,
+          parse_mode: 'HTML',
+          reply_markup: card.reply_markup
+        });
+        return;
+      } else {
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      }
+
+      const card = renderTagLangMenu(false);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card.text,
+        parse_mode: 'HTML',
+        reply_markup: card.reply_markup
       });
       return;
     }
@@ -5361,7 +5822,7 @@ ${quotaText}
       const artistId = data.split(':')[1];
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const artistData = await getArtistData(artistId, 'hk', userLang);
+        const artistData = await getArtistData(artistId, 'hk', userLang, getUserTagLang(chatId));
         if (data.startsWith('art_songs:')) {
           await showArtistSongs(chatId, artistData, userLang, messageId);
         } else if (data.startsWith('art_albums:')) {
@@ -5444,7 +5905,7 @@ ${quotaText}
 
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const artistData = await getArtistData(artistId, 'hk', userLang);
+        const artistData = await getArtistData(artistId, 'hk', userLang, getUserTagLang(chatId));
         const selection = getSelection(chatId, 'art', artistId);
         let targetPage = null;
         if (data.startsWith('atsel_art_page:')) {
@@ -5479,7 +5940,7 @@ ${quotaText}
       const artistId = parts[2] || null;
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       try {
-        const albumData = await fetchAlbumDetails(albumId, 'hk', userLang);
+        const albumData = await fetchAlbumDetails(albumId, 'hk', userLang, getUserTagLang(chatId));
         const card = buildAlbumCard(albumData, 'Lossless', true, 'zip', userLang, isOwner, artistId);
         userSessions.set(sessionKey, {
           isAlbum: true,
@@ -5521,7 +5982,7 @@ ${quotaText}
         parse_mode: 'HTML'
       });
       try {
-        const details = await fetchSongDetails(songId, 'hk', userLang);
+        const details = await fetchSongDetails(songId, 'hk', userLang, getUserTagLang(chatId));
         const card = buildSongCard(details, 'Lossless', true, false, userLang, backAlbumId);
         userSessions.set(`${chatId}_${loadingMsg.message_id}`, {
           isAlbum: false,
@@ -5560,8 +6021,8 @@ ${quotaText}
       if (!albumData) {
         try {
           albumData = String(albumId).startsWith('pl.')
-            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
-            : await fetchAlbumDetails(albumId, 'hk', userLang);
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang, getUserTagLang(chatId))
+            : await fetchAlbumDetails(albumId, 'hk', userLang, getUserTagLang(chatId));
         } catch {}
       }
       if (albumData) {
@@ -5584,8 +6045,8 @@ ${quotaText}
       if (!albumData) {
         try {
           albumData = String(albumId).startsWith('pl.')
-            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
-            : await fetchAlbumDetails(albumId, 'hk', userLang);
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang, getUserTagLang(chatId))
+            : await fetchAlbumDetails(albumId, 'hk', userLang, getUserTagLang(chatId));
         } catch {}
       }
 
@@ -5658,8 +6119,8 @@ ${quotaText}
       if (!albumData) {
         try {
           albumData = String(albumId).startsWith('pl.')
-            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
-            : await fetchAlbumDetails(albumId, 'hk', userLang);
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang, getUserTagLang(chatId))
+            : await fetchAlbumDetails(albumId, 'hk', userLang, getUserTagLang(chatId));
         } catch {}
       }
       if (albumData) {
@@ -6032,6 +6493,7 @@ async function startBot() {
     try {
       const userCommands = [
         { command: 'start', description: '启动与语言切换 / Start & Language' },
+        { command: 'tags', description: '音乐标签语言 BCP-47 / Audio Tag Language' },
         { command: 'changelog', description: '最新更新说明与版本历史 / What\'s New' },
         { command: 'help', description: '使用帮助与格式说明 / Usage & Tips' },
         { command: 'stats', description: '带宽流量与配额 / Bandwidth & Quota' },
@@ -6039,6 +6501,7 @@ async function startBot() {
       ];
       const ownerCommands = [
         { command: 'start', description: '启动与语言切换 / Start & Language' },
+        { command: 'tags', description: '音乐标签语言 BCP-47 / Audio Tag Language' },
         { command: 'changelog', description: '最新更新说明与版本历史 / What\'s New' },
         { command: 'help', description: '使用帮助与格式说明 / Usage & Tips' },
         { command: 'stats', description: '带宽流量与配额 / Bandwidth & Quota' },
@@ -6067,7 +6530,7 @@ async function startBot() {
           scope: { type: 'chat', chat_id: Number(OWNER_USER_ID) }
         });
       }
-      console.log('[TG-Bot] ✔ Telegram 指令菜单已同步注册 (全局 5 条 + 站长专属 10 条)');
+      console.log('[TG-Bot] ✔ Telegram 指令菜单已同步注册 (全局 6 条 + 站长专属 11 条)');
     } catch (cmdErr) {
       console.warn('[TG-Bot] 注册 Telegram 指令菜单失败:', cmdErr.message);
     }
