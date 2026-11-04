@@ -455,10 +455,23 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
   function renderCustomPlaylistI18n() {
     const isEn = AmI18n.lang === 'en';
-    const gfBtnSpan = batchGofileBtn?.querySelector('span');
-    if (gfBtnSpan) gfBtnSpan.textContent = isEn ? '☁️ Transfer Playlist to Gofile' : '☁️ 转存歌单至 Gofile';
-    const dlBtnSpan = batchDlBtn?.querySelector('span');
-    if (dlBtnSpan) dlBtnSpan.textContent = isEn ? 'Batch Download' : '批量下载';
+    if (batchGofileBtn) {
+      batchGofileBtn.title = isEn ? 'High-speed transfer full playlist to Gofile cloud drive' : '使用 VPS 2000M 极速转存歌单所有歌曲至 Gofile 临时网盘 (打包同一文件夹)';
+      const gfBtnSpan = batchGofileBtn.querySelector('span');
+      if (gfBtnSpan) gfBtnSpan.textContent = isEn ? '☁️ Transfer Playlist to Gofile' : '☁️ 转存歌单至 Gofile';
+    }
+    if (batchDlBtn) {
+      batchDlBtn.title = isEn ? 'Batch download full playlist to your device' : '批量下载歌单全部歌曲到本机';
+      const dlBtnSpan = batchDlBtn.querySelector('span');
+      if (dlBtnSpan) dlBtnSpan.textContent = isEn ? 'Batch Download' : '批量下载';
+    }
+    if (batchCard && batchCard.hidden) {
+      if (batchStatusTitle) batchStatusTitle.textContent = isEn ? '☁️ Transferring playlist to Gofile...' : '☁️ 正在转存歌单至 Gofile...';
+      if (batchStatusDetail) batchStatusDetail.textContent = isEn ? 'Preparing...' : '准备中...';
+    }
+    if (batchModalTitle && (!batchModal || !batchModal.open)) {
+      batchModalTitle.textContent = isEn ? 'Batch Transfer Settings' : '批量处理设置';
+    }
     if (batchCancelBtn) batchCancelBtn.textContent = isEn ? 'Cancel' : '取消';
     if (batchModalCancel) batchModalCancel.textContent = isEn ? 'Cancel' : '取消';
     if (batchModalConfirm) batchModalConfirm.textContent = isEn ? 'Start Now' : '立即开始';
@@ -474,6 +487,12 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (batchLyricsFormat) {
       const lyrTitle = batchLyricsFormat.previousElementSibling?.querySelector('span');
       if (lyrTitle) lyrTitle.textContent = isEn ? '📝 Embedded Lyrics Format' : '📝 外挂歌词格式';
+      const tipDiv = batchLyricsFormat.parentElement?.nextElementSibling;
+      if (tipDiv) {
+        tipDiv.textContent = isEn
+          ? '💡 Choose the embedded ©lyr tag format (TTML requires a compatible player); tick below to also save standalone .lrc/.ttml files.'
+          : '💡 内嵌格式选择 ©lyr 标签内容（TTML 仅部分播放器可解析）；下方外置歌词可单独下载 .lrc/.ttml，纯音乐或无歌词歌曲自动跳过。';
+      }
       const opts = batchLyricsFormat.options;
       if (opts[0]) opts[0].textContent = isEn ? 'LRC Synced Lyrics (Recommended)' : 'LRC 标准同步歌词 (推荐)';
       if (opts[1]) opts[1].textContent = isEn ? 'TTML Word-by-Word Lyrics' : 'TTML 原生逐字歌词';
@@ -483,9 +502,19 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     if (lrcSpan) lrcSpan.textContent = isEn ? 'External Lyrics (.lrc)' : '外置歌词 (.lrc)';
     const ttmlSpan = batchSaveTtml?.previousElementSibling;
     if (ttmlSpan) ttmlSpan.textContent = isEn ? 'External Lyrics (.ttml)' : '外置歌词 (.ttml)';
-    const transSpan = batchTranslateLyrics?.previousElementSibling;
-    if (transSpan) transSpan.textContent = isEn ? '🇨🇳 Chinese Translation (non-Chinese tracks)' : '🇨🇳 中文翻译歌词 (官方翻译，仅非中文歌)';
+    if (batchTranslateLyrics) {
+      const transSpan = batchTranslateLyrics.previousElementSibling;
+      if (transSpan) transSpan.textContent = isEn ? '🇨🇳 Chinese Translation (non-Chinese tracks)' : '🇨🇳 中文翻译歌词 (官方翻译，仅非中文歌)';
+      const transLbl = batchTranslateLyrics.closest('label');
+      if (transLbl) transLbl.title = isEn ? 'Append Apple Music official Chinese translation (for non-Chinese tracks)' : '附加 Apple Music 官方中文翻译（仅非中文歌曲生效）';
+    }
     if (batchRubyMode) {
+      const rubySpan = batchRubyMode.parentElement;
+      if (rubySpan && rubySpan.firstChild && rubySpan.firstChild.nodeType === 3) {
+        rubySpan.firstChild.nodeValue = isEn ? 'Ruby (Japanese Lyrics) ' : '注音 (日文歌词) ';
+      }
+      const rubyLbl = batchRubyMode.closest('label');
+      if (rubyLbl) rubyLbl.title = isEn ? 'Append phonetic guide below Japanese lyrics (Romaji or Hiragana)' : '在每句日文下方附加注音（Apple Music 官方罗马音，可选转为平假名；仅日文歌生效）';
       const opts = batchRubyMode.options;
       if (opts[0]) opts[0].textContent = isEn ? 'Romaji' : '罗马音';
       if (opts[1]) opts[1].textContent = isEn ? 'Hiragana' : '平假名';
@@ -498,14 +527,29 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const desc = zipPackContainer.querySelector('div > div:nth-child(2)');
       if (desc) desc.textContent = isEn ? 'Bundle all playlist tracks & lyrics into a single ZIP on Gofile (auto-splits >4GB)' : '将歌单歌曲与歌词一键打包，Gofile 单击即可全单下载';
     }
+    const hintEl = $('batch-modal-hint');
+    if (hintEl && (!batchModal || !batchModal.open)) {
+      hintEl.textContent = isEn
+        ? '💡 Both cloud transfer and local batch download share the daily quota (200 tracks/IP/day). Remaining quota is checked before starting.'
+        : '💡 云端转存与本机批量下载均计入每日转存配额（200 首/IP/天；本机下载消耗服务器出站带宽）。开始前会自动检查剩余配额，不足时直接拦截。';
+    }
     if (gofileDialog) {
       const h3 = gofileDialog.querySelector('h3');
       if (h3) h3.textContent = isEn ? 'Gofile Transfer Complete' : 'Gofile 转存完成';
+      if (gofileCloseBtn) gofileCloseBtn.setAttribute('aria-label', isEn ? 'Close' : '关闭');
+      const linkCaption = gofileLinkInput?.parentElement?.previousElementSibling;
+      if (linkCaption) linkCaption.textContent = isEn ? 'SHARE LINK' : '在线分享链接';
       const openSpan = gofileOpenLink?.querySelector('span');
       if (openSpan) openSpan.textContent = isEn ? 'Open Page' : '打开页面';
       if (gofileDoneBtn) gofileDoneBtn.textContent = isEn ? 'Done' : '完成';
       if (gofileCopyBtn && gofileCopyBtn.textContent !== '已复制!' && gofileCopyBtn.textContent !== 'Copied!') {
         gofileCopyBtn.textContent = isEn ? 'Copy Link' : '复制链接';
+      }
+      const footerNote = gofileDialog.querySelector('div[style*="margin-top:14px"]');
+      if (footerNote) {
+        footerNote.textContent = isEn
+          ? '⚡ No-login high-speed cloud share · Unthrottled download · Auto-expires after inactivity'
+          : '⚡ 免登录高速临时网盘 · 无下载限速 · 长期无访问后自动过期';
       }
     }
   }

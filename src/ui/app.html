@@ -236,41 +236,6 @@
     <p class="player-msg" hidden></p>
   </div>
 
-  <!-- Gofile 结果展示卡片 / 弹窗 -->
-  <div class="gofile-modal-overlay" id="gofile-result-modal" hidden>
-    <div class="gofile-result-card" role="dialog" aria-modal="true" aria-labelledby="gofile-title">
-      <button class="gofile-modal-close" id="gofile-modal-close" type="button" aria-label="关闭">&times;</button>
-      <div class="gofile-card-header">
-        <div class="gofile-icon-badge">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-        </div>
-        <h3 class="gofile-title" id="gofile-title">Gofile 云端转存完成</h3>
-        <p class="gofile-subtitle" id="gofile-zip-name">YOASOBI - 夜に駆ける.zip</p>
-      </div>
-      <div class="gofile-link-box">
-        <input type="text" id="gofile-url-input" readonly value="">
-      </div>
-      <div class="gofile-actions">
-        <button type="button" class="btn-apple-action btn-copy" id="gofile-copy-btn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          <span>复制下载链接</span>
-        </button>
-        <a href="#" target="_blank" rel="noopener noreferrer" class="btn-apple-action btn-open" id="gofile-open-btn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></line></svg>
-          <span>直接打开</span>
-        </a>
-      </div>
-      <div class="gofile-clean-notice">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#34c759" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-        <span>本地临时文件与 zip 已自动清理，VPS 磁盘 0 占用</span>
-      </div>
-    </div>
-  </div>
-
   <script src="/assets/i18n.js"></script>
   <script src="/assets/decrypt.js"></script>
   <script src="/assets/player.js"></script>

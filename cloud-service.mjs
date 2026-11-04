@@ -2358,9 +2358,11 @@ async function processTransfer(body) {
             const sAttr = sData.data?.[0]?.attributes;
             if (sAttr) {
               // 关键守门：若原先无任何华语特征，必须核验 Apple 返回的 audioLocale 或 genreNames 是否确属华语；
-              // 若是欧美/古典/宝莱坞等非华语曲目，立即终止华语嗅探，保留英文原名！
+              // 另外：若远端歌名不含汉字、audioLocale 非华语，且远端艺人名含外文音译间隔号（· / ・，如「伊戈尔・列维特」「维伦·格罗弗」），
+              // 说明这是外国艺人在大中华区的官方音译名，绝不采用！
               const localeIsZh = /^(zh|cmn|yue|hak|nan)/i.test(sAttr.audioLocale || '');
-              const attrIsChinese = knownChinese || localeIsZh || isChineseGenre(sAttr.genreNames) || isChineseArtistAlias(sAttr.artistName);
+              const isTransliteratedForeignArtist = !localeIsZh && !isChineseGenre(sAttr.genreNames) && !hasChinese(sAttr.name) && /[·・]/.test(sAttr.artistName || '');
+              const attrIsChinese = !isTransliteratedForeignArtist && (knownChinese || localeIsZh || isChineseGenre(sAttr.genreNames) || isChineseArtistAlias(sAttr.artistName));
               if (!attrIsChinese) {
                 break;
               }

@@ -51,7 +51,7 @@ addEventListener('pagehide', disposeSaved);
 export function mount({ root, url, signal, player, navigate, onLangChange, toast }) {
   document.title = t('song.pageTitle');
   const songUrl = decodeURIComponent(url.pathname.slice(1));
-  const linkMatch = songUrl.match(/music\.apple\.com\/([a-z]{2})\/song\/[^/?#]+\/(\d+)/i) || [];
+  const linkMatch = songUrl.match(/music\.apple\.com\/([a-z]{2})\/song\/(?:[^/?#]+\/)?(\d+)/i) || [];
   const country = (linkMatch[1] || 'us').toLowerCase();
   const adamId = linkMatch[2];
   const $ = (id) => root.querySelector(`#${id}`);
@@ -177,41 +177,79 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const isEn = AmI18n.lang === 'en';
     const fmtSel = $('lyrics-format-select');
     if (fmtSel) {
+      fmtSel.title = isEn ? 'Choose embedded lyrics format in ©lyr tag (TTML is supported by compatible players)' : '选择音频文件 ©lyr 标签内嵌的歌词格式（TTML 仅部分播放器可解析显示）';
       const prevSpan = fmtSel.previousElementSibling;
       if (prevSpan) {
         prevSpan.textContent = isEn ? 'Embed:' : '内嵌:';
-        prevSpan.title = isEn ? 'Choose embedded lyrics format in ©lyr tag' : '选择音频文件 ©lyr 标签内嵌的歌词格式（TTML 仅部分播放器可解析显示）';
+        prevSpan.title = fmtSel.title;
       }
       const offOpt = fmtSel.querySelector('option[value="off"]');
       if (offOpt) offOpt.textContent = isEn ? 'Off' : '关闭';
     }
-    const lrcSpan = $('save-lrc-toggle')?.nextElementSibling;
-    if (lrcSpan) lrcSpan.textContent = isEn ? 'Ext .lrc' : '外挂 .lrc';
-    const ttmlSpan = $('save-ttml-toggle')?.nextElementSibling;
-    if (ttmlSpan) ttmlSpan.textContent = isEn ? 'Ext .ttml' : '外挂 .ttml';
-    const transSpan = $('translate-lyrics-label')?.querySelector('span');
-    if (transSpan) transSpan.textContent = isEn ? '🇨🇳 CN Translation' : '🇨🇳 中文翻译';
-    const rubySpan = $('ruby-lyrics-label')?.querySelector('span');
-    if (rubySpan) rubySpan.textContent = isEn ? 'あ Ruby' : 'あ 注音';
+    const lrcToggle = $('save-lrc-toggle');
+    if (lrcToggle) {
+      const lbl = lrcToggle.closest('label');
+      if (lbl) lbl.title = isEn ? 'Save standalone external lyrics file (.lrc)' : '另存同名独立外挂歌词文件 (.lrc)';
+      const lrcSpan = lrcToggle.nextElementSibling;
+      if (lrcSpan) lrcSpan.textContent = isEn ? 'Ext .lrc' : '外挂 .lrc';
+    }
+    const ttmlToggle = $('save-ttml-toggle');
+    if (ttmlToggle) {
+      const lbl = ttmlToggle.closest('label');
+      if (lbl) lbl.title = isEn ? 'Save standalone external lyrics file (.ttml)' : '另存同名独立外挂歌词文件 (.ttml)';
+      const ttmlSpan = ttmlToggle.nextElementSibling;
+      if (ttmlSpan) ttmlSpan.textContent = isEn ? 'Ext .ttml' : '外挂 .ttml';
+    }
+    const transLbl = $('translate-lyrics-label');
+    if (transLbl) {
+      transLbl.title = isEn ? 'Append Apple Music official Chinese translation (for non-Chinese tracks)' : '在歌词中附加 Apple Music 官方中文翻译（仅非中文歌曲可用）';
+      const transSpan = transLbl.querySelector('span');
+      if (transSpan) transSpan.textContent = isEn ? '🇨🇳 CN Translation' : '🇨🇳 中文翻译';
+    }
+    const rubyLbl = $('ruby-lyrics-label');
+    if (rubyLbl) {
+      rubyLbl.title = isEn ? 'Append phonetic guide below Japanese lyrics (Romaji or Hiragana)' : '在每句日文下方附加注音（Apple Music 官方罗马音；可选平假名）';
+      const rubySpan = rubyLbl.querySelector('span');
+      if (rubySpan) rubySpan.textContent = isEn ? 'あ Ruby' : 'あ 注音';
+    }
     const rubySel = $('ruby-mode-select');
     if (rubySel) {
+      rubySel.title = isEn ? 'Romaji or Hiragana' : '罗马音或平假名';
       const rOpt = rubySel.querySelector('option[value="roman"]');
       const kOpt = rubySel.querySelector('option[value="kana"]');
       if (rOpt) rOpt.textContent = isEn ? 'Romaji' : '罗马音';
       if (kOpt) kOpt.textContent = isEn ? 'Hiragana' : '平假名';
     }
-    const gfSpan = $('gofile-toggle')?.nextElementSibling;
-    if (gfSpan) gfSpan.textContent = isEn ? '☁️ Gofile Cloud' : '☁️ Gofile 转存';
-    const zipSpan = $('zip-toggle')?.nextElementSibling;
-    if (zipSpan) zipSpan.textContent = isEn ? '📦 ZIP Archive' : '📦 ZIP 压缩';
+    const gfToggle = $('gofile-toggle');
+    if (gfToggle) {
+      const lbl = gfToggle.closest('label');
+      if (lbl) lbl.title = isEn ? 'Transfer to Gofile temporary cloud drive when downloading, zero local disk usage' : '点击下载时转存至 Gofile 临时分享网盘，免本地磁盘占用';
+      const gfSpan = gfToggle.nextElementSibling;
+      if (gfSpan) gfSpan.textContent = isEn ? '☁️ Gofile Cloud' : '☁️ Gofile 转存';
+    }
+    const zipLbl = $('zip-toggle-label');
+    if (zipLbl) {
+      zipLbl.title = isEn ? 'Package as .zip archive when uploading to Gofile' : '打包为 .zip 压缩包上传至 Gofile';
+      const zipSpan = $('zip-toggle')?.nextElementSibling;
+      if (zipSpan) zipSpan.textContent = isEn ? '📦 ZIP Archive' : '📦 ZIP 压缩';
+    }
     if (gofileDialog) {
       const h3 = gofileDialog.querySelector('h3');
       if (h3) h3.textContent = isEn ? 'Gofile Transfer Complete' : 'Gofile 转存完成';
+      if (gofileCloseBtn) gofileCloseBtn.setAttribute('aria-label', isEn ? 'Close' : '关闭');
+      const linkCaption = gofileLinkInput?.parentElement?.previousElementSibling;
+      if (linkCaption) linkCaption.textContent = isEn ? 'SHARE LINK' : '在线分享链接';
       const openSpan = gofileOpenLink?.querySelector('span');
       if (openSpan) openSpan.textContent = isEn ? 'Open Page' : '打开页面';
       if (gofileDoneBtn) gofileDoneBtn.textContent = isEn ? 'Done' : '完成';
       if (gofileCopyBtn && gofileCopyBtn.textContent !== '已复制!' && gofileCopyBtn.textContent !== 'Copied!') {
         gofileCopyBtn.textContent = isEn ? 'Copy Link' : '复制链接';
+      }
+      const footerNote = gofileDialog.querySelector('div[style*="margin-top:14px"]');
+      if (footerNote) {
+        footerNote.textContent = isEn
+          ? '⚡ No-login high-speed cloud share · Unthrottled download · Auto-expires after inactivity'
+          : '⚡ 免登录高速临时网盘 · 无下载限速 · 长期无访问后自动过期';
       }
     }
   }
@@ -923,13 +961,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const normArtist = normalizeArtistName(meta.artist || '');
       const normTitle = toSimplified(meta.title || adamId || 'Track');
       const fileName = safeName(`${normArtist ? normArtist + ' - ' : ''}${normTitle} [${v.info.name.replace(/ · /g, ' ')}].m4a`);
+      const isEnRow = AmI18n.lang === 'en';
       const gofileBtn = el('button', {
         className: 'icon-btn gofile-btn',
         type: 'button',
-        title: '转存至 Gofile 临时网盘',
+        title: isEnRow ? 'Transfer to Gofile Cloud' : '转存至 Gofile 临时网盘',
         innerHTML: ICON.cloud,
       });
-      gofileBtn.setAttribute('aria-label', `转存 ${v.info.name} 至 Gofile`);
+      gofileBtn.setAttribute('aria-label', isEnRow ? `Transfer ${v.info.name} to Gofile` : `转存 ${v.info.name} 至 Gofile`);
       gofileBtn.addEventListener('click', () => startDownload(v, fileName, 'gofile'));
 
       const more = el('button', { className: 'icon-btn more-btn', type: 'button', title: t('row.more'), innerHTML: ICON.more });

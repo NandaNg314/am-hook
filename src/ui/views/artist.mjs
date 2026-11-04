@@ -499,6 +499,10 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       discoBtn.title = isEn ? '☁️ Transfer Full Discography to Gofile (Admin Password Protected)' : '☁️ 一键转存全作品至 Gofile (密码保护)';
       discoBtn.setAttribute('aria-label', isEn ? 'Transfer Full Discography to Gofile' : '转存全作品至 Gofile');
     }
+    if (discoCard && discoCard.hidden) {
+      if (discoStatusTitle) discoStatusTitle.textContent = isEn ? '☁️ Transferring full discography to Gofile...' : '☁️ 正在极速转存全作品至 Gofile...';
+      if (discoStatusDetail) discoStatusDetail.textContent = isEn ? 'Preparing...' : '准备中...';
+    }
     if (discoCancelBtn) discoCancelBtn.textContent = isEn ? 'Cancel' : '取消';
     if (discoModal) {
       const h3 = discoModal.querySelector('h3');
@@ -507,6 +511,59 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         discoPasswordInput.placeholder = isEn ? 'Enter admin passphrase...' : '请输入专属口令...';
         const lbl = discoPasswordInput.previousElementSibling;
         if (lbl) lbl.textContent = isEn ? '🔒 Admin Passphrase (Discography Protection)' : '🔒 专属安全口令 (防误触与带宽控制)';
+      }
+      const incFull = $('disco-include-full');
+      if (incFull) {
+        const scopeTitle = incFull.closest('div')?.previousElementSibling;
+        if (scopeTitle) scopeTitle.textContent = isEn ? '📚 Discography Scope' : '📚 转存作品范围';
+        if (incFull.nextElementSibling) incFull.nextElementSibling.textContent = isEn ? 'Studio Albums' : '完整录音室专辑';
+      }
+      const incLive = $('disco-include-live');
+      if (incLive?.nextElementSibling) incLive.nextElementSibling.textContent = isEn ? 'Live Albums' : 'Live 现场专辑';
+      const incSin = $('disco-include-singles');
+      if (incSin?.nextElementSibling) incSin.nextElementSibling.textContent = isEn ? 'Singles & EPs' : '单曲与 EP';
+      const incComp = $('disco-include-compilations');
+      if (incComp?.nextElementSibling) incComp.nextElementSibling.textContent = isEn ? 'Compilations' : '精选辑';
+      const qSel = $('disco-quality-select');
+      if (qSel) {
+        if (qSel.previousElementSibling) qSel.previousElementSibling.textContent = isEn ? '🎵 Target Audio Quality' : '🎵 目标音质';
+        const opts = qSel.options;
+        if (opts[0]) opts[0].textContent = isEn ? 'Lossless ALAC (Recommended, 16/24-bit · Best Balance)' : 'Lossless 无损 ALAC (推荐，16/24-bit · 最佳平衡)';
+        if (opts[1]) opts[1].textContent = isEn ? 'Hi-Res Lossless (Up to 24-bit 96/192kHz)' : 'Hi-Res 高解析度无损 (最高 24-bit 96/192kHz)';
+        if (opts[2]) opts[2].textContent = isEn ? 'Dolby Atmos (Spatial Audio / EC-3)' : '杜比全景声 Dolby Atmos (空间音频 / EC-3)';
+        if (opts[3]) opts[3].textContent = isEn ? 'AAC 256kbps (Compact & Compatible)' : '高品质 AAC 256kbps (体积小，兼容性广)';
+      }
+      const lyrFmt = $('disco-lyrics-format');
+      if (lyrFmt) {
+        const lyrCard = lyrFmt.closest('div');
+        const lyrHeader = lyrCard?.querySelector('span');
+        if (lyrHeader) lyrHeader.textContent = isEn ? '📝 Lyrics Settings' : '📝 歌词设置';
+        if (lyrFmt.previousElementSibling) lyrFmt.previousElementSibling.textContent = isEn ? 'Embedded Format (©lyr)' : '内嵌格式 (©lyr)';
+        const opts = lyrFmt.options;
+        if (opts[0]) opts[0].textContent = isEn ? 'LRC (Recommended)' : 'LRC (推荐)';
+        if (opts[2]) opts[2].textContent = isEn ? 'Disable Embedded' : '关闭内嵌';
+      }
+      const dLrc = $('disco-save-lrc');
+      if (dLrc?.previousElementSibling) dLrc.previousElementSibling.textContent = isEn ? 'External Lyrics (.lrc)' : '外置歌词 (.lrc)';
+      const dTtml = $('disco-save-ttml');
+      if (dTtml?.previousElementSibling) dTtml.previousElementSibling.textContent = isEn ? 'External Lyrics (.ttml)' : '外置歌词 (.ttml)';
+      const dTrans = $('disco-translate-lyrics');
+      if (dTrans) {
+        if (dTrans.previousElementSibling) dTrans.previousElementSibling.textContent = isEn ? '🇨🇳 Chinese Translation (non-Chinese tracks)' : '🇨🇳 中文翻译歌词 (官方翻译，仅非中文歌)';
+        const lbl = dTrans.closest('label');
+        if (lbl) lbl.title = isEn ? 'Append Apple Music official Chinese translation (for non-Chinese tracks)' : '附加 Apple Music 官方中文翻译（仅非中文歌曲生效）';
+      }
+      const dRuby = $('disco-ruby-mode');
+      if (dRuby) {
+        const rubySpan = dRuby.parentElement;
+        if (rubySpan && rubySpan.firstChild && rubySpan.firstChild.nodeType === 3) {
+          rubySpan.firstChild.nodeValue = isEn ? 'Ruby (Japanese Lyrics) ' : '注音 (日文歌词) ';
+        }
+        const lbl = dRuby.closest('label');
+        if (lbl) lbl.title = isEn ? 'Append phonetic guide below Japanese lyrics (Romaji or Hiragana)' : '在每句日文下方附加注音（Apple Music 官方罗马音，可选转为平假名；仅日文歌生效）';
+        const opts = dRuby.options;
+        if (opts[0]) opts[0].textContent = isEn ? 'Romaji' : '罗马音';
+        if (opts[1]) opts[1].textContent = isEn ? 'Hiragana' : '平假名';
       }
       if (discoModalCancel) discoModalCancel.textContent = isEn ? 'Cancel' : '取消';
       if (discoModalConfirm) discoModalConfirm.textContent = isEn ? 'Verify & Start' : '验证并开始';

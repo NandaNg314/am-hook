@@ -283,61 +283,59 @@ const I18N = {
     welcome: `👋 <b>你好！我是 Apple Music 高品质音乐点歌与转存助手。</b>
 
 🎵 <b>使用说明：</b>
-直接把 Apple Music 单曲或专辑链接发送给我，例如：
+直接把 Apple Music 单曲、专辑、歌单或艺人链接发送给我，例如：
 • <b>单曲链接：</b> <code>https://music.apple.com/cn/album/晴天/1468058165?i=1468058171</code>
 • <b>专辑链接：</b> <code>https://music.apple.com/cn/album/叶惠美/1468058165</code>
+• <b>歌单链接：</b> <code>https://music.apple.com/us/playlist/top-100-global/pl.d25f5d1181894928af76c85c967f8f31</code>
 • <b>纯歌曲ID：</b> <code>1468058171</code>
 
 ⚡ <b>核心功能亮点：</b>
-• <b>支持全专辑下载：</b> 一键打包整张专辑，合为消息气泡极速直达
-• <b>多选勾选下载：</b> 艺人专辑列表/专辑曲目可勾选多张批量下载，已缓存专辑自动秒传跳过
-• <b>艺人全专辑批量：</b> 站长可一键勾选下载歌手全部专辑（普通用户可下载单张专辑）
-• <b>华语元数据修复：</b> 智能恢复正统中文歌名与歌手 (如张楚、周杰伦等)
-• <b>智能队列加速：</b> 单曲优先插队，秒级立等可取
-• <b>无损音质点选：</b> ALAC 无损 / Hi-Res / 杜比全景声 / AAC
-• <b>媒体库秒传：</b> 已存档资源 0 秒直发，无需重复等待
+• <b>全专辑 / 歌单下载：</b> 普通用户支持单曲、整张专辑与整张歌单下载（共享每日 200 首配额）
+• <b>多选勾选下载：</b> 专辑/歌单曲目可勾选多首批量下载，已缓存曲目自动秒传跳过（不扣配额）
+• <b>艺人全辑批量：</b> 站长专属支持一键勾选下载歌手名下全部专辑
+• <b>智能语言标签：</b> 中文模式自动为华语歌曲写入简体中文标签（欧美/古典歌手保持英文原名）；英文模式全英文标签
+• <b>无损音质点选：</b> ALAC 无损 / Hi-Res / 杜比全景声 / AAC + 1400px 高清封面与内嵌/外置歌词
 
-🌐 <b>语言设置：</b> 发送 <code>/lang</code> 可随时切换中英文。`,
+🌐 <b>语言设置：</b> 发送 <code>/lang</code> 可随时切换中英文（同时切换音乐文件内嵌标签语言）。`,
     firstWelcome: `👋 <b>欢迎使用 Apple Music 点歌转存助手！</b>
 Welcome to Apple Music Hi-Fi Downloader!
 
 🌐 <b>请选择您的显示语言 / Please select your preferred language:</b>`,
-    langSwitched: '✅ 语言已成功切换为：<b>简体中文</b> 🇨🇳',
+    langSwitched: '✅ 语言已成功切换为：<b>简体中文</b> 🇨🇳（音乐标签将对华语曲目使用简体中文）',
     resolvingSong: '🔍 <b>正在解析单曲元数据...</b>',
     resolvingAlbum: '🔍 <b>正在解析整张专辑曲目列表...</b>',
-    invalidUrl: '💡 请发送有效的 Apple Music 单曲或专辑链接 (如包含 <code>?i=</code> 的歌曲链接或纯数字歌曲 ID)。',
+    invalidUrl: '💡 请发送有效的 Apple Music 单曲、专辑、歌单或艺人链接（支持直接粘贴手机端分享文本或纯数字歌曲 ID）。',
     tooFrequent: (sec) => `⏳ <b>操作太频繁啦！</b>\n请稍候 <code>${sec}</code> 秒后再发送新任务。（系统设置 5 秒安全间隔保护）`,
     groupTip: '💡 <b>群聊仅作为音乐档案库浏览。</b>\n请私聊我发送歌曲或专辑链接进行点歌转存哦！'
   },
   en: {
     code: 'en',
     name: 'English',
-    welcome: `👋 <b>Hello! I'm your Apple Music High-Fidelity Downloader & Bot.</b>
+    welcome: `👋 <b>Hello! I'm your Apple Music Hi-Fi Downloader Bot.</b>
 
 🎵 <b>How to Use:</b>
-Simply send me an Apple Music song or album link, for example:
+Send me any Apple Music song, album, playlist, or artist link, for example:
 • <b>Song link:</b> <code>https://music.apple.com/us/album/cruel-summer/1468058165?i=1468058171</code>
 • <b>Album link:</b> <code>https://music.apple.com/us/album/lover/1468058165</code>
+• <b>Playlist link:</b> <code>https://music.apple.com/us/playlist/top-100-global/pl.d25f5d1181894928af76c85c967f8f31</code>
 • <b>Track ID:</b> <code>1468058171</code>
 
 ⚡ <b>Highlights:</b>
-• <b>Full Album Batch:</b> 1-click batch download aggregated into clean playlist bubbles
-• <b>Multi-Select Download:</b> Tick albums/tracks to batch download, cached albums skipped with instant delivery
-• <b>Artist Discography:</b> Admin can 1-click download all albums of an artist (normal users can download each single album)
+• <b>Songs, Albums & Playlists:</b> Download single tracks, full albums, or playlists (200 tracks/day free quota; cached items are free!)
+• <b>Multi-Select Download:</b> Tick specific tracks to batch download; archived items are delivered instantly
+• <b>English Audio Tags:</b> In English mode, all <code>.m4a</code> metadata tags and filenames are written in English
 • <b>Lossless Quality:</b> ALAC Lossless / Hi-Res / Dolby Atmos / AAC
-• <b>Smart Priority Queue:</b> Single tracks jump ahead for near-instant 3s delivery
-• <b>Instant Cache:</b> Archived tracks sent instantly with 0 wait time
-• <b>Embedded Lyrics & Artwork:</b> High-res 1400px artwork + embedded TTML/LRC
+• <b>Embedded Lyrics & Artwork:</b> 1400px artwork + embedded/external LRC & TTML lyrics
 
-🌐 <b>Language:</b> Type <code>/lang</code> anytime to switch language.`,
+🌐 <b>Language:</b> Type <code>/lang</code> anytime to switch language (also switches <code>.m4a</code> tag language).`,
     firstWelcome: `👋 <b>Welcome to Apple Music Hi-Fi Downloader!</b>
 欢迎使用 Apple Music 点歌转存助手！
 
 🌐 <b>Please select your preferred language / 请选择您的显示语言:</b>`,
-    langSwitched: '✅ Language successfully switched to: <b>English</b> 🇬🇧',
+    langSwitched: '✅ Language switched to: <b>English</b> 🇬🇧 (Audio metadata tags & filenames will now use English)',
     resolvingSong: '🔍 <b>Resolving track metadata...</b>',
     resolvingAlbum: '🔍 <b>Resolving album tracks...</b>',
-    invalidUrl: '💡 Please send a valid Apple Music song or album link (e.g. link with <code>?i=</code> or numeric track ID).',
+    invalidUrl: '💡 Please send a valid Apple Music song, album, playlist, or artist link (or a numeric track ID).',
     tooFrequent: (sec) => `⏳ <b>Too fast!</b>\nPlease wait <code>${sec}</code> seconds before sending another request.`,
     groupTip: '💡 <b>This group is an archive channel.</b>\nPlease send me a private message to download songs!'
   }
@@ -1188,18 +1186,17 @@ async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
     // 外国用户：优先美区/原区/英区/港区拉取官方英文元数据
     storefronts = ['us', storefront, 'gb', 'hk', 'tw', 'cn', 'tr'].filter((v, i, a) => a.indexOf(v) === i);
   } else if (storefront === 'jp' || storefront === 'kr') {
-    storefronts = [storefront, 'cn', 'hk', 'tw', 'us', 'tr'];
-  } else if (storefront === 'cn') {
-    storefronts = ['cn', 'hk', 'tw', 'us', 'tr'];
+    storefronts = [storefront, 'tr', 'us', 'hk', 'tw', 'cn'];
   } else {
-    storefronts = ['cn', storefront, 'hk', 'tw', 'us', 'tr'];
+    // 中文模式：先从 tr/us/原区获取原始元数据（保留外国歌手英文原名与 audioLocale），再对确属华语曲目精准补全中文
+    storefronts = ['tr', storefront, 'us', 'hk', 'tw', 'cn'].filter((v, i, a) => a.indexOf(v) === i);
   }
   storefronts = storefronts.filter((v, i, a) => a.indexOf(v) === i);
 
   let songAttr = null;
   for (const sf of storefronts) {
     try {
-      const l = catalogLangFor(sf, isEn);
+      const l = (sf === 'jp' && !isEn) ? 'ja' : catalogLangFor(sf, true);
       const res = await fetch(`${HOOK_BASE}/amp/v1/catalog/${sf}/songs/${songId}?l=${l}`, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const data = await res.json();
@@ -4098,9 +4095,11 @@ async function handleUpdate(update) {
 
     if (String(chatId) === AUTHORIZED_GROUP_ID) {
       if (text.startsWith('/') || text.includes('music.apple.com')) {
+        const grpLang = getUserLang(msg.from?.id || chatId, msg.from?.language_code);
+        const gt = I18N[grpLang] || I18N.zh;
         await tgCall('sendMessage', {
           chat_id: chatId,
-          text: '💡 <b>群聊仅作为音乐档案库浏览。</b>\n请私聊我发送歌曲或专辑链接进行点歌转存哦！',
+          text: gt.groupTip,
           parse_mode: 'HTML'
         });
       }
@@ -4244,9 +4243,12 @@ ${quotaText}
     const adminCmdMatch = text.match(/^\/(admin|cmd|status|sys|clean|cleansessions|cleansession|check|restart|history|logs)(?:\s+(.*))?$/i);
     if (adminCmdMatch) {
       if (!isOwner) {
+        const isEnCmd = getUserLang(chatId, msg.from?.language_code) === 'en';
         await tgCall('sendMessage', {
           chat_id: chatId,
-          text: `⚠️ <b>无权访问：</b> 此指令为站长专属运维命令 (您的 ID: <code>${chatId}</code> 未授权)。`,
+          text: isEnCmd
+            ? `⚠️ <b>Access Denied:</b> This command is reserved for the bot administrator (Your ID: <code>${chatId}</code>).`
+            : `⚠️ <b>无权访问：</b> 此指令为站长专属运维命令 (您的 ID: <code>${chatId}</code> 未授权)。`,
           parse_mode: 'HTML'
         });
         return;
@@ -4770,6 +4772,66 @@ ${quotaText}
 
     const parsed = parseAppleMusicUrl(text);
     if (!parsed) {
+      // 支持直接在 TG 机器人中输入关键词搜索歌曲/专辑/艺人（复用 pick: / art_album: / art_back: 回调）
+      if (!text.startsWith('/') && !/^https?:\/\//i.test(text) && text.length >= 2 && text.length <= 80) {
+        const searchMsg = await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: isEn ? `🔍 <b>Searching Apple Music for "${escapeHtml(text)}"...</b>` : `🔍 <b>正在 Apple Music 搜索「${escapeHtml(text)}」...</b>`,
+          parse_mode: 'HTML'
+        });
+        try {
+          // 优先在土区目录搜索（确保返回的曲目/专辑 ID 100% 兼容土区解密账号）
+          const searchRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/tr/search?term=${encodeURIComponent(text)}&types=songs,albums,artists&limit=5&l=en-GB`, {
+            signal: AbortSignal.timeout(6000)
+          });
+          const searchJson = searchRes.ok ? await searchRes.json() : {};
+          const songs = searchJson.results?.songs?.data || [];
+          const albums = searchJson.results?.albums?.data || [];
+          const artists = searchJson.results?.artists?.data || [];
+
+          if (songs.length || albums.length || artists.length) {
+            const kb = [];
+            for (const s of songs.slice(0, 5)) {
+              const sName = isEn ? (s.attributes?.name || 'Track') : toSimplifiedChinese(s.attributes?.name || 'Track');
+              const sArt = normalizeArtistName(s.attributes?.artistName || '', isEn);
+              const label = `🎵 ${sName} - ${sArt}`;
+              kb.push([{ text: label.length > 42 ? label.slice(0, 40) + '..' : label, callback_data: `pick:${s.id}` }]);
+            }
+            for (const al of albums.slice(0, 3)) {
+              const aName = isEn ? (al.attributes?.name || 'Album') : toSimplifiedChinese(al.attributes?.name || 'Album');
+              const aArt = normalizeArtistName(al.attributes?.artistName || '', isEn);
+              const label = `💿 ${aName} - ${aArt}`;
+              kb.push([{ text: label.length > 42 ? label.slice(0, 40) + '..' : label, callback_data: `art_album:${al.id}` }]);
+            }
+            for (const ar of artists.slice(0, 2)) {
+              const arName = normalizeArtistName(ar.attributes?.name || 'Artist', isEn);
+              kb.push([{ text: `👤 ${isEn ? 'Artist' : '歌手'}: ${arName}`, callback_data: `art_back:${ar.id}` }]);
+            }
+            await tgCall('editMessageText', {
+              chat_id: chatId,
+              message_id: searchMsg.message_id,
+              text: isEn
+                ? `🔎 <b>Search Results for "${escapeHtml(text)}":</b>\nTap a track, album, or artist below to open:`
+                : `🔎 <b>「${escapeHtml(text)}」搜索结果：</b>\n点击下方单曲、专辑或歌手即可直接打开下载面板：`,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: kb }
+            });
+            return;
+          }
+        } catch (sErr) {
+          console.warn('[TG-Bot] 关键词搜索异常:', sErr.message);
+        }
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: searchMsg.message_id,
+          text: isEn
+            ? `😕 No matching tracks or albums found for "<b>${escapeHtml(text)}</b>". Try sending an Apple Music link directly.`
+            : `😕 未找到与「<b>${escapeHtml(text)}</b>」相关的歌曲或专辑，请尝试更换关键词或直接发送 Apple Music 链接。`,
+          parse_mode: 'HTML'
+        });
+        return;
+      }
+
       await tgCall('sendMessage', {
         chat_id: chatId,
         text: t.invalidUrl || '💡 请发送有效的 Apple Music 单曲或专辑链接 (如包含 <code>?i=</code> 的歌曲链接或纯数字歌曲 ID)。',

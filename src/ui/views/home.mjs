@@ -15,7 +15,10 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
 
   /** 把各种输入规整为页面路径：/https://music.apple.com/{cc}/(song|music-video|album|playlist|artist)/{slug}/{id} */
   function toSongLink(raw) {
-    const value = raw.trim();
+    let value = raw.trim();
+    // 支持直接粘贴 Apple Music 手机端带文案的分享内容（如 "Listen to ... https://music.apple.com/..."）
+    const extracted = value.match(/https?:\/\/music\.apple\.com\/[^\s"'<>]+/i);
+    if (extracted) value = extracted[0];
     let url;
     try { url = new URL(value); } catch { return null; }
     if (!/(^|\.)music\.apple\.com$/i.test(url.hostname)) return null;
@@ -26,8 +29,8 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     // 艺人上传的视频（post，slug 可省略）
     const post = url.pathname.match(/^\/[a-z]{2}\/post\/(?:[^/]+\/)?(\d+)\/?$/i);
     if (post) return `https://music.apple.com/${cc}/post/${post[1]}`;
-    const song = url.pathname.match(/\/song\/([^/]+)\/(\d+)/i);
-    if (song) return `https://music.apple.com/${cc}/song/${song[1]}/${song[2]}`;
+    const song = url.pathname.match(/\/song\/(?:([^/]+)\/)?(\d+)\/?$/i);
+    if (song) return `https://music.apple.com/${cc}/song/${song[1] || '_'}/${song[2]}`;
     // 专辑链接打开专辑页（slug 可省略）；带 ?i= 时保留，专辑页选中该曲目
     const albumPage = url.pathname.match(/^\/[a-z]{2}\/album\/(?:([^/]+)\/)?(\d+)\/?$/i);
     const trackId = url.searchParams.get('i');
@@ -93,6 +96,10 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
       if (embedLabel) embedLabel.textContent = isEn ? 'Embed clean metadata & cover art' : '内嵌纯净元数据与封面';
       if (lrcLabel) lrcLabel.textContent = isEn ? 'Save external lyrics file alongside audio' : '同步保存外挂歌词文件';
     }
+    const quotaNotice = root.querySelector('#quota-notice .quota-text strong');
+    if (quotaNotice) {
+      quotaNotice.textContent = isEn ? 'Daily Transfer Quota' : '每日转存配额';
+    }
     if (quotaText) {
       if (lastQuotaData) {
         quotaText.textContent = lastQuotaData.unlimited
@@ -109,6 +116,42 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
   }
 
   renderCustomHomeI18n();
+
+  // 绑定首页「下载偏好设置」卡片，与单曲/专辑/歌单页的 localStorage 开关实时双向同步
+  const modeLocalEl = root.querySelector('#mode-local');
+  const modeGofileEl = root.querySelector('#mode-gofile');
+  const optEmbedEl = root.querySelector('#opt-embed-metadata');
+  const optLrcEl = root.querySelector('#opt-download-lrc');
+  if (modeLocalEl && modeGofileEl) {
+    const isGf = localStorage.getItem('am_gofile_upload') === 'true';
+    modeGofileEl.checked = isGf;
+    modeLocalEl.checked = !isGf;
+    const syncMode = () => {
+      localStorage.setItem('am_gofile_upload', String(modeGofileEl.checked));
+    };
+    modeLocalEl.addEventListener('change', syncMode);
+    modeGofileEl.addEventListener('change', syncMode);
+  }
+  if (optEmbedEl) {
+    const curFmt = localStorage.getItem('am_lyrics_fmt') || 'lrc';
+    optEmbedEl.checked = curFmt !== 'off';
+    optEmbedEl.addEventListener('change', () => {
+      if (!optEmbedEl.checked) {
+        localStorage.setItem('am_lyrics_fmt', 'off');
+      } else if (localStorage.getItem('am_lyrics_fmt') === 'off') {
+        localStorage.setItem('am_lyrics_fmt', 'lrc');
+      }
+    });
+  }
+  if (optLrcEl) {
+    if (localStorage.getItem('am_save_lrc') !== null) {
+      optLrcEl.checked = localStorage.getItem('am_save_lrc') === 'true';
+    }
+    optLrcEl.addEventListener('change', () => {
+      localStorage.setItem('am_save_lrc', String(optLrcEl.checked));
+    });
+  }
+
   if (quotaText) {
     (async () => {
       try {
