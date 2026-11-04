@@ -2,31 +2,31 @@
   "latestVersion": "2.6",
   "date": "2026-11-04",
   "oneLiner": {
-    "zh": "支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包向所有用户开放",
-    "en": "Direct song/artist search in bot, native English .m4a tags, and full playlist downloads for all users"
+    "zh": "支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包开放与歌手全辑完整分页",
+    "en": "Direct song/artist search in bot, native English .m4a tags, open playlist downloads & full artist discography pagination"
   },
   "releases": [
     {
       "version": "2.6",
       "date": "2026-11-04",
       "title": {
-        "zh": "语言感知音乐标签 · TG 搜索点歌 · 歌单全面开放",
-        "en": "Language-Aware Audio Tags · TG Search · Open Playlists"
+        "zh": "语言感知音乐标签 · TG 搜索点歌 · 歌手全辑完整分页",
+        "en": "Language-Aware Audio Tags · TG Search · Full Artist Pagination"
       },
       "items": {
         "zh": [
           "🏷️ 智能中英音乐标签：英文模式（English）下导出的 .m4a 内嵌标签与文件名全英文；中文模式下仅对华语曲目转简体中文，欧美/古典歌手保持英文原名",
           "🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌",
+          "💿 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，自动拉取歌手名下全部录音室专辑、Live 与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
           "🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）",
-          "💿 TG 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，现自动拉取歌手名下全部录音室专辑、Live 专辑与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
-          "📱 手机与电脑双端优化：优化手机端专辑/歌单按钮自适应排版，移除冗余口令框，打通网页首页「下载偏好设置」全站同步"
+          "📱 手机与电脑双端优化：修复手机端专辑/歌单按钮横向溢出，移除冗余口令框，新增双语历史更新日志"
         ],
         "en": [
           "🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English",
           "🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link",
+          "💿 Full Artist Discography Pagination: Loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
           "🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)",
-          "💿 Full Artist Discography Pagination in TG Bot: Now loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
-          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and 100% English UI"
+          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and bilingual release history"
         ]
       }
     },
@@ -47,6 +47,82 @@
           "📦 Auto-Split >4GB Archives: Large playlists/albums over 3.8GB automatically split into parts inside a single Gofile share folder",
           "🛡️ Disconnect Recovery: Even if your phone sleeps or network switches during a large batch, the Gofile link is automatically recovered",
           "🔒 Zero-Overwrite & Error Log: Duplicate track titles are safely numbered; any unavailable regional tracks are listed in _INTERNAL_error.log.txt"
+        ]
+      }
+    },
+    {
+      "version": "2.4",
+      "date": "2026-10-18",
+      "title": {
+        "zh": "杜比/无损容器底层修复 · 粤语繁简对照 · 日文罗马音注音",
+        "en": "Dolby Atmos & ALAC Container Fix · Cantonese/Japanese Lyrics Ruby"
+      },
+      "items": {
+        "zh": [
+          "🎧 椒盐音乐 (Salt Player) / Android 完美兼容：剥除解密残留占位盒与冗余 btrt、还原杜比 JOC 空间音频尾字节，消除「编码错误」",
+          "あ 日文歌词注音与粤语对照：支持 Apple Music 官方日文罗马音/平假名逐行注音，支持粤语/台语歌曲繁简对照双语歌词",
+          "📐 内嵌与外置歌词正交控制：内嵌歌词（©lyr）与独立外挂歌词文件（.lrc / .ttml）完全独立勾选，互不干扰"
+        ],
+        "en": [
+          "🎧 Android / Salt Player Compatibility: Normalized MP4 stsd sample entries and restored Dolby Atmos JOC metadata for strict players",
+          "あ Japanese Phonetics & Translations: Added official Romaji / Hiragana phonetic guides for Japanese lyrics and bilingual translation support",
+          "📐 Orthogonal Lyrics Controls: Embedded lyrics (©lyr) and standalone external files (.lrc / .ttml) can be configured independently"
+        ]
+      }
+    },
+    {
+      "version": "2.3",
+      "date": "2026-10-15",
+      "title": {
+        "zh": "多选勾选批量下载 · 仅下载歌词模式 · 每日配额体系",
+        "en": "Multi-Track Selection · Lyrics-Only Mode · Fair Daily Quota"
+      },
+      "items": {
+        "zh": [
+          "☑️ 曲目自由多选：支持在专辑或歌单列表中勾选任意几首单曲一键批量下载",
+          "📝 仅下载歌词模式：无需下载音频即可秒级提取单曲或整张专辑的 .lrc / .ttml 歌词文件",
+          "⚖️ 每日 200 首共享配额：北京时间 00:00 自动重置，所有已归档曲目/专辑秒传直发完全免配额"
+        ],
+        "en": [
+          "☑️ Multi-Track Selection: Tick specific tracks inside any album or playlist for custom batch downloading",
+          "📝 Lyrics-Only Mode: Extract standalone .lrc / .ttml lyrics for a track or entire album in seconds without downloading audio",
+          "⚖️ Fair Daily Quota (200 tracks/day): Resets at 00:00 UTC+8; archived tracks and albums deliver instantly with zero quota cost"
+        ]
+      }
+    },
+    {
+      "version": "2.2",
+      "date": "2026-10-12",
+      "title": {
+        "zh": "Local Bot API 零拷贝专线 · 播放列表合辑气泡",
+        "en": "Local Bot API Zero-Copy Tunnel · Playlist MediaGroup Bubbles"
+      },
+      "items": {
+        "zh": [
+          "🚀 突破 50MB 限制：接入自建 Telegram Local Bot API 零拷贝专线，支持单卷最高 2GB 全辑 ZIP 极速直传",
+          "🫧 原生音频合辑气泡：整张专辑自动按黄金 5 首一组聚合为干净的 Telegram 播放列表气泡，先归档频道再秒推私聊"
+        ],
+        "en": [
+          "🚀 2GB Local Bot API Tunnel: Bypassed standard 50MB bot limit via self-hosted Local Bot API with zero-copy disk streaming",
+          "🫧 Clean Playlist Bubbles: Full albums are grouped into neat 5-track Telegram audio media groups and forwarded instantly"
+        ]
+      }
+    },
+    {
+      "version": "2.0",
+      "date": "2026-10-10",
+      "title": {
+        "zh": "Web 浏览器端解密 + Gofile 云端转存 + 1400px 封面标签注入",
+        "en": "Browser Wasm Decryption · Gofile Cloud Transfer · 1400px Artwork Tagging"
+      },
+      "items": {
+        "zh": [
+          "🌐 双引擎架构：支持浏览器内 Wasm 原生解密本机直存，或通过 VPS 2000M 带宽一键打包转存至 Gofile 临时网盘",
+          "🖼️ 完整 iTunes 元数据：自动注入 1400×1400 高清封面、歌名、歌手、专辑、曲目编号、流派与同步时间轴歌词"
+        ],
+        "en": [
+          "🌐 Dual-Engine Architecture: Decrypt directly in your browser via WebAssembly or transfer at 2000Mbps to Gofile cloud storage",
+          "🖼️ Complete iTunes Metadata: Embeds 1400×1400 artwork, title, artist, album, track/disc numbers, genre, and synced lyrics"
         ]
       }
     }

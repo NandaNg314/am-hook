@@ -21,6 +21,8 @@
 // 再退 hk / tw 繁体（后续经 toSimplified 归一）。
 // 实测：hk 与 tw 覆盖互补——536248195 只有 cn/tw 有，1721449919 只有 hk/us 有，
 // 因此四区都要试，不能因为前面的区 404 就收手。
+import { normalizeArtistName, isChineseArtistAlias, isChineseGenre } from './actions.mjs';
+
 const CHINESE_STOREFRONTS = ['cn', 'us', 'hk', 'tw'];
 
 /* ==================== 采样描述规范化（修复 Salt Player 等严格解析器「编码错误」） ==================== */
@@ -844,9 +846,30 @@ export async function fetchSongMeta(adamId, opts = {}) {
   const audioLocale = (attr.audioLocale || '').toLowerCase();
   const genreList = attr.genreNames || [];
   const isJapanese = audioLocale === 'ja' || genreList.some((g) => /j-pop|japanese|anime|アニメ/i.test(g));
-  const isChinese = /^(zh|cmn|yue|hak|nan)/i.test(audioLocale) ||
+  const isTransliteratedForeign = !/^(zh|cmn|yue|hak|nan)/i.test(audioLocale) &&
+    !isChineseGenre(genreList) &&
+    !/[\u4e00-\u9fa5]/.test(attr.name || '') &&
+    /[·・]/.test(attr.artistName || '');
+  const isChinese = !isTransliteratedForeign && (
+    /^(zh|cmn|yue|hak|nan)/i.test(audioLocale) ||
     /[\u4e00-\u9fa5]/.test((attr.name || '') + (attr.artistName || '') + (attr.albumName || '')) ||
-    genreList.some((g) => /国语|粤语|华语|中国|台湾|香港|台语|mandopop|cantopop|c-pop|chinese|hokkien/i.test(g));
+    isChineseArtistAlias(attr.artistName) ||
+    isChineseGenre(genreList)
+  );
+
+  // 若中文模式下因主地区选在 cn 导致古典/外语歌手变成音译名（如「伊戈尔・列维特」），主动向 us 拉回英文原名
+  if (!isEn && isTransliteratedForeign) {
+    try {
+      const enUrl = new URL(`/amp/v1/catalog/us/songs/${adamId}`, location.origin);
+      enUrl.searchParams.set('include', 'albums,artists');
+      enUrl.searchParams.set('l', 'en-US');
+      const enRes = await fetch(enUrl, { signal: AbortSignal.timeout(4000) });
+      if (enRes.ok) {
+        const enSong = (await enRes.json()).data?.[0];
+        if (enSong?.attributes) rawSong = enSong;
+      }
+    } catch {}
+  }
 
   if (isEn) {
     // 外国用户 (English)：若源区返回了汉字，主动按各区支持的英文语言码请求替换为官方英文标签
@@ -903,8 +926,8 @@ export async function fetchSongMeta(adamId, opts = {}) {
     }
   }
 
-  // 华语元数据补全：仅在中文模式下，且确属华语曲目时向华语区嗅探正统中文名（绝不把欧美/古典歌手翻成译名）
-  const allowChineseSniff = !isEn && !isJapanese && isChinese;
+  // 华语元数据补全：仅在中文模式下嗅探正统中文名（遇到带 ·/・ 的外文音译名立即终止，绝不把欧美/古典歌手翻成译名）
+  const allowChineseSniff = !isEn && !isJapanese && !isTransliteratedForeign && (!audioLocale || audioLocale === 'zxx' || isChinese);
   if (allowChineseSniff) {
     const hasHan = (s) => /[\u4e00-\u9fa5]/.test(s || '');
     const pending = new Set();
@@ -922,6 +945,9 @@ export async function fetchSongMeta(adamId, opts = {}) {
         if (!sfRes.ok) continue;
         const sfAttr = (await sfRes.json()).data?.[0]?.attributes;
         if (!sfAttr) continue;
+        const sfLocaleZh = /^(zh|cmn|yue|hak|nan)/i.test(sfAttr.audioLocale || audioLocale || '');
+        const sfIsTransliterated = !sfLocaleZh && !isChineseGenre(sfAttr.genreNames) && !hasHan(sfAttr.name) && /[·・]/.test(sfAttr.artistName || '');
+        if (sfIsTransliterated) break;
         const merged = { ...rawSong.attributes };
         if (pending.has('title') && hasHan(sfAttr.name)) {
           merged.name = sfAttr.name;
@@ -948,6 +974,11 @@ export async function fetchSongMeta(adamId, opts = {}) {
     if (isEn) return s;
     return isChinese || /[\u4e00-\u9fa5]/.test(s) ? simplify(s) : s;
   };
+  const finalArtist = isEn ? (a.artistName || '') : normalizeArtistName(simp(a.artistName || ''), false);
+  const rawAlbArtist = (/[\u4e00-\u9fa5]/.test(a.artistName || '') && !/[\u4e00-\u9fa5]/.test(a.albumArtistName || '')
+    ? a.artistName
+    : a.albumArtistName) || albumAttr?.artistName || a.artistName || '';
+  const finalAlbumArtist = isEn ? rawAlbArtist : normalizeArtistName(simp(rawAlbArtist), false);
 
   return {
     country: resolvedCountry,
@@ -955,14 +986,9 @@ export async function fetchSongMeta(adamId, opts = {}) {
     isJapanese,
     isChinese,
     title: simp(a.name || ''),
-    artist: simp(a.artistName || ''),
+    artist: finalArtist,
     album: simp(a.albumName || ''),
-    // 嗅探补上的是 attributes.artistName，若 albumArtistName 仍为英文艺名需同步，否则标签里的专辑艺人会残留英文
-    albumArtist: simp(
-      (/[\u4e00-\u9fa5]/.test(a.artistName || '') && !/[\u4e00-\u9fa5]/.test(a.albumArtistName || '')
-        ? a.artistName
-        : a.albumArtistName) || albumAttr?.artistName || a.artistName || ''
-    ),
+    albumArtist: finalAlbumArtist,
     albumId: rawSong.relationships?.albums?.data?.[0]?.id || '',
     trackNumber: a.trackNumber || 1,
     totalTracks: albumAttr?.trackCount || 0,

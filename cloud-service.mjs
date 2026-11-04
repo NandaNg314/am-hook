@@ -2341,14 +2341,12 @@ async function processTransfer(body) {
 
     // 2) 智能华语元数据嗅探：仅对【确属华语曲目/华语歌手】同步简体中文名，
     //    欧美/古典/印度等外国歌手保持英文原名（杜绝把 Igor Levit 变成「伊戈尔・列维特」、Varun Grover 变成「维伦·格罗弗」）。
-    const artistSegments = splitArtists(meta.artist);
-    const hasChineseInTitle = hasChinese(meta.title);
-    const hasChineseInArtist = hasChinese(meta.artist);
-    const knownChinese = hasChineseInTitle || hasChineseInArtist || hasChinese(meta.album) ||
-      isChineseArtistAlias(meta.artist) || isChineseArtistAlias(meta.albumArtist) || isChineseGenre(meta.genre);
-    const artistNeedsChinese = artistSegments.some((p) => hasLatin(p) && !hasChinese(p));
+    const needZhSync = () => {
+      const segs = splitArtists(meta.artist);
+      return !hasChinese(meta.title) || !hasChinese(meta.artist) || segs.some((p) => hasLatin(p) && !hasChinese(p));
+    };
 
-    if (adamId && (!hasChineseInTitle || !hasChineseInArtist || artistNeedsChinese) && !isLikelyJapanese) {
+    if (adamId && needZhSync() && !isLikelyJapanese) {
       for (const sf of ['cn', 'us', 'hk', 'tw']) {
         try {
           const zhLang = catalogLangFor(sf, false);
@@ -2357,27 +2355,30 @@ async function processTransfer(body) {
             const sData = await sfRes.json();
             const sAttr = sData.data?.[0]?.attributes;
             if (sAttr) {
-              // 关键守门：若原先无任何华语特征，必须核验 Apple 返回的 audioLocale 或 genreNames 是否确属华语；
-              // 另外：若远端歌名不含汉字、audioLocale 非华语，且远端艺人名含外文音译间隔号（· / ・，如「伊戈尔・列维特」「维伦·格罗弗」），
-              // 说明这是外国艺人在大中华区的官方音译名，绝不采用！
+              // 关键守门：若远端歌名不含汉字、audioLocale 非华语，且远端艺人名含外文音译间隔号（· / ・，如「伊戈尔・列维特」「维伦·格罗弗」），
+              // 说明这是外国艺人在大中华区的官方音译名，立即终止嗅探，保留英文原名！
               const localeIsZh = /^(zh|cmn|yue|hak|nan)/i.test(sAttr.audioLocale || '');
-              const isTransliteratedForeignArtist = !localeIsZh && !isChineseGenre(sAttr.genreNames) && !hasChinese(sAttr.name) && /[·・]/.test(sAttr.artistName || '');
-              const attrIsChinese = !isTransliteratedForeignArtist && (knownChinese || localeIsZh || isChineseGenre(sAttr.genreNames) || isChineseArtistAlias(sAttr.artistName));
-              if (!attrIsChinese) {
+              const isTransliteratedForeignArtist = !localeIsZh &&
+                !isChineseGenre(sAttr.genreNames) &&
+                !isChineseGenre(meta.genre) &&
+                !hasChinese(sAttr.name) &&
+                /[·・]/.test(sAttr.artistName || '');
+              if (isTransliteratedForeignArtist) {
                 break;
               }
 
               let updated = false;
-              if (!hasChineseInTitle && sAttr.name && hasChinese(sAttr.name)) {
+              if (!hasChinese(meta.title) && sAttr.name && hasChinese(sAttr.name)) {
                 meta.title = toSimplifiedChinese(sAttr.name);
                 updated = true;
               }
+              const curSegs = splitArtists(meta.artist);
+              const curArtistNeedsZh = curSegs.some((p) => hasLatin(p) && !hasChinese(p));
               // 艺人名：按片段逐个替换，只补纯英文的片段，中文片段原样保留
-              if (artistNeedsChinese && sAttr.artistName && hasChinese(sAttr.artistName)) {
+              if (curArtistNeedsZh && sAttr.artistName && hasChinese(sAttr.artistName)) {
                 const remoteSegs = splitArtists(sAttr.artistName);
-                const srcSegs = splitArtists(meta.artist);
-                if (remoteSegs.length === srcSegs.length) {
-                  const merged = srcSegs.map((seg, i) => {
+                if (remoteSegs.length === curSegs.length) {
+                  const merged = curSegs.map((seg, i) => {
                     if (hasLatin(seg) && !hasChinese(seg)) {
                       const cand = remoteSegs[i];
                       return cand && hasChinese(cand) ? cand : seg;
@@ -2387,20 +2388,22 @@ async function processTransfer(body) {
                   const mergedName = normalizeArtistName(merged.join(' & '));
                   if (mergedName !== meta.artist) {
                     meta.artist = mergedName;
+                    if (!hasChinese(meta.albumArtist)) meta.albumArtist = mergedName;
                     updated = true;
                   }
                 } else if (!hasChinese(meta.artist)) {
                   meta.artist = normalizeArtistName(toSimplifiedChinese(sAttr.artistName));
+                  if (!hasChinese(meta.albumArtist)) meta.albumArtist = meta.artist;
                   updated = true;
                 }
               }
-              if (sAttr.albumName && (!meta.album || !hasChinese(meta.album))) {
+              if (sAttr.albumName && (!meta.album || !hasChinese(meta.album)) && hasChinese(sAttr.albumName)) {
                 meta.album = toSimplifiedChinese(sAttr.albumName);
                 updated = true;
               }
               if (updated) {
                 console.log(`[Cloud-Transfer] 成功从 ${sf.toUpperCase()} 华语区同步正统中文元数据: ${meta.artist} - ${meta.title}`);
-                if (hasChinese(meta.title) && hasChinese(meta.artist)) {
+                if (!needZhSync() && hasChinese(meta.album)) {
                   break;
                 }
               }

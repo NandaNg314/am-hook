@@ -279,26 +279,48 @@ function loadChangelog() {
   }
 }
 
-function buildChangelogCard(lang = 'zh') {
+function buildChangelogCard(lang = 'zh', mode = 'latest') {
   const isEn = lang === 'en';
   const cl = loadChangelog();
-  const blocks = (cl.releases || []).slice(0, 3).map((rel) => {
+  const allReleases = cl.releases || [];
+  const showHistory = mode === 'history';
+  const targetReleases = showHistory ? allReleases : allReleases.slice(0, 1);
+
+  const blocks = targetReleases.map((rel, idx) => {
     const title = (isEn ? rel.title?.en : rel.title?.zh) || '';
     const items = (isEn ? rel.items?.en : rel.items?.zh) || [];
     const lines = items.map((it) => `• ${escapeHtml(it)}`).join('\n');
-    return `<b>v${escapeHtml(rel.version)} (${escapeHtml(rel.date)}) — ${escapeHtml(title)}</b>\n${lines}`;
+    const tag = (!showHistory || idx === 0) ? (isEn ? ' [LATEST]' : ' [当前版本]') : '';
+    return `📌 <b>v${escapeHtml(rel.version)} (${escapeHtml(rel.date)})${tag} — ${escapeHtml(title)}</b>\n${lines}`;
   });
-  const header = isEn
-    ? `✨ <b>What's New in Apple Music Bot & Web (v${escapeHtml(cl.latestVersion)})</b>\n\n`
-    : `✨ <b>Apple Music 助手与网页端更新日志 (v${escapeHtml(cl.latestVersion)})</b>\n\n`;
+
+  const header = showHistory
+    ? (isEn
+        ? `📜 <b>Full Release History (v2.0 → v${escapeHtml(cl.latestVersion)})</b>\n\n`
+        : `📜 <b>历史版本更新全记录 (v2.0 → v${escapeHtml(cl.latestVersion)})</b>\n\n`)
+    : (isEn
+        ? `✨ <b>What's New in Apple Music Bot & Web (v${escapeHtml(cl.latestVersion)})</b>\n\n`
+        : `✨ <b>Apple Music 助手与网页端最新更新 (v${escapeHtml(cl.latestVersion)})</b>\n\n`);
+
+  const modeBtn = showHistory
+    ? {
+        text: isEn ? `✨ Latest Only (v${cl.latestVersion})` : `✨ 仅看最新版 (v${cl.latestVersion})`,
+        callback_data: `show_changelog:${isEn ? 'en' : 'zh'}:latest`
+      }
+    : {
+        text: isEn ? `📜 Release History (${allReleases.length} versions)` : `📜 历史更新记录 (共 ${allReleases.length} 个版本)`,
+        callback_data: `show_changelog:${isEn ? 'en' : 'zh'}:history`
+      };
+
   return {
     text: header + blocks.join('\n\n'),
     reply_markup: {
       inline_keyboard: [
+        [modeBtn],
         [
           {
             text: isEn ? '🌐 切换为中文' : '🌐 Switch to English',
-            callback_data: isEn ? 'show_changelog:zh' : 'show_changelog:en'
+            callback_data: `show_changelog:${isEn ? 'zh' : 'en'}:${mode}`
           },
           {
             text: isEn ? '🔙 Back to Guide' : '🔙 返回使用说明',
@@ -1328,36 +1350,63 @@ async function fetchSongDetails(songId, storefront = 'hk', lang = 'zh') {
       }
     }
   } else {
-    // 中文模式：仅对确属华语曲目/华语歌手向 ['cn', 'us', 'hk', 'tw'] 补全中文名，避免把欧美/古典歌手翻成译名
-    const isGenuineChinese = /[\u4e00-\u9fa5]/.test(title + artist + album) ||
-      isChineseArtistAlias(songAttr.artistName) ||
-      isChineseGenre(songAttr.genreNames) ||
-      /^(zh|cmn|yue|hak|nan)/i.test(songAttr.audioLocale || '');
-    if (isGenuineChinese && (!/[\u4e00-\u9fa5]/.test(artist) || !/[\u4e00-\u9fa5]/.test(title) || !/[\u4e00-\u9fa5]/.test(album))) {
-      for (const zhSf of ['cn', 'us', 'hk', 'tw']) {
-        try {
-          const zhLang = catalogLangFor(zhSf, false);
-          const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${zhSf}/songs/${songId}?l=${zhLang}`, { signal: AbortSignal.timeout(3000) });
-          if (cnRes.ok) {
-            const cData = await cnRes.json();
-            const cAttr = cData.data?.[0]?.attributes;
-            if (cAttr) {
-              if (!/[\u4e00-\u9fa5]/.test(artist) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
-                artist = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
-                albumArtist = artist;
-              }
-              if (!/[\u4e00-\u9fa5]/.test(title) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
-                title = toSimplifiedChinese(cAttr.name);
-              }
-              if (cAttr.albumName && (!album || !/[\u4e00-\u9fa5]/.test(album)) && /[\u4e00-\u9fa5]/.test(cAttr.albumName)) {
-                album = toSimplifiedChinese(cAttr.albumName);
-              }
-              if (/[\u4e00-\u9fa5]/.test(artist) && /[\u4e00-\u9fa5]/.test(title) && /[\u4e00-\u9fa5]/.test(album)) {
-                break;
+    // 1) 日语曲目（audioLocale=ja 或 J-Pop/Anime）：向日区拉取日文原名
+    const isJapanese = (songAttr.audioLocale || '').toLowerCase() === 'ja' ||
+      (songAttr.genreNames || []).some(g => /j-pop|anime|japanese|アニメ/i.test(g)) ||
+      /[\u3040-\u309F\u30A0-\u30FF]/.test(title + artist + album);
+    if (isJapanese && !/[\u3040-\u309F\u30A0-\u30FF]/.test(title)) {
+      try {
+        const jpRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/jp/songs/${songId}?l=ja`, { signal: AbortSignal.timeout(3000) });
+        if (jpRes.ok) {
+          const jAttr = (await jpRes.json()).data?.[0]?.attributes;
+          if (jAttr) {
+            if (jAttr.name) title = jAttr.name;
+            if (jAttr.artistName) {
+              artist = jAttr.artistName;
+              albumArtist = jAttr.albumArtistName || jAttr.artistName;
+            }
+            if (jAttr.albumName) album = jAttr.albumName;
+          }
+        }
+      } catch {}
+    } else if (!isJapanese) {
+      // 2) 中文模式：向 ['cn', 'us', 'hk', 'tw'] 嗅探华语元数据；
+      //    若远端歌名不含汉字、audioLocale 非华语，且艺人名含外文音译间隔号（· / ・，如「伊戈尔・列维特」「维伦·格罗弗」），
+      //    判定为外国艺人音译，立即终止嗅探，保留英文原名！
+      if (!/[\u4e00-\u9fa5]/.test(artist) || !/[\u4e00-\u9fa5]/.test(title) || !/[\u4e00-\u9fa5]/.test(album)) {
+        for (const zhSf of ['cn', 'us', 'hk', 'tw']) {
+          try {
+            const zhLang = catalogLangFor(zhSf, false);
+            const cnRes = await fetch(`${HOOK_BASE}/amp/v1/catalog/${zhSf}/songs/${songId}?l=${zhLang}`, { signal: AbortSignal.timeout(3000) });
+            if (cnRes.ok) {
+              const cData = await cnRes.json();
+              const cAttr = cData.data?.[0]?.attributes;
+              if (cAttr) {
+                const localeIsZh = /^(zh|cmn|yue|hak|nan)/i.test(cAttr.audioLocale || songAttr.audioLocale || '');
+                const isTransliteratedForeign = !localeIsZh &&
+                  !isChineseGenre(cAttr.genreNames) &&
+                  !isChineseGenre(songAttr.genreNames) &&
+                  !/[\u4e00-\u9fa5]/.test(cAttr.name || '') &&
+                  /[·・]/.test(cAttr.artistName || '');
+                if (isTransliteratedForeign) break;
+
+                if (!/[\u4e00-\u9fa5]/.test(artist) && cAttr.artistName && /[\u4e00-\u9fa5]/.test(cAttr.artistName)) {
+                  artist = normalizeArtistName(toSimplifiedChinese(cAttr.artistName));
+                  albumArtist = artist;
+                }
+                if (!/[\u4e00-\u9fa5]/.test(title) && cAttr.name && /[\u4e00-\u9fa5]/.test(cAttr.name)) {
+                  title = toSimplifiedChinese(cAttr.name);
+                }
+                if (cAttr.albumName && (!album || !/[\u4e00-\u9fa5]/.test(album)) && /[\u4e00-\u9fa5]/.test(cAttr.albumName)) {
+                  album = toSimplifiedChinese(cAttr.albumName);
+                }
+                if (/[\u4e00-\u9fa5]/.test(artist) && /[\u4e00-\u9fa5]/.test(title) && /[\u4e00-\u9fa5]/.test(album)) {
+                  break;
+                }
               }
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
     }
   }
@@ -4195,17 +4244,28 @@ ${artistTag} ${albumTag} #${typeLabel}`);
       }
 }
 
-// 展开单曲列表 (多选勾选模式：⬜/✅ 勾选、点歌名进单曲卡、一键下载所选；最高可完整展示曲目列表，支持返回上级)
-async function showAlbumTracks(chatId, albumData, lang = 'zh', messageId = null) {
+// 记录用户在每个专辑/歌单曲目列表当前所处的页码: key=`${chatId}:${albumId}` -> pageIndex
+const albumTrackPageMap = new Map();
+
+// 展开单曲列表 (支持分页 + 多选勾选模式：⬜/✅ 勾选、点歌名进单曲卡、一键下载所选、支持返回上级)
+async function showAlbumTracks(chatId, albumData, lang = 'zh', messageId = null, page = null) {
   const isEn = lang === 'en';
   const tracks = albumData.tracks || [];
   const selection = getSelection(chatId, 'trk', albumData.albumId);
+  const pageKey = `${chatId}:${albumData.albumId}`;
+  const PAGE_SIZE = 20;
+  const totalPages = Math.max(1, Math.ceil(tracks.length / PAGE_SIZE));
+  let curPage = page !== null && page !== undefined ? Number(page) : (albumTrackPageMap.get(pageKey) || 0);
+  if (Number.isNaN(curPage) || curPage < 0) curPage = 0;
+  if (curPage >= totalPages) curPage = totalPages - 1;
+  albumTrackPageMap.set(pageKey, curPage);
+
   const inlineKeyboard = [];
 
   // 顶部：全选 / 全不选
   inlineKeyboard.push([
     {
-      text: isEn ? '✅ Select All' : '✅ 勾选全部',
+      text: isEn ? `✅ Select All (${tracks.length})` : `✅ 勾选全部 (${tracks.length}首)`,
       callback_data: `tsel_all:${albumData.albumId}`
     },
     {
@@ -4214,25 +4274,40 @@ async function showAlbumTracks(chatId, albumData, lang = 'zh', messageId = null)
     }
   ]);
 
-  // 曲目行: [勾选] + [序号. 歌名 -> 单曲卡]
-  // Telegram inline_keyboard 上限 100 个按钮：头部 2 + 底部 3 = 5，曲目行每行 2 按钮 → 最多 47 行
-  const maxTrackRows = 47;
-  const visibleTracks = tracks.slice(0, maxTrackRows);
+  // 曲目行: [勾选] + [序号. 歌名 -> 单曲卡]（每页 20 首，完全避开 Telegram 100 按钮上限）
+  const startIdx = curPage * PAGE_SIZE;
+  const visibleTracks = tracks.slice(startIdx, startIdx + PAGE_SIZE);
   for (let i = 0; i < visibleTracks.length; i++) {
     const t = visibleTracks[i];
-    const num = t.trackNumber || (i + 1);
+    const num = t.trackNumber || (startIdx + i + 1);
     const checked = selection.has(String(t.id));
     const title = `${num}. ${t.name || 'Track'}`;
     inlineKeyboard.push([
       { text: checked ? '✅' : '⬜', callback_data: `tsel:${albumData.albumId}:${t.id}` },
-      { text: title.length > 18 ? title.slice(0, 16) + '..' : title, callback_data: `pick:${t.id}:${albumData.albumId}` }
+      { text: title.length > 26 ? title.slice(0, 24) + '..' : title, callback_data: `pick:${t.id}:${albumData.albumId}` }
     ]);
   }
-  if (tracks.length > visibleTracks.length) {
-    inlineKeyboard.push([{
-      text: isEn ? `… and ${tracks.length - visibleTracks.length} more tracks` : `… 及另外 ${tracks.length - visibleTracks.length} 首曲目`,
+
+  // 分页导航栏（当总页数 > 1 时展示）
+  if (totalPages > 1) {
+    const navRow = [];
+    if (curPage > 0) {
+      navRow.push({
+        text: isEn ? '⬅️ Prev' : '⬅️ 上一页',
+        callback_data: `tsel_page:${albumData.albumId}:${curPage - 1}`
+      });
+    }
+    navRow.push({
+      text: `📄 ${curPage + 1} / ${totalPages}`,
       callback_data: `tsel_noop:${albumData.albumId}`
-    }]);
+    });
+    if (curPage + 1 < totalPages) {
+      navRow.push({
+        text: isEn ? '➡️ Next' : '➡️ 下一页',
+        callback_data: `tsel_page:${albumData.albumId}:${curPage + 1}`
+      });
+    }
+    inlineKeyboard.push(navRow);
   }
 
   // 底部：下载所选 + 返回专辑主菜单
@@ -4246,14 +4321,14 @@ async function showAlbumTracks(chatId, albumData, lang = 'zh', messageId = null)
   ]);
   inlineKeyboard.push([
     {
-      text: isEn ? '🔙 Back to Album Menu' : '🔙 返回专辑主菜单',
+      text: isEn ? '🔙 Back to Menu' : '🔙 返回主菜单',
       callback_data: `aback:${albumData.albumId}`
     }
   ]);
 
   const text = isEn
-    ? `📜 <b>Album Tracks (${escapeHtml(albumData.name)}):</b>\nTotal ${tracks.length} tracks. Tick tracks below then tap [Download Selected] for batch download; tap a track title to configure & download it individually:`
-    : `📜 <b>专辑曲目列表 (${escapeHtml(albumData.name)}):</b>\n共 ${tracks.length} 首。勾选后点击【下载所选单曲】可批量下载；点击歌名可单独进入点歌下载：`;
+    ? `📜 <b>Tracklist: ${escapeHtml(albumData.name)} (Page ${curPage + 1}/${totalPages})</b>\nTotal <code>${tracks.length}</code> tracks, selected: <code>${selection.size}</code>. Tick tracks across pages then tap [Download Selected], or tap a track title to open it:`
+    : `📜 <b>曲目列表：${escapeHtml(albumData.name)} (第 ${curPage + 1}/${totalPages} 页)</b>\n共 <code>${tracks.length}</code> 首，已勾选 <code>${selection.size}</code> 首。支持跨页勾选后点击【下载所选单曲】批量下载；点击歌名可单独进入点歌：`;
 
   if (messageId) {
     await tgCall('editMessageText', {
@@ -4261,14 +4336,14 @@ async function showAlbumTracks(chatId, albumData, lang = 'zh', messageId = null)
       message_id: messageId,
       text,
       parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: inlineKeyboard.slice(0, 52) }
+      reply_markup: { inline_keyboard: inlineKeyboard }
     });
   } else {
     await tgCall('sendMessage', {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: inlineKeyboard.slice(0, 52) }
+      reply_markup: { inline_keyboard: inlineKeyboard }
     });
   }
 }
@@ -5206,13 +5281,15 @@ ${quotaText}
     const messageId = cb.message?.message_id;
     const sessionKey = `${chatId}_${messageId}`;
 
-    // 处理更新日志查看回调
+    // 处理更新日志查看回调 (支持 latest 与 history 两种模式)
     if (data.startsWith('show_changelog')) {
-      const targetLang = data.split(':')[1] || getUserLang(chatId, cb.from?.language_code);
+      const parts = data.split(':');
+      const targetLang = parts[1] || getUserLang(chatId, cb.from?.language_code);
+      const mode = parts[2] === 'history' ? 'history' : 'latest';
       const cl = loadChangelog();
       if (cl.latestVersion) db.set(`seen_ver_${chatId}`, String(cl.latestVersion));
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-      const card = buildChangelogCard(targetLang);
+      const card = buildChangelogCard(targetLang, mode);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -5463,7 +5540,11 @@ ${quotaText}
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
+        try {
+          albumData = String(albumId).startsWith('pl.')
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
+            : await fetchAlbumDetails(albumId, 'hk', userLang);
+        } catch {}
       }
       if (albumData) {
         await showAlbumTracks(chatId, albumData, userLang, messageId);
@@ -5472,7 +5553,7 @@ ${quotaText}
     }
 
     // ==================== 专辑曲目多选勾选回调 (无需 session) ====================
-    if (data.startsWith('tsel:') || data.startsWith('tsel_all:') || data.startsWith('tsel_none:') || data.startsWith('tsel_noop:') || data.startsWith('tsel_dl:')) {
+    if (data.startsWith('tsel:') || data.startsWith('tsel_page:') || data.startsWith('tsel_all:') || data.startsWith('tsel_none:') || data.startsWith('tsel_noop:') || data.startsWith('tsel_dl:')) {
       const parts = data.split(':');
       const albumId = parts[1];
       if (data.startsWith('tsel_noop:')) {
@@ -5483,7 +5564,11 @@ ${quotaText}
       const selection = getSelection(chatId, 'trk', albumId);
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
+        try {
+          albumData = String(albumId).startsWith('pl.')
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
+            : await fetchAlbumDetails(albumId, 'hk', userLang);
+        } catch {}
       }
 
       if (data.startsWith('tsel_dl:')) {
@@ -5513,14 +5598,17 @@ ${quotaText}
           return;
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        handleMultiTrackDownload(chatId, messageId, albumData, selection, 'Lossless', true, false, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman')
+        handleMultiTrackDownload(chatId, messageId, albumData, selection, session?.quality || 'Lossless', session?.needLrc ?? true, false, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman')
           .catch(e => console.error('[TG-Bot] 多选单曲批量转存任务出错:', e.message))
           .finally(() => userSessions.delete(sessionKey));
         return;
       }
 
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-      if (data.startsWith('tsel:')) {
+      let targetPage = null;
+      if (data.startsWith('tsel_page:')) {
+        targetPage = parseInt(parts[2], 10) || 0;
+      } else if (data.startsWith('tsel:')) {
         const trackId = parts[2];
         if (selection.has(String(trackId))) selection.delete(String(trackId));
         else selection.add(String(trackId));
@@ -5533,7 +5621,7 @@ ${quotaText}
       }
 
       if (albumData) {
-        await showAlbumTracks(chatId, albumData, userLang, messageId);
+        await showAlbumTracks(chatId, albumData, userLang, messageId, targetPage);
       } else {
         await tgCall('editMessageText', {
           chat_id: chatId,
@@ -5550,7 +5638,11 @@ ${quotaText}
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       let albumData = session?.albumData;
       if (!albumData) {
-        try { albumData = await fetchAlbumDetails(albumId, 'hk', userLang); } catch {}
+        try {
+          albumData = String(albumId).startsWith('pl.')
+            ? await fetchPlaylistDetails(albumId, 'hk', userLang)
+            : await fetchAlbumDetails(albumId, 'hk', userLang);
+        } catch {}
       }
       if (albumData) {
         const card = buildAlbumCard(albumData, session?.quality || 'Lossless', session?.needLrc ?? true, session?.deliveryMode || 'zip', userLang, isOwner, session?.backArtistId || null, session?.needTranslate || false, session?.embedLyricsMode || 'lrc', session?.saveLyricsFormats || [], session?.needRuby || false, session?.rubyMode || 'roman');

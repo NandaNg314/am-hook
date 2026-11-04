@@ -712,25 +712,74 @@ function syncChangelogUI() {
     const doneBtn = $('changelog-done-btn');
     const closeBtn = $('changelog-close-btn');
     const bodyEl = $('changelog-dialog-body');
-    if (titleEl) titleEl.textContent = isEn ? `What's New (v${ver})` : `更新说明 (v${ver})`;
+    if (titleEl) titleEl.textContent = isEn ? `What's New & History (v${ver})` : `更新说明与历史记录 (v${ver})`;
     if (langBtn) langBtn.textContent = isEn ? '中文' : 'English';
     if (doneBtn) doneBtn.textContent = isEn ? 'Got it' : '知道了';
     if (closeBtn) closeBtn.setAttribute('aria-label', isEn ? 'Close' : '关闭');
     if (bodyEl) {
-      bodyEl.replaceChildren(...(changelogData.releases || []).map((rel) => {
-        const relTitle = (isEn ? rel.title?.en : rel.title?.zh) || '';
-        const relItems = (isEn ? rel.items?.en : rel.items?.zh) || [];
-        const card = el('div', { className: 'changelog-release' },
-          el('div', { className: 'changelog-release-head' },
-            el('span', { className: 'changelog-ver', textContent: `v${rel.version}${relTitle ? ' · ' + relTitle : ''}` }),
-            el('span', { className: 'changelog-date', textContent: rel.date || '' }),
-          ),
-          el('ul', { className: 'changelog-list' },
-            ...relItems.map((txt) => el('li', { textContent: txt })),
+      const releases = changelogData.releases || [];
+      const nodes = [];
+      if (releases.length > 0) {
+        const latest = releases[0];
+        const lTitle = (isEn ? latest.title?.en : latest.title?.zh) || '';
+        const lItems = (isEn ? latest.items?.en : latest.items?.zh) || [];
+        nodes.push(
+          el('div', { className: 'changelog-release is-latest' },
+            el('div', { className: 'changelog-release-head' },
+              el('span', { className: 'changelog-ver' },
+                `v${latest.version}${lTitle ? ' · ' + lTitle : ''}`,
+                el('span', { className: 'changelog-latest-badge', textContent: isEn ? 'LATEST' : '当前版本' }),
+              ),
+              el('span', { className: 'changelog-date', textContent: latest.date || '' }),
+            ),
+            el('ul', { className: 'changelog-list' },
+              ...lItems.map((txt) => el('li', { textContent: txt })),
+            ),
           ),
         );
-        return card;
-      }));
+      }
+
+      if (releases.length > 1) {
+        const older = releases.slice(1);
+        let allExpanded = false;
+        const detailsNodes = older.map((rel) => {
+          const rTitle = (isEn ? rel.title?.en : rel.title?.zh) || '';
+          const rItems = (isEn ? rel.items?.en : rel.items?.zh) || [];
+          return el('details', { className: 'changelog-history-item' },
+            el('summary', { className: 'changelog-history-summary' },
+              el('span', { textContent: `v${rel.version}${rTitle ? ' · ' + rTitle : ''}` }),
+              el('span', { className: 'changelog-date', textContent: `${rel.date || ''} ▾` }),
+            ),
+            el('div', { className: 'changelog-history-body' },
+              el('ul', { className: 'changelog-list' },
+                ...rItems.map((txt) => el('li', { textContent: txt })),
+              ),
+            ),
+          );
+        });
+
+        const expandBtn = el('button', {
+          type: 'button',
+          className: 'changelog-expand-btn',
+          textContent: isEn ? 'Expand All' : '展开全部',
+        });
+        expandBtn.addEventListener('click', () => {
+          allExpanded = !allExpanded;
+          detailsNodes.forEach((d) => { d.open = allExpanded; });
+          expandBtn.textContent = allExpanded
+            ? (isEn ? 'Collapse All' : '收起全部')
+            : (isEn ? 'Expand All' : '展开全部');
+        });
+
+        nodes.push(
+          el('div', { className: 'changelog-history-head' },
+            el('span', { textContent: isEn ? `📜 Release History (${older.length})` : `📜 历史版本记录 (${older.length})` }),
+            expandBtn,
+          ),
+          ...detailsNodes,
+        );
+      }
+      bodyEl.replaceChildren(...nodes);
     }
   }
 }

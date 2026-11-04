@@ -2122,12 +2122,13 @@ body.lyrics-open { overflow: hidden; }
   background: var(--surface-2);
   border: 1px solid var(--line);
 }
-.changelog-release + .changelog-release {
-  margin-top: 10px;
+.changelog-release.is-latest {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface-2));
 }
 .changelog-release-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
@@ -2136,11 +2137,24 @@ body.lyrics-open { overflow: hidden; }
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.changelog-latest-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
 }
 .changelog-date {
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 .changelog-list {
   margin: 0;
@@ -2154,6 +2168,58 @@ body.lyrics-open { overflow: hidden; }
 }
 .changelog-list li {
   color: var(--text);
+}
+.changelog-history-head {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.changelog-expand-btn {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.changelog-expand-btn:hover {
+  background: var(--accent-soft);
+}
+.changelog-history-item {
+  border-radius: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.changelog-history-summary {
+  padding: 10px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.changelog-history-summary::-webkit-details-marker {
+  display: none;
+}
+.changelog-history-summary:hover {
+  background: var(--surface-3);
+}
+.changelog-history-body {
+  padding: 0 13px 11px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
 }
 
 /* 主页下载交付偏好卡片 (Apple 原生自适应风格) */
