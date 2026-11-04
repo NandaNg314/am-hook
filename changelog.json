@@ -2,31 +2,31 @@
   "latestVersion": "2.7",
   "date": "2026-11-04",
   "oneLiner": {
-    "zh": "新增 /tags 命令：可为 .m4a 指定任意 BCP-47 标签语言（如 ar-EG、ja-JP），界面语言与文件标签语言彻底解耦",
-    "en": "New /tags command: pick any BCP-47 tag language (ar-EG, ja-JP…) for your .m4a files — UI and tag language are now fully independent"
+    "zh": "TG Bot 新增 /tags 命令：网页端「曲库语言」一直支持，现在机器人也能选任意 BCP-47 标签语言（如 ar-EG、ja-JP）",
+    "en": "New /tags command in the TG bot: the web UI has always had a catalog-language picker, now the bot can choose any BCP-47 tag language too"
   },
   "releases": [
     {
       "version": "2.7",
       "date": "2026-11-04",
       "title": {
-        "zh": "自定义音乐标签语言 (BCP-47)",
-        "en": "Custom Audio Tag Language (BCP-47)"
+        "zh": "TG Bot 补齐「标签语言」选择",
+        "en": "TG Bot Catches Up on Tag Language Selection"
       },
       "items": {
         "zh": [
-          "🏷 新增 /tags 命令：内置 19 种常用语言预设，也可直接输入任意 BCP-47 代码（如 ar-EG、ja-JP、zh-Hant-HK）",
-          "🔀 界面语言与标签语言解耦：可以「英文界面 + 日语标签」，两者互不影响",
-          "🔍 智能语言探测：自动跨地区寻找真正匹配目标语言的官方名称，避免 Apple Music 静默回退造成的语言错乱",
-          "©️ 显式语言下完全保留原名：不转简体、不做华语艺名映射、不做跨区嗅探，你要什么语言就给什么语言",
-          "📋 指令菜单补全：/ 菜单现可正常提示 /tags、/changelog 等全部命令"
+          "🏷 新增 /tags 命令：网页端的朋友早就用惯了左下角「曲库语言」，现在机器人在对话里也能选 —— 内置 19 种常用语言预设，也可直接输入任意 BCP-47 代码（如 ar-EG、ja-JP、zh-Hant-HK）",
+          "🔀 与网页端一致，标签语言和界面语言互不影响：可以「英文界面 + 日语标签」",
+          "🔍 按各地区实际支持的 supportedLanguageTags 精准匹配，而不是盲发一次就完事 —— Apple Music 遇到不支持的语言会静默回退，只发一次很容易拿到错语言",
+          "©️ 一旦你明确指定了语言，就不再转简体、不做华语艺名映射、不做跨区嗅探：要什么语言就给什么语言",
+          "💡 小提示：Apple Music 并非所有语言组合都有本地化名称（例如阿拉伯语、泰语在多数区没有），这类情况下会回退到该区默认语言，属于平台限制"
         ],
         "en": [
-          "🏷 New /tags command: 19 built-in language presets, plus any custom BCP-47 code (ar-EG, ja-JP, zh-Hant-HK…)",
-          "🔀 UI and tag language decoupled: run an English interface while tagging files in Japanese",
-          "🔍 Smart language probing: tries multiple storefronts to find the genuinely matching localized names, avoiding Apple Music's silent fallbacks",
-          "©️ Explicit language keeps names verbatim: no simplification, no artist-alias mapping, no cross-region sniffing",
-          "📋 Slash commands complete: /tags and /changelog now show up in the / menu"
+          "🏷 New /tags command: the web UI has had a catalog-language picker in the bottom-left forever — now the bot can do it in chat too. 19 built-in presets, plus any custom BCP-47 code (ar-EG, ja-JP, zh-Hant-HK…)",
+          "🔀 Matching the web UI, tag language and interface language are independent: run an English UI while tagging files in Japanese",
+          "🔍 Matches against each storefront's actual supportedLanguageTags instead of firing one blind request — Apple Music silently falls back for unsupported languages, so a single request often returns the wrong language",
+          "©️ Once you pick a language explicitly, names are kept verbatim: no simplification, no artist-alias mapping, no cross-region sniffing",
+          "💡 Heads-up: Apple Music doesn't have localized names for every language combination (Arabic and Thai are missing in most regions); those fall back to the storefront default — that's a platform limit"
         ]
       }
     },
