@@ -71,14 +71,20 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     const card = root.querySelector('#delivery-options-card');
     if (card) {
       const titleEl = card.querySelector('.options-title');
-      const hintEl = card.querySelector('.options-hint');
+      const liveTextEl = card.querySelector('[data-options-live-text]');
+      const subHintEl = card.querySelector('[data-options-subhint]');
       const groupTitles = card.querySelectorAll('.options-group-title');
       const localLabel = card.querySelector('#mode-local')?.closest('label')?.querySelector('.radio-text');
       const gofileLabel = card.querySelector('#mode-gofile')?.closest('label')?.querySelector('.radio-text');
       const embedLabel = card.querySelector('#opt-embed-metadata')?.closest('label')?.querySelector('.checkbox-text');
       const lrcLabel = card.querySelector('#opt-download-lrc')?.closest('label')?.querySelector('.checkbox-text');
       if (titleEl) titleEl.textContent = isEn ? 'Download Preferences' : '下载偏好设置';
-      if (hintEl) hintEl.textContent = isEn ? 'Global' : '全局生效';
+      if (liveTextEl) liveTextEl.textContent = isEn ? 'Active · Syncs everywhere' : '已生效 · 全站同步';
+      if (subHintEl) {
+        subHintEl.textContent = isEn
+          ? 'Changes save instantly and apply to every song, album and playlist page — downloads anywhere follow these settings.'
+          : '选择会立即保存，并同步到所有歌曲、专辑、歌单页面 —— 在任意页面点下载都会按这里的设置执行。';
+      }
       if (groupTitles[0]) groupTitles[0].textContent = isEn ? 'Delivery Target' : '交付目标';
       if (groupTitles[1]) groupTitles[1].textContent = isEn ? 'Track Enhancements' : '歌曲增强';
       if (localLabel) {
@@ -122,12 +128,24 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
   const modeGofileEl = root.querySelector('#mode-gofile');
   const optEmbedEl = root.querySelector('#opt-embed-metadata');
   const optLrcEl = root.querySelector('#opt-download-lrc');
+  const liveHintEl = root.querySelector('[data-options-live-hint]');
+
+  // 每次保存后让"已生效"徽标闪一下，给用户一个明确的操作反馈
+  let liveFlashTimer = 0;
+  function flashLiveHint() {
+    if (!liveHintEl) return;
+    liveHintEl.classList.add('is-flash');
+    clearTimeout(liveFlashTimer);
+    liveFlashTimer = setTimeout(() => liveHintEl.classList.remove('is-flash'), 900);
+  }
+
   if (modeLocalEl && modeGofileEl) {
     const isGf = localStorage.getItem('am_gofile_upload') === 'true';
     modeGofileEl.checked = isGf;
     modeLocalEl.checked = !isGf;
     const syncMode = () => {
       localStorage.setItem('am_gofile_upload', String(modeGofileEl.checked));
+      flashLiveHint();
     };
     modeLocalEl.addEventListener('change', syncMode);
     modeGofileEl.addEventListener('change', syncMode);
@@ -141,6 +159,7 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
       } else if (localStorage.getItem('am_lyrics_fmt') === 'off') {
         localStorage.setItem('am_lyrics_fmt', 'lrc');
       }
+      flashLiveHint();
     });
   }
   if (optLrcEl) {
@@ -149,6 +168,7 @@ export function mount({ root, signal, player, navigate, onLangChange, toast, loa
     }
     optLrcEl.addEventListener('change', () => {
       localStorage.setItem('am_save_lrc', String(optLrcEl.checked));
+      flashLiveHint();
     });
   }
 

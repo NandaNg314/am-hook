@@ -4425,6 +4425,7 @@ async function handleUpdate(update) {
       const savedLang = db.get(`lang_${chatId}`);
       const userLang = getUserLang(chatId, msg.from?.language_code);
       const t = I18N[userLang] || I18N.zh;
+      const isEnHelp = userLang === 'en';
 
       const langMarkup = {
         inline_keyboard: [
@@ -4446,10 +4447,21 @@ async function handleUpdate(update) {
         return;
       }
 
+      // /help 额外附上指令速查（很多人不知道 /changelog、/stats、/lang 的存在）
+      const commandCheatSheet = isEnHelp
+        ? `\n\n⌨️ <b>Available Commands:</b>
+• <code>/changelog</code> — What's New & full release history
+• <code>/stats</code> — Your daily quota & server bandwidth
+• <code>/lang</code> — Switch between English / 中文`
+        : `\n\n⌨️ <b>可用指令：</b>
+• <code>/changelog</code> — 最新更新说明与历史版本记录
+• <code>/stats</code> — 查询今日剩余配额与服务器带宽
+• <code>/lang</code> — 切换中文 / English`;
+
       const clVer = loadChangelog().latestVersion || '2.6';
       await tgCall('sendMessage', {
         chat_id: chatId,
-        text: t.welcome,
+        text: t.welcome + commandCheatSheet,
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
@@ -4461,6 +4473,12 @@ async function handleUpdate(update) {
               {
                 text: userLang === 'zh' ? '🌐 切换为 English' : '🌐 Switch to 中文',
                 callback_data: userLang === 'zh' ? 'set_lang:en' : 'set_lang:zh'
+              }
+            ],
+            [
+              {
+                text: userLang === 'zh' ? '📜 历史更新记录' : '📜 Release History',
+                callback_data: `show_changelog:${userLang}:history`
               }
             ]
           ]
@@ -6010,36 +6028,46 @@ async function startBot() {
     const me = await tgCall('getMe');
     console.log(`[TG-Bot] ✔ 机器人鉴权成功: @${me.username} (${me.first_name})`);
 
-    // 注册 Telegram 原生指令菜单 (普通用户默认仅见常规 4 个指令；站长专属呈现全套运维指令)
+    // 注册 Telegram 原生指令菜单（普通用户 5 个常用指令；站长专属叠加全套运维指令）
     try {
-      await tgCall('setMyCommands', {
-        commands: [
-          { command: 'start', description: 'Start Bot & Language Guide / 启动与语言切换' },
-          { command: 'changelog', description: "What's New / 最新更新日志" },
-          { command: 'help', description: 'Usage & Tips / 使用帮助与格式说明' },
-          { command: 'stats', description: 'Bandwidth & Quotas / 带宽流量与配额' },
-          { command: 'lang', description: 'Switch Language / 切换中英语言' }
-        ],
-        scope: { type: 'default' }
-      });
+      const userCommands = [
+        { command: 'start', description: '启动与语言切换 / Start & Language' },
+        { command: 'changelog', description: '最新更新说明与版本历史 / What\'s New' },
+        { command: 'help', description: '使用帮助与格式说明 / Usage & Tips' },
+        { command: 'stats', description: '带宽流量与配额 / Bandwidth & Quota' },
+        { command: 'lang', description: '切换中英语言 / Switch Language' }
+      ];
+      const ownerCommands = [
+        { command: 'start', description: '启动与语言切换 / Start & Language' },
+        { command: 'changelog', description: '最新更新说明与版本历史 / What\'s New' },
+        { command: 'help', description: '使用帮助与格式说明 / Usage & Tips' },
+        { command: 'stats', description: '带宽流量与配额 / Bandwidth & Quota' },
+        { command: 'lang', description: '切换中英语言 / Switch Language' },
+        { command: 'history', description: '最近1小时全平台任务流水 (Web+TG)' },
+        { command: 'status', description: 'VPS 系统资源与服务监控仪表盘' },
+        { command: 'check', description: '全链路服务与 Apple Music 账号探活' },
+        { command: 'clean', description: '一键扫描清理 VPS 临时垃圾与残留会话' },
+        { command: 'restart', description: '远程重启指定服务 (bot/cloud/hook/api/all)' }
+      ];
 
+      // 全局默认（含私聊、群组、频道三个作用域，避免某些客户端按作用域取到旧菜单）
+      for (const scope of [
+        { type: 'default' },
+        { type: 'all_private_chats' },
+        { type: 'all_group_chats' },
+        { type: 'all_chat_administrators' }
+      ]) {
+        await tgCall('setMyCommands', { commands: userCommands, scope });
+      }
+
+      // 站长私聊专属：普通指令 + 运维指令（Telegram 上限 100 条，此处 10 条）
       if (OWNER_USER_ID) {
         await tgCall('setMyCommands', {
-          commands: [
-            { command: 'start', description: '启动与使用指南' },
-            { command: 'history', description: '最近1小时全平台转存流水 (Web+TG)' },
-            { command: 'status', description: 'VPS 硬件资源与服务监控仪表盘' },
-            { command: 'check', description: '全链路服务与 Apple Music 账号探活' },
-            { command: 'clean', description: '一键扫描清理 VPS 临时垃圾' },
-            { command: 'cleansessions', description: '强力清空 /tmp/am_sessions 会话缓存' },
-            { command: 'restart', description: '远程重启指定服务 (bot/cloud/hook/api/all)' },
-            { command: 'stats', description: '服务器流量与配额监控' },
-            { command: 'lang', description: '切换语言 (Switch Language)' }
-          ],
+          commands: ownerCommands,
           scope: { type: 'chat', chat_id: Number(OWNER_USER_ID) }
         });
       }
-      console.log('[TG-Bot] ✔ Telegram 指令菜单 (默认用户菜单 + 站长专属菜单) 已成功同步注册');
+      console.log('[TG-Bot] ✔ Telegram 指令菜单已同步注册 (全局 5 条 + 站长专属 10 条)');
     } catch (cmdErr) {
       console.warn('[TG-Bot] 注册 Telegram 指令菜单失败:', cmdErr.message);
     }
