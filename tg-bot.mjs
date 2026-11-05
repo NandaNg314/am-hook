@@ -3122,6 +3122,13 @@ function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true,
 
   const typeLabel = isPl ? (isEn ? 'Playlist' : '歌单') : (isEn ? 'Album' : '专辑');
   // Gofile 模式对普通用户是默认推荐：上传更快、不受 2GB 限制、大专辑不刷屏。给一行明确提示。
+  // 当前选择的摘要：让用户一眼看清「马上会用哪些参数下载」，而不是靠猜按钮含义
+  const embedTxt = embedMode === 'lrc' ? 'LRC' : embedMode === 'ttml' ? 'TTML' : (isEn ? 'None' : '不内嵌');
+  const extTxt = saveFormats.length ? saveFormats.map((f) => '.' + f).join(' + ') : (isEn ? 'None' : '不生成');
+  const optSummary = isEn
+    ? `\n\n⚙️ <b>Current:</b> ${selectedQuality} · Lyrics: ${embedTxt} · External: ${extTxt} · Translation: ${needTranslate ? 'Yes' : 'No'} · Ruby: ${needRuby ? (rubyMode === 'kana' ? 'Hiragana' : 'Romaji') : 'No'}`
+    : `\n\n⚙️ <b>当前设置：</b>${selectedQuality} · 歌词：${embedTxt} · 外置：${extTxt} · 翻译：${needTranslate ? '需要' : '不需要'} · 注音：${needRuby ? (rubyMode === 'kana' ? '平假名' : '罗马音') : '不需要'}`;
+
   const gofileHint = deliveryMode === 'gofile'
     ? (isEn
       ? '\n\n☁️ <b>Gofile mode:</b> faster upload, no 2GB limit, no chat spam. The link is temporary — <b>download it early</b> before it expires.'
@@ -3133,13 +3140,13 @@ function buildAlbumCard(albumData, selectedQuality = 'Lossless', needLrc = true,
 📅 <b>Release Date:</b> ${albumData.releaseDate || 'Unknown'}
 🎵 <b>Total Tracks:</b> <b>${albumData.tracks.length}</b> tracks
 ${isCached ? '\n⚡ <b>Status: Fully archived in library, tap for instant delivery!</b>' : ''}
-${canFullDownload ? 'Select options to download full album or individual tracks below:' : 'Please tap [View & Pick Individual Tracks] below to select tracks to download:'}${gofileHint}` :
+${canFullDownload ? 'Select options to download full album or individual tracks below:' : 'Please tap [View & Pick Individual Tracks] below to select tracks to download:'}${optSummary}${gofileHint}` :
 `💿 <b>${typeLabel}全辑转存：${escapeHtml(albumData.name)}</b>
 👤 <b>${isPl ? '歌单作者' : '艺人'}：</b>${escapeHtml(albumData.artistName)}
 📅 <b>发行时间：</b>${albumData.releaseDate || '未知'}
 🎵 <b>曲目总数：</b>共 <b>${albumData.tracks.length}</b> 首歌曲
 ${isCached ? '\n⚡ <b>状态：该全辑已完整归档，点击将秒速直发！</b>' : ''}
-${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单曲】单独选择单曲：' : '普通用户请点击【查看与单独点选单曲】选择您想下载的单曲：'}${gofileHint}`;
+${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单曲】单独选择单曲：' : '普通用户请点击【查看与单独点选单曲】选择您想下载的单曲：'}${optSummary}${gofileHint}`;
 
   const inlineKeyboard = [];
 
@@ -3184,10 +3191,11 @@ ${canFullDownload ? '您可以一键下载整张专辑，或点击【展开单�
     ]);
 
     const aEmbedLabel = (m) => m === 'lrc' ? 'LRC' : (m === 'ttml' ? 'TTML' : (isEn ? 'Off' : '关'));
+    const aEmbedMark = (m) => (embedMode === m ? ' ✅' : '');
     inlineKeyboard.push([
-      { text: `📝 ${isEn ? 'Embed' : '内嵌'}: ${aEmbedLabel('lrc')} ${embedMode === 'lrc' ? '✅' : ''}`, callback_data: `aefmt:lrc:${albumData.albumId}` },
-      { text: `${aEmbedLabel('ttml')} ${embedMode === 'ttml' ? '✅' : ''}`, callback_data: `aefmt:ttml:${albumData.albumId}` },
-      { text: `${aEmbedLabel('off')} ${embedMode === 'off' ? '✅' : ''}`, callback_data: `aefmt:off:${albumData.albumId}` }
+      { text: `📝 ${isEn ? 'Embed' : '内嵌'} ${aEmbedLabel('lrc')}${aEmbedMark('lrc')}`, callback_data: `aefmt:lrc:${albumData.albumId}` },
+      { text: `${aEmbedLabel('ttml')}${aEmbedMark('ttml')}`, callback_data: `aefmt:ttml:${albumData.albumId}` },
+      { text: `${aEmbedLabel('off')}${aEmbedMark('off')}`, callback_data: `aefmt:off:${albumData.albumId}` }
     ]);
 
     inlineKeyboard.push([
@@ -4774,9 +4782,11 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
   // Gofile 模式在 TG 侧不落任何群消息，缓存 key 与 zip/media 分开，避免秒传命中错误的分支
   const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
   const totalTracks = albumData.tracks.length;
-  // 专辑整包（zip / media / gofile 交付）：每首歌的音频+歌词已打进压缩包，再单独发 .lrc 纯属冗余，
-  // 这里把外置文件收敛为空，只保留内嵌歌词；单曲勾选/逐曲推送的路径不受影响。
-  if (deliveryMode === 'zip' || deliveryMode === 'media' || deliveryMode === 'gofile') saveLyricsFormats = [];
+  // 外置歌词（.lrc / .ttml）改为用户可选：
+  // 勾了就真的生成并写进压缩包/文件夹；不勾就只保留内嵌歌词。
+  // 唯一例外是「原生音频合辑」模式 —— 它走 TG 媒体组逐条发送，外置文件无法随包附带，
+  // 强行保留会变成一堆零散消息，所以该模式仍收敛为空。
+  if (deliveryMode === 'media') saveLyricsFormats = [];
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -7556,7 +7566,13 @@ ${quotaText}
           parse_mode: 'HTML',
           reply_markup: card.reply_markup
         });
-        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        // 明确告知切换结果，避免"点了没反应"的错觉
+        const fmtZh = session.embedLyricsMode === 'lrc' ? '内嵌 LRC' : session.embedLyricsMode === 'ttml' ? '内嵌 TTML' : '不内嵌歌词';
+        const fmtEn = session.embedLyricsMode === 'lrc' ? 'Embed LRC' : session.embedLyricsMode === 'ttml' ? 'Embed TTML' : 'No embedded lyrics';
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: isEn ? `✅ Lyrics: ${fmtEn}` : `✅ 歌词：${fmtZh}`
+        });
         return;
       }
 
@@ -7574,7 +7590,16 @@ ${quotaText}
           parse_mode: 'HTML',
           reply_markup: card.reply_markup
         });
-        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        const on = session.saveLyricsFormats.includes(fmt);
+        const extNote = session.deliveryMode === 'media'
+          ? (isEn ? ' (MediaGroup mode cannot attach external files)' : '（原生音频合辑模式无法附带外置文件）')
+          : '';
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: isEn
+            ? `${on ? '✅ External' : '❌ External'} .${fmt.toUpperCase()} ${on ? 'enabled' : 'disabled'}${extNote}`
+            : `${on ? '✅ 已生成外置' : '❌ 已关闭外置'} .${fmt.toUpperCase()}${extNote}`
+        });
         return;
       }
 
