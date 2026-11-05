@@ -5712,153 +5712,233 @@ ${quotaText}
       if (cmd === 'history' || cmd === 'logs') {
         const waitMsg = await tgCall('sendMessage', {
           chat_id: chatId,
-          text: '📋 <b>正在汇总最近 24 小时任务...</b>',
+          text: '📊 <b>正在汇总最近 24 小时任务...</b>',
           parse_mode: 'HTML'
         });
 
         try {
-          // 目标：一眼看清「跑了多少、成功多少、失败/跳过多少、谁在用、现在忙不忙」。
-          // 单曲级的"标签注入完成 / 剥除 btrt"这类过程日志一律不看 —— 那是噪声，不是结果。
+          // 只认「结果型」日志：入队 / 完成 / 打包 / 归档 / 跳过 / 失败。
+          // 每首歌都会打一遍的"标签注入""剥除 btrt""解碎片"属于过程噪声，一律不收。
+          // 时间同时支持两种 journalctl 格式：传统 "Nov 05 14:29:02 host ..." 与 ISO "2026-11-05T14:29:02+0800 host ..."
           const rawLogs = execSync(
             'journalctl -u am-cloud.service -u am-tgbot.service --since "24 hours ago" --no-pager',
             { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
           );
 
-          const stat = {
-            enqueued: 0,          // [Queue] 任务入队
-            cloudDone: 0,         // ✔ 批处理就绪（云端转存成功的单曲）
-            zipDone: 0,           // 🎉 全辑 ZIP 并发转存完成
-            tgArchived: 0,        // [TG-Bot] 分卷已归档频道
-            regionSkip: 0,        // 地区无版权跳过
-            errors: [],           // 真正的报错
-            users: new Map(),     // chatId -> 次数（从 TG 侧任务日志里认）
-            hours: new Map(),     // 'HH' -> 任务数，用于判断使用高峰
+          const RE_LINE = /^(\S+\s+\d+\s+)(\d{2}):(\d{2}):(\d{2})\s+\S+\s+\S+?:\s?(.*)$/;
+          const RE_LINE_ISO = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})\S*\s+\S+\s+\S+?:\s?(.*)$/;
+
+          const A = {
+            enqueued: 0,
+            completed: 0,
+            zipBatches: 0,
+            zipBytes: 0,
+            zipFiles: 0,
+            archived: 0,
+            regionSkip: 0,
+            lyricTimeout: 0,
+            durations: [],
+            qualities: new Map(),
+            errors: [],
+            hours: new Map(),
+            recent: [],
+            users: new Map(),
+            restarts: 0,
+            autosleep: 0,
           };
 
-          // 每条日志形如：Nov 05 14:29:02 host node[pid]: 正文
-          const LINE = /^(\w{3}\s+\d+\s+)(\d{2}):(\d{2}):(\d{2})\s+\S+\s+\S+?:\s?(.*)$/;
-
           for (const line of rawLogs.split('\n')) {
-            const m = line.match(LINE);
+            const m = line.match(RE_LINE_ISO) || line.match(RE_LINE);
             if (!m) continue;
             const hh = m[2];
+            const mm = m[3];
             const msg = m[5];
 
             if (msg.includes('[Queue] 任务入队')) {
-              stat.enqueued++;
-              stat.hours.set(hh, (stat.hours.get(hh) || 0) + 1);
+              A.enqueued++;
+              A.hours.set(hh, (A.hours.get(hh) || 0) + 1);
+              const q = msg.match(/\(([^()]+)\)\s*\(等待排队中/);
+              if (q) {
+                const name = q[1].trim();
+                A.qualities.set(name, (A.qualities.get(name) || 0) + 1);
+              }
             } else if (msg.includes('✔ 批处理就绪')) {
-              stat.cloudDone++;
+              A.completed++;
+              const t = msg.match(/耗时:\s*([\d.]+)\s*s/);
+              if (t) A.durations.push(parseFloat(t[1]));
+            } else if (msg.includes('全辑 ZIP 封装完成')) {
+              A.zipBatches++;
+              const s = msg.match(/\(([\d.]+)\s*(GB|MB),\s*共\s*(\d+)\s*个文件/);
+              if (s) {
+                const mb = s[2] === 'GB' ? parseFloat(s[1]) * 1024 : parseFloat(s[1]);
+                A.zipBytes += mb;
+                A.zipFiles += Number(s[3]);
+              }
             } else if (msg.includes('全辑 ZIP 并发转存完成') || msg.includes('转存完成!')) {
-              stat.zipDone++;
+              const k = msg.match(/总耗时:\s*([\d.]+)\s*s/);
+              const link = msg.match(/(https:\/\/gofile\.io\/d\/\S+)/);
+              A.recent.push({ hh, mm, sec: k ? k[1] : '?', link: link ? link[1] : '' });
             } else if (msg.includes('已归档频道')) {
-              stat.tgArchived++;
+              A.archived++;
             } else if (msg.includes('无资源或未上架') || msg.includes('当前歌曲在解析账号所属地区')) {
-              stat.regionSkip++;
-            } else if (/❌|失败|Error:|error:|未捕获异常|Unhandled/.test(msg)) {
-              // 只保留对站长有意义的失败，过滤掉已知无害噪声
-              if (!/Failed to fetch|ETIMEDOUT.*retry|重试/.test(msg)) {
-                stat.errors.push({ hh, msg: msg.replace(/\s+/g, ' ').slice(0, 120) });
+              A.regionSkip++;
+            } else if (msg.includes('歌词抓取失败')) {
+              A.lyricTimeout++;
+            } else if (msg.includes('自适应等待')) {
+              A.autosleep++;
+            } else if (msg.includes('正在启动') || msg.includes('已就绪: http')) {
+              A.restarts++;
+            }
+
+            if (/❌|失败|Error:|error:|Unhandled|崩溃/.test(msg)) {
+              const noise = /Failed to fetch|重试|EAGAIN|歌词抓取失败/;
+              if (!noise.test(msg)) {
+                A.errors.push({ hh, mm, msg: msg.replace(/\s+/g, ' ').slice(0, 110) });
               }
             }
 
-            // 申请人/使用者识别：TG Bot 的批量任务日志里带 chatId
-            const u = msg.match(/chat(?:Id|_id)[=: ]+(\d{6,})/i) || msg.match(/用户\s+(\d{9,})/);
-            if (u) {
-              stat.users.set(u[1], (stat.users.get(u[1]) || 0) + 1);
-            }
+            const u = msg.match(/chat_?id[=: ]+(\d{6,})/i) || msg.match(/用户\s+(\d{9,})/);
+            if (u) A.users.set(u[1], (A.users.get(u[1]) || 0) + 1);
           }
 
-          // ── 当前状态（实时，不看日志） ──
-          let queueInfo = '空闲';
+          let queueBusy = 0, queueWait = 0;
           try {
             const q = JSON.parse(execSync('curl -s --max-time 3 http://127.0.0.1:31409/queue', { encoding: 'utf8' }));
             const d = q.data || {};
-            const busy = (d.running || []).length;
-            const waiting = d.waiting || 0;
-            if (busy || waiting) queueInfo = `正在跑 <b>${busy}</b> 个，排队 <b>${waiting}</b> 个`;
+            queueBusy = (d.running || []).length;
+            queueWait = d.waiting || 0;
           } catch {}
 
-          let activeSessions = 0;
+          let sessions = 0;
           try {
             if (fs.existsSync('/tmp/am_sessions')) {
               for (const e of fs.readdirSync('/tmp/am_sessions')) {
                 try {
                   const st = fs.statSync(path.join('/tmp/am_sessions', e));
-                  if (st.isDirectory() && (Date.now() - st.mtimeMs) < 15 * 60 * 1000) activeSessions++;
+                  if (st.isDirectory() && (Date.now() - st.mtimeMs) < 15 * 60 * 1000) sessions++;
                 } catch {}
               }
             }
           } catch {}
 
-          let diskLine = '';
+          let disk = '';
           try {
-            diskLine = execSync("df -h / | tail -n 1 | awk '{print \$4 \" 可用 / \" \$2}'", { encoding: 'utf8' }).trim();
+            disk = execSync("df -h / | tail -n 1 | awk '{print $4 \" / \" $2 \" (\" $5 \") \"}'", { encoding: 'utf8' }).trim();
           } catch {}
 
-          // ── 拼装 ──
+          let loadLine = '';
+          try {
+            const cores = os.cpus().length;
+            const la = os.loadavg().map((n) => Math.round((n / cores) * 100) + '%').join(' / ');
+            const memUsed = ((os.totalmem() - os.freemem()) / 1024 ** 3).toFixed(1);
+            const memTotal = (os.totalmem() / 1024 ** 3).toFixed(1);
+            loadLine = 'CPU ' + la + ' · 内存 ' + memUsed + '/' + memTotal + 'G';
+          } catch {}
+
+          const dur = A.durations.slice().sort((a, b) => a - b);
+          const avgDur = dur.length ? (dur.reduce((s, n) => s + n, 0) / dur.length).toFixed(2) : '—';
+          const p95 = dur.length ? dur[Math.min(dur.length - 1, Math.floor(dur.length * 0.95))].toFixed(2) : '—';
+          const zipGb = (A.zipBytes / 1024).toFixed(1);
+          const avgZipMb = A.zipBatches ? (A.zipBytes / A.zipBatches).toFixed(0) : '—';
+          const failPct = (A.completed + A.errors.length) > 0
+            ? ((A.errors.length / (A.completed + A.errors.length)) * 100).toFixed(1)
+            : '0.0';
+
+          const qualEntries = [...A.qualities.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+          const hourEntries = [...A.hours.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+          const maxHour = Math.max(1, ...hourEntries.map(([, n]) => n));
+
           const out = [];
-          out.push('📊 <b>近 24 小时运行概况</b>');
+          out.push('📊 <b>近 24 小时运行报告</b>');
           out.push('');
-          out.push(`▎任务量：<b>${stat.enqueued}</b> 个入队 · 云端完成 <b>${stat.cloudDone}</b> 首 · 全辑打包 <b>${stat.zipDone}</b> 次 · TG 归档 <b>${stat.tgArchived}</b>`);
 
-          if (stat.regionSkip > 0) {
-            out.push(`▎版权跳过：<b>${stat.regionSkip}</b> 首（所在区无资源，已自动跳过）`);
+          out.push('▎<b>一、总览</b>');
+          out.push('  入队 <b>' + A.enqueued + '</b> · 完成 <b>' + A.completed + '</b> 首 · 打包 <b>' + A.zipBatches + '</b> 次 · 归档 <b>' + A.archived + '</b>');
+          out.push('  成功率 <b>' + (100 - Number(failPct)).toFixed(1) + '%</b> · 失败 <b>' + A.errors.length + '</b> 条');
+          if (A.completed) {
+            out.push('  单曲耗时 均值 <code>' + avgDur + 's</code> · P95 <code>' + p95 + 's</code>');
           }
-          if (stat.errors.length > 0) {
-            out.push(`▎失败报错：<b>${stat.errors.length}</b> 条`);
-            for (const e of stat.errors.slice(-5)) {
-              out.push(`  · <code>${e.hh}:00</code> ${escapeHtml(e.msg)}`);
+          if (A.zipBatches) {
+            out.push('  打包体积 共 <b>' + zipGb + ' GB</b> · 平均 <code>' + avgZipMb + ' MB</code>/包 · 合计 <b>' + A.zipFiles + '</b> 个文件');
+          }
+
+          if (qualEntries.length) {
+            out.push('');
+            out.push('▎<b>二、音质分布</b>');
+            for (const [q, n] of qualEntries) {
+              const pct = A.enqueued ? ((n / A.enqueued) * 100).toFixed(0) : '0';
+              out.push('  ' + escapeHtml(q) + ' — <b>' + n + '</b> (' + pct + '%)');
             }
-            if (stat.errors.length > 5) out.push(`  <i>… 更早 ${stat.errors.length - 5} 条省略</i>`);
+          }
+
+          if (hourEntries.length) {
+            out.push('');
+            out.push('▎<b>三、时段分布</b>');
+            for (const [h, n] of hourEntries.slice(-10)) {
+              const bars = '█'.repeat(Math.max(1, Math.round((n / maxHour) * 12)));
+              out.push('  <code>' + h + ':00</code> ' + bars + ' <b>' + n + '</b>');
+            }
+          }
+
+          out.push('');
+          out.push('▎<b>四、异常情况</b>');
+          if (A.errors.length === 0) {
+            out.push('  ✅ 无失败');
           } else {
-            out.push('▎失败报错：<b>无</b>');
+            for (const e of A.errors.slice(-6)) {
+              out.push('  · <code>' + e.hh + ':' + e.mm + '</code> ' + escapeHtml(e.msg));
+            }
+            if (A.errors.length > 6) out.push('  <i>… 更早 ' + (A.errors.length - 6) + ' 条省略</i>');
+          }
+          if (A.regionSkip > 0) out.push('  ◇ 版权跳过 <b>' + A.regionSkip + '</b> 首（所在区无资源，已自动略过）');
+          if (A.lyricTimeout > 0) out.push('  ◇ 歌词超时 <b>' + A.lyricTimeout + '</b> 次（不影响音频）');
+          if (A.autosleep > 0) out.push('  ◇ 频道限流自适应 <b>' + A.autosleep + '</b> 次');
+
+          if (A.recent.length) {
+            out.push('');
+            out.push('▎<b>五、最近完成的包</b>');
+            for (const r of A.recent.slice(-5).reverse()) {
+              out.push('  · <code>' + r.hh + ':' + r.mm + '</code> 耗时 ' + r.sec + 's' + (r.link ? ' · <a href="' + escapeHtml(r.link) + '">Gofile</a>' : ''));
+            }
           }
 
-          // 高峰时段：只列有任务的时段
-          const busyHours = [...stat.hours.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
-          if (busyHours.length) {
+          if (A.users.size) {
             out.push('');
-            out.push('▎使用高峰：' + busyHours.map(([h, n]) => `${h}:00 <b>${n}</b>`).join(' · '));
-          }
-
-          // 活跃用户
-          if (stat.users.size) {
-            const top = [...stat.users.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-            out.push('');
-            out.push(`▎活跃用户（${stat.users.size} 人）`);
-            for (const [id, n] of top) {
+            out.push('▎<b>六、活跃用户</b>（' + A.users.size + ' 人）');
+            for (const [id, n] of [...A.users.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
               let name = '';
-              try { name = db.get(`name_${id}`) || ''; } catch {}
-              out.push(`  · ${name ? escapeHtml(name) + ' ' : ''}<code>${id}</code> — ${n} 次`);
+              try { name = db.get('name_' + id) || ''; } catch {}
+              out.push('  · ' + (name ? escapeHtml(name) + ' ' : '') + '<code>' + id + '</code> — ' + n + ' 次');
             }
           }
 
           out.push('');
-          out.push('▎此刻状态');
-          out.push(`  · 转存队列：${queueInfo}`);
-          out.push(`  · 活跃会话：<b>${activeSessions}</b> 个`);
-          if (diskLine) out.push(`  · 磁盘：<code>${escapeHtml(diskLine)}</code>`);
+          out.push('▎<b>七、此刻状态</b>');
+          out.push('  队列 ' + (queueBusy ? '跑 <b>' + queueBusy + '</b>' : '空闲') + (queueWait ? ' · 排队 <b>' + queueWait + '</b>' : '') + ' · 活跃会话 <b>' + sessions + '</b>');
+          if (disk) out.push('  磁盘 <code>' + escapeHtml(disk) + '</code>');
+          if (loadLine) out.push('  ' + escapeHtml(loadLine));
+          if (A.restarts > 3) out.push('  ⚠️ 24h 内服务重启 <b>' + A.restarts + '</b> 次');
 
-          if (stat.enqueued === 0 && stat.errors.length === 0) {
+          if (A.enqueued === 0 && A.errors.length === 0) {
             out.push('');
             out.push('🍃 <i>近 24 小时没有下载任务，系统完全空闲。</i>');
           }
 
           let text = out.join('\n');
-          if (text.length > 4000) text = text.slice(0, 3950) + '\n…<i>已截断</i>';
+          if (text.length > 3900) text = text.slice(0, 3850) + '\n…<i>内容过长已截断</i>';
 
           await tgCall('editMessageText', {
             chat_id: chatId,
             message_id: waitMsg.message_id,
             text,
-            parse_mode: 'HTML'
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
           });
         } catch (err) {
           await tgCall('editMessageText', {
             chat_id: chatId,
             message_id: waitMsg.message_id,
-            text: `❌ 汇总失败: ${escapeHtml(err.message)}`,
+            text: '❌ 汇总失败: ' + escapeHtml(err.message),
             parse_mode: 'HTML'
           });
         }
