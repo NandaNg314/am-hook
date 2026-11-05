@@ -7173,7 +7173,7 @@ ${quotaText}
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       }
 
-      const panel = buildNameTemplatePanel(chatId, uiLang);
+      const panel = buildNameTemplatePanel(chatId, userLang);
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
