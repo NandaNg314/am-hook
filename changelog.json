@@ -1,11 +1,37 @@
 {
-  "latestVersion": "2.7",
-  "date": "2026-11-04",
+  "latestVersion": "2.8",
+  "date": "2026-11-05",
   "oneLiner": {
-    "zh": "TG Bot 新增 /tags 命令：网页端「曲库语言」一直支持，现在机器人也能选任意 BCP-47 标签语言（如 ar-EG、ja-JP）",
-    "en": "New /tags command in the TG bot: the web UI has always had a catalog-language picker, now the bot can choose any BCP-47 tag language too"
+    "zh": "额度内的下载一切照旧直接给；只有超出每日额度才需要站长审批，批准后自动开跑并发 Gofile 链接",
+    "en": "Everything within quota downloads instantly as before; only requests above the daily quota need admin approval, then run automatically and deliver a Gofile link"
   },
   "releases": [
+    {
+      "version": "2.8",
+      "date": "2026-11-05",
+      "title": {
+        "zh": "超额下载申请与站长审批",
+        "en": "Over-Quota Requests with Admin Approval"
+      },
+      "items": {
+        "zh": [
+          "✅ 额度内一切照旧：单曲、专辑、歌单、歌手全专辑，只要在每日 200 首以内就直接开始下载，不再有任何审批门槛",
+          "📩 只有超出每日额度才会弹出申请卡：写明站长在东八区、可能不在线、批准后才开始下载、完成后发 Gofile 链接请尽快下载",
+          "🎛 申请人选的音质、歌词内嵌、中文翻译、注音会随申请一起提交，站长批准时原样执行，不会悄悄变回默认值",
+          "🔔 站长在 Telegram 里点「同意」后真正开始下载（不批准就一直不跑、不占队列），完成后 Gofile 链接同时发给申请人和站长",
+          "⏱ 申请频率：每人每小时 1 次、每天最多 3 次；一轮跑完授权即失效",
+          "🛠 修复：歌手全专辑批量下载完成后申请人收不到 Gofile 链接、申请数据只存内存重启即丢、卡住时静默无提示"
+        ],
+        "en": [
+          "✅ Within quota nothing changes: singles, albums, playlists and full artist discographies start downloading immediately as long as you're inside the 200-track daily quota — no approval gate at all",
+          "📩 Only over-quota requests show a request card: it states the admin is in UTC+8 and may be offline, that the download starts only after approval, and that a Gofile link is sent afterwards",
+          "🎛 Quality, lyric embedding, Chinese translation and ruby choices are submitted along with the request and honoured exactly when approved — no silent reset to defaults",
+          "🔔 Nothing runs until the admin taps Approve in Telegram (no background jobs, no queue slot while pending); when it finishes the Gofile link goes to both the requester and the admin",
+          "⏱ Request limits: once per hour per user, up to 3 per day; the approval is single-use",
+          "🛠 Fixed: requester never received the Gofile link after a full-discography batch, request data lived only in memory and was lost on restart, and stalled jobs failed silently"
+        ]
+      }
+    },
     {
       "version": "2.7",
       "date": "2026-11-04",

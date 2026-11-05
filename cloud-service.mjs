@@ -2881,10 +2881,19 @@ class GlobalTransferQueue {
   }
 
   get status() {
+    const now = Date.now();
     return {
       active: this.activeCount,
       waiting: this.queue.length,
-      concurrency: this.concurrency
+      concurrency: this.concurrency,
+      // 队列头部任务的简要信息，供前端/TG 提示「前面还有什么在跑」
+      running: this.queue.length
+        ? this.queue.slice(0, 3).map((it) => ({
+            name: it.meta.name || 'Transfer',
+            source: it.meta.source || 'WebUI',
+            waitingSec: Math.round((now - it.enqueuedAt) / 1000)
+          }))
+        : []
     };
   }
 
@@ -3110,7 +3119,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && (u.pathname === '/queue' || u.pathname === '/api/queue-status')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ status: 'ok', data: globalQueue.status }));
     return;
   }
@@ -3361,7 +3370,7 @@ const server = http.createServer(async (req, res) => {
 // 磁盘水位保护：转存要落临时文件（Hi-Res 单首可达 170MB，大专辑可堆数十 GB）。
 // 磁盘写满时 ffmpeg 会报 "No space left on device"，用户跑到一半才失败、且临时文件残留。
 // 这里在任务开始前预估所需空间，不足则直接拒绝并主动清理最旧的临时目录。
-const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '5');
+const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '8');
 
 function getFreeDiskGB(dirPath = '/tmp') {
   try {
