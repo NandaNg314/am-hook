@@ -1,12 +1,47 @@
 {
-  "latestVersion": "2.8",
-  "date": "2026-11-05",
-  "oneLinerVersion": "2.8",
+  "latestVersion": "2.9",
+  "date": "2026-11-06",
+  "oneLinerVersion": "2.9",
   "oneLiner": {
-    "zh": "额度内的下载一切照旧直接给；只有超出每日额度才需要站长审批，批准后自动开跑并发 Gofile 链接",
-    "en": "Everything within quota downloads instantly as before; only requests above the daily quota need admin approval, then run automatically and deliver a Gofile link"
+    "zh": "TG Bot：所有专辑打包进同一个 Gofile 链接，只发一条消息；参数选择在下载页就能直接改",
+    "en": "TG Bot: all albums now go into a single Gofile link with one message; options can be set right on the download page"
   },
   "releases": [
+    {
+      "version": "2.9",
+      "date": "2026-11-06",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：所有专辑打包进同一个 Gofile 链接，只发一条消息；参数选择在下载页就能直接改",
+        "en": "TG Bot: all albums now go into a single Gofile link with one message; options can be set right on the download page"
+      },
+      "title": {
+        "zh": "TG Bot 全专辑归集为一链接 · 下载参数可选 · 多处修复",
+        "en": "TG Bot: One Gofile Link per Batch · Selectable Options · Various Fixes"
+      },
+      "items": {
+        "zh": [
+          "🔗 整批只发一个链接：过去 29 张专辑会发 29 条 Gofile 链接刷屏，现在全部归集到同一个文件夹，只发一条汇总消息",
+          "🎛 歌手全专辑页可直接改参数：音质、歌词内嵌、外置 .lrc/.ttml、中文翻译、注音都能在勾选专辑时设定，卡片上有「当前设置」一行汇总",
+          "📄 外置歌词真正生效：此前批量下载会强制清空外置歌词，勾了也没用；现在 Gofile 与 ZIP 模式都会把 .lrc/.ttml 打进包里",
+          "📊 体积显示修复：Gofile 完成消息此前恒显示 0 MB，现已正确显示大小",
+          "🧭 按钮状态可见：歌词、音质按钮统一用 ✅ 标记当前选择，点击后弹出明确提示，不再是点了没反应",
+          "🛠 修复：普通专辑下载报 trackFiles is not defined 导致完全无法下载",
+          "🛠 修复：Gofile 模式永远拿不到链接（打包从未被触发），以及单曲异常中断整批导致全部结果作废",
+          "🛠 修复：歌手全专辑页的音质等按钮因回调写错层级而完全无响应"
+        ],
+        "en": [
+          "🔗 One link per batch: a 29-album pull used to spam 29 separate Gofile links; everything is now collected into a single folder and sent as one summary message",
+          "🎛 Set options on the discography page: quality, embedded lyrics, external .lrc/.ttml, Chinese translation and ruby can all be chosen while picking albums, with a “Current settings” line summarising them",
+          "📄 External lyrics actually work now: batch downloads used to silently drop them regardless of your choice; Gofile and ZIP modes now include .lrc/.ttml in the archive",
+          "📊 Size display fixed: Gofile completion messages always showed 0 MB; the real size is shown now",
+          "🧭 Visible button state: lyric and quality buttons use a consistent ✅ marker and give explicit feedback when tapped instead of appearing unresponsive",
+          "🛠 Fixed: normal album downloads failed with “trackFiles is not defined”, making downloads completely unusable",
+          "🛠 Fixed: Gofile mode never produced a link (packaging was never triggered), and a single failing track aborted the whole batch, discarding everything already uploaded",
+          "🛠 Fixed: discography-page option buttons did nothing at all due to the callback being registered in the wrong scope"
+        ]
+      }
+    },
     {
       "version": "2.8",
       "date": "2026-11-05",
