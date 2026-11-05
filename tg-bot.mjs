@@ -5747,12 +5747,37 @@ ${quotaText}
             autosleep: 0,
           };
 
+          // 打包链路的上下文（跨行累积）：日志里打包请求 / 封装完成 / 转存完成是分开的三行
+          const packCtx = { sid: '', appleId: '', files: 0, type: '专辑', artist: '', firstTrack: '', sizeMb: null };
+
           for (const line of rawLogs.split('\n')) {
             const m = line.match(RE_LINE_ISO) || line.match(RE_LINE);
             if (!m) continue;
             const hh = m[2];
             const mm = m[3];
             const msg = m[5];
+
+            // ── 打包链路的上下文：最近的曲目名 / 艺人 / 会话ID / 体积 ──
+            // 日志顺序：…✔ 批处理就绪: 艺人 - 歌名.m4a … → 打包请求(会话ID) → 封装完成(体积) → 转存完成(链接)
+            const tDone = msg.match(/✔ 批处理就绪:\s*(.+?)\.m4a/);
+            if (tDone) {
+              packCtx.lastTrack = tDone[1].trim();
+              const dash = packCtx.lastTrack.indexOf(' - ');
+              if (dash > 0) packCtx.artist = packCtx.lastTrack.slice(0, dash).trim();
+            }
+            const packReq = msg.match(/打包请求.*?会话\s+(album_\d+_(\d+)|playlist_\d+_(\d+))\s*\((\d+)\s*个文件\)/);
+            if (packReq) {
+              packCtx.sid = packReq[1];
+              packCtx.appleId = packReq[2] || packReq[3] || '';
+              packCtx.files = Number(packReq[4]);
+              packCtx.type = packReq[1].startsWith('playlist_') ? '歌单' : '专辑';
+              packCtx.firstTrack = packCtx.lastTrack || '';
+            }
+            const packSize = msg.match(/全辑 ZIP 封装完成\s*\(([\d.]+)\s*(GB|MB),\s*共\s*(\d+)\s*个文件/);
+            let lastSizeMb = null;
+            if (packSize) {
+              lastSizeMb = packSize[2] === 'GB' ? parseFloat(packSize[1]) * 1024 : parseFloat(packSize[1]);
+            }
 
             if (msg.includes('[Queue] 任务入队')) {
               A.enqueued++;
@@ -5768,16 +5793,28 @@ ${quotaText}
               if (t) A.durations.push(parseFloat(t[1]));
             } else if (msg.includes('全辑 ZIP 封装完成')) {
               A.zipBatches++;
-              const s = msg.match(/\(([\d.]+)\s*(GB|MB),\s*共\s*(\d+)\s*个文件/);
-              if (s) {
-                const mb = s[2] === 'GB' ? parseFloat(s[1]) * 1024 : parseFloat(s[1]);
-                A.zipBytes += mb;
-                A.zipFiles += Number(s[3]);
+              if (lastSizeMb !== null) {
+                A.zipBytes += lastSizeMb;
+                const f = msg.match(/共\s*(\d+)\s*个文件/);
+                if (f) A.zipFiles += Number(f[1]);
               }
+              packCtx.sizeMb = lastSizeMb;
             } else if (msg.includes('全辑 ZIP 并发转存完成') || msg.includes('转存完成!')) {
               const k = msg.match(/总耗时:\s*([\d.]+)\s*s/);
               const link = msg.match(/(https:\/\/gofile\.io\/d\/\S+)/);
-              A.recent.push({ hh, mm, sec: k ? k[1] : '?', link: link ? link[1] : '' });
+              const sample = packCtx.firstTrack || '';
+              const dash = sample.indexOf(' - ');
+              A.recent.push({
+                hh, mm,
+                sec: k ? k[1] : '?',
+                link: link ? link[1] : '',
+                artist: packCtx.artist || '',
+                sample: dash > 0 ? sample.slice(dash + 3) : sample,
+                files: packCtx.files || 0,
+                sizeMb: packCtx.sizeMb || null,
+                appleId: packCtx.appleId || '',
+                type: packCtx.type || '专辑',
+              });
             } else if (msg.includes('已归档频道')) {
               A.archived++;
             } else if (msg.includes('无资源或未上架') || msg.includes('当前歌曲在解析账号所属地区')) {
@@ -5896,9 +5933,17 @@ ${quotaText}
 
           if (A.recent.length) {
             out.push('');
-            out.push('▎<b>五、最近完成的包</b>');
-            for (const r of A.recent.slice(-5).reverse()) {
-              out.push('  · <code>' + r.hh + ':' + r.mm + '</code> 耗时 ' + r.sec + 's' + (r.link ? ' · <a href="' + escapeHtml(r.link) + '">Gofile</a>' : ''));
+            out.push('▎<b>五、最近完成的下载</b>');
+            for (const r of A.recent.slice(-6).reverse()) {
+              const who = r.artist ? escapeHtml(r.artist) : '未知艺人';
+              const meta = [];
+              if (r.files) meta.push(r.files + ' 首');
+              if (r.sizeMb) meta.push((r.sizeMb / 1024 >= 1 ? (r.sizeMb / 1024).toFixed(1) + ' GB' : Math.round(r.sizeMb) + ' MB'));
+              meta.push(r.sec + 's');
+              out.push('  · <code>' + r.hh + ':' + r.mm + '</code> <b>' + who + '</b> · ' + escapeHtml(r.type || '专辑'));
+              if (r.sample) out.push('     └ 含《' + escapeHtml(r.sample) + '》等 ' + (r.files || '?') + ' 首 · ' + meta.slice(1).join(' · '));
+              else if (meta.length) out.push('     └ ' + meta.join(' · '));
+              if (r.link) out.push('     └ <a href="' + escapeHtml(r.link) + '">' + escapeHtml(r.link.replace('https://', '')) + '</a>');
             }
           }
 
