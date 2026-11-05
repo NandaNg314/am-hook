@@ -4251,6 +4251,10 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
       const allMsgIds = [];
       const fileIdSends = [];
       const gofileLinks = [];
+      // Gofile 多专辑归集：第一张建立文件夹并拿到游客 token，其余沿用，最终只有一个分享链接
+      let sharedGofileFolder = null;
+      let sharedGofileToken = null;
+      let sharedShareUrl = '';
       const failedAlbums = [];
       const totalAlbums = selectedAlbums.length;
       let downloadedCount = 0;
@@ -4310,7 +4314,9 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
         // 下载与上传两个阶段跨专辑重叠，整批总耗时从「逐张串行和」大幅缩短为「首张下载 + 后续 max(下载,上传) + 末张上传」)
         // ⚠️ 专辑级并发保持 2 不改：每张专辑内部还会按 TG_TRACK_CONCURRENCY 并发下载曲目，
         // 两者是相乘关系。若专辑级也提到 3，瞬时并发会到 9，成倍放大 /tmp 占用与频道上传带宽争抢。
-        const BATCH_ALBUM_CONCURRENCY = 2;
+        // Gofile 模式必须串行：第一张专辑要先建立文件夹，后续专辑才能归集到同一个分享链接。
+        // 并发时第一张还没拿到 folderId，其余已经开跑，就会各自建文件夹 → 变成一堆链接。
+        const BATCH_ALBUM_CONCURRENCY = deliveryMode === 'gofile' ? 1 : 2;
         await pMap(toDownload, BATCH_ALBUM_CONCURRENCY, async (al, i) => {
           const prefix = `📀 [${i + 1}/${toDownload.length}] ${escapeHtml(al.name)}：`;
           let albumData = null;
@@ -4330,12 +4336,29 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
             return;
           }
           try {
-            const res = await transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix: prefix, needTranslate, embedLyricsMode, saveLyricsFormats, needRuby, rubyMode });
+            // 多张专辑归集到同一个 Gofile 文件夹：第一个成功的专辑提供 folderId，
+            // 后续专辑带着它上传，最终只有一个分享链接。
+            const res = await transferAlbumCore({
+              chatId, messageId, albumData, quality, needLrc, deliveryMode,
+              progressPrefix: prefix, needTranslate, embedLyricsMode, saveLyricsFormats,
+              needRuby, rubyMode,
+              gofileFolderId: deliveryMode === 'gofile' ? sharedGofileFolder : null,
+              gofileToken: deliveryMode === 'gofile' ? sharedGofileToken : null,
+            });
             if (res && res.ok) {
               if (res.isGofile && res.gofileUrl) {
-                // Gofile 模式：链接必须收进清单，否则用户永远拿不到（旧实现只接 allGroupMsgIds / zipFileId，
-                // 导致整批跑完却一条链接都没有）
-                gofileLinks.push({ name: res.albumName || al.name, url: res.gofileUrl, tracks: res.downloadedCount, sizeMb: res.totalSizeMb });
+                // 第一张专辑建立文件夹与游客 token，后续专辑沿用
+                if (deliveryMode === 'gofile' && !sharedGofileFolder) {
+                  sharedGofileFolder = res.gofileFolderId || null;
+                  sharedGofileToken = res.gofileGuestToken || null;
+                  sharedShareUrl = res.gofileUrl || '';
+                }
+                gofileLinks.push({
+                  name: res.albumName || al.name,
+                  url: res.gofileUrl,
+                  tracks: res.downloadedCount,
+                  sizeMb: res.totalSizeMb,
+                });
               } else if (res.allGroupMsgIds?.length) allMsgIds.push(...res.allGroupMsgIds);
               else if (res.zipFileId) fileIdSends.push({ kind: 'doc', fileId: res.zipFileId, name: res.albumName });
               downloadedCount++;
@@ -4395,20 +4418,34 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
           ? `\n\n❌ ${isEn ? 'Failed: ' : '失败：'}${failedAlbums.map(f => escapeHtml(f.name)).join('、')}`
           : '';
 
-        // Gofile 模式：每张专辑一条链接，逐条推给申请人，并同步给站长抽查
-        for (const g of gofileLinks) {
+        // Gofile 模式：所有专辑归集到同一个文件夹，只发一条汇总消息
+        if (gofileLinks.length > 0) {
+          const totalMb = gofileLinks.reduce((s, g) => s + (Number(g.sizeMb) || 0), 0);
+          const totalTracks = gofileLinks.reduce((s, g) => s + (Number(g.tracks) || 0), 0);
+          // 优先用共享文件夹链接（所有专辑都在里面）；没有共享文件夹说明每张各建了一个，退回列全部
+          const mainUrl = sharedShareUrl || gofileLinks[gofileLinks.length - 1].url;
+          const albumList = gofileLinks.map((g) => `• ${escapeHtml(g.name)}`).join('\n');
+          const sameFolder = Boolean(sharedShareUrl);
+
           await tgCall('sendMessage', {
             chat_id: chatId,
             text: isEn
-              ? `☁️ <b>${escapeHtml(g.name)}</b> — ${g.tracks} tracks · ${g.sizeMb} MB\n🔗 ${g.url}\n\n<b>Download it early</b> — the link expires after inactivity.`
-              : `☁️ <b>${escapeHtml(g.name)}</b> — ${g.tracks} 首 · ${g.sizeMb} MB\n🔗 ${g.url}\n\n<b>请尽快下载</b>，链接长期无访问会过期。`,
+              ? `☁️ <b>Gofile ready</b> — ${gofileLinks.length} album(s), ${totalTracks} tracks, ${totalMb.toFixed(0)} MB\n\n${sameFolder ? 'All albums are in one folder:\n' : ''}${albumList}\n\n${mainUrl}\n\n<b>Download early</b> — links expire after inactivity.`
+              : `☁️ <b>下载已就绪</b> — 共 ${gofileLinks.length} 张专辑、${totalTracks} 首、${totalMb.toFixed(0)} MB\n\n${sameFolder ? '全部专辑在同一个文件夹内：\n' : ''}${albumList}\n\n${mainUrl}\n\n<b>请尽快下载</b>，链接长期无访问会过期。`,
             parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: [[{ text: isEn ? '☁️ Open Gofile' : '☁️ 打开 Gofile', url: g.url }]] }
+            disable_web_page_preview: true
           }).catch(() => {});
+
+          // 站长只收一条汇总
           await notifyOwnerGofileDone({
-            chatId, albumName: g.name, artistName: artistData.name,
-            url: g.url, tracks: g.tracks, sizeMb: g.sizeMb, elapsedSec: 0,
-          });
+            chatId,
+            albumName: `${artistData.name}（${gofileLinks.length} 张专辑）`,
+            artistName: artistData.name,
+            url: mainUrl,
+            tracks: totalTracks,
+            sizeMb: Math.round(totalMb),
+            elapsedSec: 0,
+          }).catch(() => {});
         }
 
         await tgCall('editMessageText', {
@@ -4813,7 +4850,7 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
 
 // 全辑转存核心：(下载 -> 频道归档 -> 写入缓存)，不负责私聊推送，由调用方决定何时统一 copyMessages。
 // progressPrefix 用于批量场景在进度消息前标注 [i/N] 专辑名。
-async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman' }) {
+async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman', gofileFolderId = null, gofileToken = null }) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
   // Gofile 链接一旦算出就存这里：后续任何环节抛错，调用方仍能把它补发给用户
@@ -4961,6 +4998,9 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                   },
                   batchId: batchGofileId,
                   isLastTrack: true,
+                  // 传入已有文件夹 + 游客 token：Gofile 归集同一个文件夹必须两者齐备
+                  folderId: gofileFolderId || undefined,
+                  token: gofileToken || undefined,
                   saveLrc: saveLyricsFormats.length > 0,
                   embedLyrics: embedLyricsMode !== 'off',
                   lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',

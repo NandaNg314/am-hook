@@ -2650,6 +2650,8 @@ async function processTransfer(body) {
         fileId: upData.data?.fileId,
         fileName: finalZipName,
         isZip: true,
+        // 前端需要体积做展示，必须带上（此前缺失导致显示 0 MB）
+        fileSize: zipStat.size,
         totalFiles: files.length,
         qualityName: chosenFormatName,
         qualityFallback: qualityFallback || undefined,
