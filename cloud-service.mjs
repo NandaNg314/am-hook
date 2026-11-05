@@ -1737,6 +1737,79 @@ function sanitizeFilename(name, maxBytes = 120) {
   return cleaned || 'track';
 }
 
+/* ==================== 文件名模板 ==================== */
+
+/** 默认模板：与历史行为完全一致，不传模板时走这里 */
+const DEFAULT_TRACK_TEMPLATE = '{artist} - {title}';
+const DEFAULT_ALBUM_TEMPLATE = '{album}';
+
+/**
+ * 文件名模板可用变量。
+ * 变量名取自用户熟悉的标签体系（类似 wrapper-lite 的 config 参数）。
+ */
+const TEMPLATE_VARS = ['artist', 'albumartist', 'title', 'album', 'track', 'trackno', 'total', 'disc', 'year', 'genre', 'composer', 'quality'];
+
+/**
+ * 按模板生成文件名主干（不含扩展名）。
+ * - 未知变量原样保留为 {xxx}，便于用户发现拼写错误
+ * - 生成结果仍会经过 sanitizeFilename，杜绝非法字符
+ * - 若渲染为空（如模板只含缺失字段），回落到默认模板
+ */
+function renderNameTemplate(template, meta = {}, quality = '') {
+  const tpl = String(template || '').trim() || DEFAULT_TRACK_TEMPLATE;
+  const pad = (n, w = 2) => {
+    const s = String(n || '').trim();
+    return s ? s.padStart(w, '0') : '';
+  };
+  const discRaw = meta.discNumber || meta.disc || 1;
+  const disc = Number(discRaw) > 1 ? pad(discRaw) : '';
+  const trackNo = meta.trackNumber || '';
+  const total = meta.totalTracks || meta.total || '';
+
+  const map = {
+    artist: meta.artist || meta.artistName || '',
+    albumartist: meta.albumArtist || meta.albumartist || meta.artist || '',
+    title: meta.title || meta.name || '',
+    album: meta.album || meta.albumName || '',
+    track: pad(trackNo),
+    trackno: pad(trackNo),
+    total: total ? String(total) : '',
+    disc: disc,
+    year: (meta.releaseDate || meta.year || '').toString().slice(0, 4),
+    genre: meta.genre || '',
+    composer: meta.composer || '',
+    quality: quality || '',
+  };
+
+  const out = tpl.replace(/\{(\w+)\}/g, (all, key) => {
+    const k = key.toLowerCase();
+    if (!(k in map)) return all;          // 未知变量：原样保留，方便排错
+    return map[k] || '';                   // 已知但值为空：留空
+  });
+
+  // 清理模板残留：连续的「 - 」「_  」等分隔符空位
+  let cleaned = out
+    .replace(/\[\s*\]/g, '')               // 空方括号
+    .replace(/\(\s*\)/g, '')               // 空圆括号
+    .replace(/\s*-\s*(?=(\s*-|\s*$))/g, '') // 连续/悬空连字符
+    .replace(/^[\s\-_]+|[\s\-_]+$/g, '')   // 首尾分隔符
+    .replace(/\s{2,}/g, ' ')
+    .replace(/_{2,}/g, '_')
+    .trim();
+
+  return sanitizeFilename(cleaned || renderNameTemplate(DEFAULT_TRACK_TEMPLATE, meta, quality));
+}
+
+/**
+ * 按模板生成压缩包名主干。
+ * 除曲目变量外还支持 {count}（曲目数）。
+ */
+function renderZipTemplate(template, meta = {}, quality = '', count = 0) {
+  const tpl = String(template || '').trim() || DEFAULT_ALBUM_TEMPLATE;
+  const withCount = tpl.replace(/\{count\}/gi, count ? String(count) : '');
+  return renderNameTemplate(withCount, { ...meta, album: meta.album || meta.albumName || meta.title }, quality);
+}
+
 /* ==================== CENC fMP4 重组 ==================== */
 
 /**
@@ -1848,7 +1921,9 @@ async function processTransfer(body) {
     noUpload = false,
     outputDir,
     failedTracks,
-    lang = 'zh'
+    lang = 'zh',
+    nameTemplate = '',
+    zipTemplate = ''
   } = body;
   const isEn = String(lang || 'zh').toLowerCase().startsWith('en');
 
@@ -1858,7 +1933,11 @@ async function processTransfer(body) {
     if (!fs.existsSync(sessionDir)) {
       throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
     }
-    const rawZipName = zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip');
+    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」
+    const rawZipName = (zipFilename && String(zipFilename).trim())
+      || (zipTemplate || meta.album
+        ? `${renderZipTemplate(zipTemplate, meta, quality, body.totalFiles || 0)} [${quality}].zip`
+        : 'Album.zip');
     const finalZipName = sanitizeFilename(isEn ? rawZipName : toSimplifiedChinese(rawZipName));
     const zipFilePath = `/tmp/${batchId}.zip`;
     // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
@@ -2444,22 +2523,23 @@ async function processTransfer(body) {
   }
 
   // 3. 标签注入
-  const cleanTitle = sanitizeFilename(meta.title || 'Unknown Title');
-  const cleanArtist = sanitizeFilename(meta.artist || 'Unknown Artist');
-  const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
+  // 文件名由用户模板决定（{artist} - {title} 为默认，与历史行为一致）；
+  // 音频、外置歌词、压缩包共用同一套变量。
+  const nameStem = renderNameTemplate(nameTemplate, meta, quality);
+  const standardM4aName = `${nameStem}.m4a`;
 
   // 准备外挂独立歌词文件 (支持多格式：主文件 + extraLyrics 附加格式)
   const buildLyricsFile = (fmt) => {
     if (fmt === 'ttml' && lyricsData.ttml) {
       return {
-        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.ttml`,
+        filename: `${nameStem}.ttml`,
         content: lyricsData.ttml,
         mime: 'application/xml;charset=utf-8'
       };
     }
     if (fmt === 'lrc' && lyricsData.lrc) {
       return {
-        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.lrc`,
+        filename: `${nameStem}.lrc`,
         content: lyricsData.lrc,
         mime: 'text/plain;charset=utf-8'
       };
@@ -2619,9 +2699,14 @@ async function processTransfer(body) {
 
     // 最后一首曲目：打包为单个 .zip 压缩包并极速直传 Gofile
     console.log(`[Cloud-Transfer] 最后一首曲目已就绪，正在将全辑打包为 .zip 压缩包...`);
-    const finalZipName = sanitizeFilename(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip'));
     const zipFilePath = `/tmp/${batchId}.zip`;
     const files = fs.readdirSync(sessionDir);
+    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」。
+    // 必须在 files 之后计算，{count} 需要用到曲目数。
+    const finalZipName = sanitizeFilename(
+      (zipFilename && String(zipFilename).trim())
+        || `${renderZipTemplate(zipTemplate, meta, quality, files.length)} [${quality}].zip`
+    );
     await packZipFolder(sessionDir, zipFilePath);
 
     if (noUpload) {
@@ -2702,7 +2787,7 @@ async function processTransfer(body) {
       fs.writeFileSync(path.join(singleDir, extra.filename), extra.content, 'utf8');
     }
 
-    const finalZipName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.zip`;
+    const finalZipName = `${renderZipTemplate(zipTemplate, meta, quality, 1)}.zip`;
     const zipFilePath = `${singleDir}.zip`;
     const files = fs.readdirSync(singleDir);
     await packZipFolder(singleDir, zipFilePath);

@@ -417,11 +417,25 @@ function primarySubtag(tag) {
 }
 
 /** 用户设置的标签语言；未设置（或设为 auto）时返回 'auto' */
-function getUserTagLang(chatId) {
-  const saved = db.get(`taglang_${chatId}`);
+function getUserTagLang(chatId) {  const saved = db.get(`taglang_${chatId}`);
   if (saved && typeof saved === 'string') return saved;
   return 'auto';
 }
+
+/** 用户自定义文件名模板；未设置时返回空字符串（云端会用默认 {artist} - {title}） */
+function getUserNameTemplate(chatId) {
+  const v = db.get(`nametpl_${chatId}`);
+  return typeof v === 'string' ? v : '';
+}
+
+/** 用户自定义压缩包名模板；未设置时返回空字符串 */
+function getUserZipTemplate(chatId) {
+  const v = db.get(`ziptpl_${chatId}`);
+  return typeof v === 'string' ? v : '';
+}
+
+/** 模板可用变量说明（与 cloud-service 的 renderNameTemplate 保持一致） */
+const NAME_TEMPLATE_VARS = ['artist', 'albumartist', 'title', 'album', 'track', 'trackno', 'total', 'disc', 'year', 'genre', 'composer', 'quality'];
 
 /** 解析出实际要用的 BCP-47：auto 时跟随界面语言（保持旧行为） */
 function resolveTagLang(chatId, uiLang = null) {
@@ -2963,9 +2977,34 @@ function buildTagLangPanel(chatId, uiLang, expanded = false) {
   if (curTag !== 'auto') {
     kb.push([{ text: isEn ? '↩️ Reset to auto' : '↩️ 恢复自动', callback_data: 'taglang:auto' }]);
   }
+  // 文件名模板入口
+  kb.push([{ text: isEn ? '📝 Filename templates' : '📝 自定义文件名', callback_data: 'nametpl:menu' }]);
   const text = isEn
     ? `🏷 <b>Audio Tag Language</b>\n\nYour <code>.m4a</code> title/artist/album/genre tags and filenames will be written in the language you pick here.\n\nCurrent: <code>${escapeHtml(label)}</code>\n\nPick a preset below, or just send any BCP-47 code (e.g. <code>ar-EG</code>, <code>ja-JP</code>) as a message.`
     : `🏷 <b>音乐标签语言</b>\n\n这里决定下载的 <code>.m4a</code> 里歌名/歌手/专辑/流派标签与文件名用哪种语言。\n\n当前：<code>${escapeHtml(label)}</code>\n\n点下方预设，或直接发送任意 BCP-47 代码（如 <code>ar-EG</code>、<code>ja-JP</code>）。`;
+  return { text, reply_markup: { inline_keyboard: kb } };
+}
+
+/** 文件名模板面板 */
+function buildNameTemplatePanel(chatId, uiLang) {
+  const isEn = uiLang === 'en';
+  const curName = getUserNameTemplate(chatId);
+  const curZip = getUserZipTemplate(chatId);
+  const nameLabel = curName || (isEn ? 'default {artist} - {title}' : '默认 {artist} - {title}');
+  const zipLabel = curZip || (isEn ? 'default {album}' : '默认 {album}');
+
+  const text = isEn
+    ? `📝 <b>Filename Templates</b>\n\nControl how downloaded files are named.\n\n<b>Track / lyrics:</b> <code>${escapeHtml(nameLabel)}</code>\n<b>Album ZIP:</b> <code>${escapeHtml(zipLabel)}</code>\n\n<b>Available variables:</b>\n${NAME_TEMPLATE_VARS.map((v) => `<code>{${v}}</code>`).join(' ')} <code>{count}</code>(ZIP only)\n\n<b>Examples:</b>\n<code>{track}. {artist} - {title}</code> → 03. 周杰伦 - 晴天\n<code>{artist} - {album} - {title}</code> → 周杰伦 - 叶惠美 - 晴天\n\nLyrics files automatically share the track name (only the extension changes).`
+    : `📝 <b>自定义文件名</b>\n\n决定下载后的文件如何命名。\n\n<b>歌曲 / 歌词：</b><code>${escapeHtml(nameLabel)}</code>\n<b>压缩包：</b><code>${escapeHtml(zipLabel)}</code>\n\n<b>可用变量：</b>\n${NAME_TEMPLATE_VARS.map((v) => `<code>{${v}}</code>`).join(' ')} <code>{count}</code>（仅压缩包）\n\n<b>示例：</b>\n<code>{track}. {artist} - {title}</code> → 03. 周杰伦 - 晴天\n<code>{artist} - {album} - {title}</code> → 周杰伦 - 叶惠美 - 晴天\n\n歌词文件会自动跟随歌曲名，只差扩展名。`;
+
+  const kb = [
+    [{ text: isEn ? '✏️ Set track/lyrics name' : '✏️ 设置歌曲/歌词名', callback_data: 'nametpl:set:name' }],
+    [{ text: isEn ? '✏️ Set album ZIP name' : '✏️ 设置压缩包名', callback_data: 'nametpl:set:zip' }],
+  ];
+  if (curName || curZip) {
+    kb.push([{ text: isEn ? '↩️ Reset to default' : '↩️ 恢复默认', callback_data: 'nametpl:reset' }]);
+  }
+  kb.push([{ text: isEn ? '🔙 Back' : '🔙 返回', callback_data: 'taglang:menu' }]);
   return { text, reply_markup: { inline_keyboard: kb } };
 }
 
@@ -3734,10 +3773,13 @@ ${artistTag} ${titleTag} ${albumTag}`);
           composer: details.composer,
           trackNumber: details.trackNumber,
           discNumber: details.discNumber,
+          totalTracks: details.totalTracks || 1,
           coverUrl: details.coverUrl,
           durationInMillis: details.durationInMillis
         },
         saveLrc: saveLyricsFormats.length > 0,
+        nameTemplate: getUserNameTemplate(chatId),
+        zipTemplate: getUserZipTemplate(chatId),
         embedLyrics: embedLyricsMode !== 'off',
         lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
         saveLyricsFormats,
@@ -4072,6 +4114,8 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
                 durationInMillis: details.durationInMillis
               },
               saveLrc: saveLyricsFormats.length > 0,
+              nameTemplate: getUserNameTemplate(chatId),
+              zipTemplate: getUserZipTemplate(chatId),
               embedLyrics: embedLyricsMode !== 'off',
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
@@ -4990,13 +5034,19 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 album: albumData.name,
                 albumArtist: albumData.artistName,
                 trackNumber: track.trackNumber || trackOrder,
+                discNumber: track.discNumber || albumData.discNumber || 1,
                 totalTracks: totalTracks,
+                releaseDate: albumData.releaseDate || track.releaseDate || '',
+                genre: albumData.genre || track.genre || '',
+                composer: track.composer || '',
                 coverUrl: albumData.coverUrl
               },
               batchId: batchGofileId,
               // 每首只做缓存，不触发上传；全部就绪后统一触发一次打包上传
               isLastTrack: false,
               saveLrc: saveLyricsFormats.length > 0,
+              nameTemplate: getUserNameTemplate(chatId),
+              zipTemplate: getUserZipTemplate(chatId),
               embedLyrics: embedLyricsMode !== 'off',
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
@@ -5087,6 +5137,8 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                   folderId: gofileFolderId || undefined,
                   token: gofileToken || undefined,
                   saveLrc: saveLyricsFormats.length > 0,
+                  nameTemplate: getUserNameTemplate(chatId),
+                  zipTemplate: getUserZipTemplate(chatId),
                   embedLyrics: embedLyricsMode !== 'off',
                   lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
                   saveLyricsFormats,
@@ -5208,12 +5260,18 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 album: albumData.name,
                 albumArtist: albumData.artistName,
                 trackNumber: track.trackNumber || trackOrder,
+                discNumber: track.discNumber || albumData.discNumber || 1,
                 totalTracks: totalTracks,
+                releaseDate: albumData.releaseDate || track.releaseDate || '',
+                genre: albumData.genre || track.genre || '',
+                composer: track.composer || '',
                 coverUrl: albumData.coverUrl
               },
               batchId: batchId,
               isLastTrack: false,
               saveLrc: saveLyricsFormats.length > 0,
+              nameTemplate: getUserNameTemplate(chatId),
+              zipTemplate: getUserZipTemplate(chatId),
               embedLyrics: embedLyricsMode !== 'off',
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
@@ -5293,7 +5351,13 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 album: albumData.name,
                 artist: albumData.artistName
               },
-              zipFilename: `${albumData.artistName} - ${albumData.name}.zip`,
+              zipFilename: (() => {
+                // 用户设了模板就用模板（云端会补 [音质].zip）；否则沿用「艺人 - 专辑」
+                const tpl = getUserZipTemplate(chatId);
+                if (tpl) return null;   // null 交给云端按 zipTemplate 渲染
+                return `${albumData.artistName} - ${albumData.name}.zip`;
+              })(),
+              zipTemplate: getUserZipTemplate(chatId),
               lang: userLang,
               noUpload: true,
               splitMaxMB: 1900
@@ -5450,6 +5514,8 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
               },
               isLastTrack: false,
               saveLrc: saveLyricsFormats.length > 0,
+              nameTemplate: getUserNameTemplate(chatId),
+              zipTemplate: getUserZipTemplate(chatId),
               embedLyrics: embedLyricsMode !== 'off',
               lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
               saveLyricsFormats,
@@ -5884,6 +5950,57 @@ async function handleUpdate(update) {
           reply_markup: {
             inline_keyboard: [[
               { text: isEnW ? '🏷 Tag language settings' : '🏷 标签语言设置', callback_data: 'taglang:menu' }
+            ]]
+          }
+        });
+        return;
+      }
+    }
+
+    /* ---------- 文件名模板：等待用户直接输入 ---------- */
+    const nameTplWait = userSessions.get(`${chatId}_nametpl_wait`);
+    if (nameTplWait && nameTplWait.awaitingNameTemplate) {
+      if (text.startsWith('/')) {
+        userSessions.delete(`${chatId}_nametpl_wait`);
+      } else {
+        const rawTpl = text.trim();
+        const userLangW = getUserLang(chatId, msg.from?.language_code);
+        const isEnW = userLangW === 'en';
+
+        if (!/\{[A-Za-z]+\}/.test(rawTpl)) {
+          await tgCall('sendMessage', {
+            chat_id: chatId,
+            text: isEnW
+              ? `❌ <b>No placeholder found.</b>\n\nInclude at least one variable like <code>{artist}</code> or <code>{title}</code>.\nExample: <code>{track}. {artist} - {title}</code>\n\nSend /tags to cancel.`
+              : `❌ <b>没有找到任何变量。</b>\n\n请至少包含一个占位符，如 <code>{artist}</code> 或 <code>{title}</code>。\n示例：<code>{track}. {artist} - {title}</code>\n\n发送 /tags 可取消。`,
+            parse_mode: 'HTML'
+          });
+          return;
+        }
+
+        const used = [...rawTpl.matchAll(/\{(\w+)\}/g)].map((m) => m[1].toLowerCase());
+        const known = new Set([...NAME_TEMPLATE_VARS, 'count']);
+        const unknown = [...new Set(used.filter((u) => !known.has(u)))];
+
+        const isZip = nameTplWait.target === 'zip';
+        db.set(isZip ? `ziptpl_${chatId}` : `nametpl_${chatId}`, rawTpl.slice(0, 200));
+        userSessions.delete(`${chatId}_nametpl_wait`);
+
+        const warn = unknown.length
+          ? (isEnW
+            ? `\n\n⚠️ Unknown variable(s): ${unknown.map((u) => `<code>{${u}}</code>`).join(' ')} — they will appear literally in filenames.`
+            : `\n\n⚠️ 未知变量：${unknown.map((u) => `<code>{${u}}</code>`).join(' ')}，会原样出现在文件名里。`)
+          : '';
+
+        await tgCall('sendMessage', {
+          chat_id: chatId,
+          text: isEnW
+            ? `✅ <b>${isZip ? 'Album ZIP' : 'Track / lyrics'} naming template saved</b>\n\n<code>${escapeHtml(rawTpl)}</code>${warn}\n\nThis applies to all future downloads.`
+            : `✅ <b>${isZip ? '压缩包' : '歌曲 / 歌词'}命名模板已保存</b>\n\n<code>${escapeHtml(rawTpl)}</code>${warn}\n\n之后所有下载都会按此命名。`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: isEnW ? '📝 Filename templates' : '📝 自定义文件名', callback_data: 'nametpl:menu' }
             ]]
           }
         });
@@ -7018,6 +7135,55 @@ ${quotaText}
      *   taglang:custom        提示用户手动输入
      *   taglang:auto          恢复跟随界面语言
      */
+    /* ==================== 文件名模板设置 ==================== */
+    if (data.startsWith('nametpl:')) {
+      const act = data.split(':');
+      const kind = act[1];          // menu | set | reset
+      const target = act[2];        // name | zip
+
+      if (kind === 'set') {
+        // 进入等待输入状态，用户下一条消息就是模板内容
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        userSessions.set(`${chatId}_nametpl_wait`, {
+          awaitingNameTemplate: true,
+          target: target === 'zip' ? 'zip' : 'name',
+          createdAt: Date.now(),
+          messageId
+        });
+        const isZip = target === 'zip';
+        await tgCall('editMessageText', {
+          chat_id: chatId,
+          message_id: messageId,
+          text: isEn
+            ? `⌨️ <b>Send the template for ${isZip ? 'album ZIP' : 'track / lyrics'} names</b>\n\nUse <code>{variable}</code> placeholders, e.g.\n<code>${isZip ? '{artist} - {album} ({year})' : '{track}. {artist} - {title}'}</code>\n\nVariables: ${NAME_TEMPLATE_VARS.map((v) => `<code>{${v}}</code>`).join(' ')}${isZip ? ' <code>{count}</code>' : ''}\n\nSend /tags to cancel.`
+            : `⌨️ <b>请发送${isZip ? '压缩包' : '歌曲 / 歌词'}的命名模板</b>\n\n用 <code>{变量}</code> 占位，例如：\n<code>${isZip ? '{artist} - {album} ({year})' : '{track}. {artist} - {title}'}</code>\n\n可用变量：${NAME_TEMPLATE_VARS.map((v) => `<code>{${v}}</code>`).join(' ')}${isZip ? ' <code>{count}</code>' : ''}\n\n发送 /tags 可取消。`,
+          parse_mode: 'HTML'
+        }).catch(() => {});
+        return;
+      }
+
+      if (kind === 'reset') {
+        db.delete(`nametpl_${chatId}`);
+        db.delete(`ziptpl_${chatId}`);
+        await tgCall('answerCallbackQuery', {
+          callback_query_id: cb.id,
+          text: isEn ? '✅ Reset to default' : '✅ 已恢复默认'
+        });
+      } else {
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      }
+
+      const panel = buildNameTemplatePanel(chatId, uiLang);
+      await tgCall('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: panel.text,
+        parse_mode: 'HTML',
+        reply_markup: panel.reply_markup
+      }).catch(() => {});
+      return;
+    }
+
     if (data.startsWith('taglang:')) {
       const uiLang = getUserLang(chatId, cb.from?.language_code);
       const isEnT = uiLang === 'en';
