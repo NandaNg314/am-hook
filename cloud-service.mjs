@@ -604,6 +604,7 @@ function uniqueNameInDir(dir, baseName, trackPrefix = '') {
   const exists = (n) => fs.existsSync(path.join(dir, n));
   if (!exists(baseName)) return baseName;
   if (trackPrefix && !exists(`${trackPrefix}${baseName}`)) return `${trackPrefix}${baseName}`;
+  // 重名时保留已有前缀，序号插在扩展名之前，确保与音频文件仍能一眼配对
   for (let n = 2; n <= 999; n++) {
     const cand = `${stem} (${n})${ext}`;
     if (!exists(cand)) return cand;
@@ -2546,12 +2547,24 @@ async function processTransfer(body) {
     const trackPrefix = meta.trackNumber ? `${String(meta.trackNumber).padStart(2, '0')}. ` : '';
     const written = writeFileExclusive(sessionDir, standardM4aName, finalAudioBuf, trackPrefix);
     const finalM4aName = written.fileName;
+    // 歌词文件与音频严格同名（仅扩展名不同）：
+    // 批量歌单里经常出现同名曲目（伴奏版/Live 版/重录版），只靠「艺人 - 歌名」
+    // 无法判断这份歌词属于哪一首，所以这里沿用音频最终用的前缀。
     let finalLyricsName = lyricsFilename
       ? `${written.prefix}${lyricsFilename}`
       : lyricsFilename;
     if (written.collisionSeq > 0) {
       // 序号前缀拼接后仍可能重名（如曲目号相同），歌词名也走一次唯一化
-      if (finalLyricsName) finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
+      if (finalLyricsName) {
+        // 用音频最终名的词干（已含唯一化序号）来构造歌词名，保证与音频配对
+        const audioExt = path.extname(finalM4aName);
+        const audioStem = finalM4aName.slice(0, finalM4aName.length - audioExt.length);
+        const lyrExt = path.extname(finalLyricsName);
+        finalLyricsName = `${audioStem}${lyrExt}`;
+        if (fs.existsSync(path.join(sessionDir, finalLyricsName))) {
+          finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
+        }
+      }
       console.log(`[Cloud-Transfer] ⚠️ 检测到同名曲目，已自动重命名避免覆盖: ${finalM4aName}`);
     }
 
@@ -2574,8 +2587,19 @@ async function processTransfer(body) {
       }
     }
     for (const extra of extraLyrics) {
-      const baseExtraName = finalLyricsName && extra.filename === lyricsFilename ? finalLyricsName : `${trackPrefix}${extra.filename}`;
-      const extraName = uniqueNameInDir(sessionDir, baseExtraName, trackPrefix);
+      // 附加格式（如同时要 .lrc + .ttml）与音频同名，仅扩展名不同，
+      // 这样解压后一眼能看出这首歌的音频和歌词是一套
+      let extraName;
+      if (finalM4aName) {
+        const audioExt = path.extname(finalM4aName);
+        const audioStem = finalM4aName.slice(0, finalM4aName.length - audioExt.length);
+        extraName = `${audioStem}${path.extname(extra.filename)}`;
+      } else {
+        extraName = `${trackPrefix}${extra.filename}`;
+      }
+      if (fs.existsSync(path.join(sessionDir, extraName))) {
+        extraName = uniqueNameInDir(sessionDir, extraName, '');
+      }
       fs.writeFileSync(path.join(sessionDir, extraName), extra.content, 'utf8');
       console.log(`[Cloud-Transfer] 缓存歌词(附加): ${extraName} 到 session: ${batchId}`);
     }

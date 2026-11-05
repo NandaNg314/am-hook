@@ -1448,6 +1448,27 @@ async function tgCall(method, body = {}, maxRetries = 3, timeoutMs = 60000) {
   }
 }
 
+/** 「仅歌词」临时目录：文件名即最终展示名，避免 telegram 取到随机临时名 */
+const LYR_TMP_DIR = '/tmp/am_lyr_named';
+try { fs.mkdirSync(LYR_TMP_DIR, { recursive: true }); } catch {}
+
+/**
+ * 生成歌词文件的展示名（不含扩展名）。
+ * 优先用 cloud-service 返回的规范名（艺人 - 歌名），
+ * 拿不到时用当前曲目信息兜底，绝不出现随机串。
+ */
+function lyricsDisplayStem(remoteName, info = {}) {
+  const clean = (x) => String(x || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120);
+  if (remoteName && String(remoteName).includes('.')) {
+    const stem = clean(String(remoteName).replace(/\.[^.]+$/, ''));
+    if (stem && !/^am_lyr_|^[a-z0-9]{6,}_[a-z0-9]{4}$/i.test(stem)) return stem;
+  }
+  const artist = clean(info.artistName || info.artist || info.artistTitle || '');
+  const title = clean(info.title || info.name || '');
+  const base = artist && title ? `${artist} - ${title}` : (title || artist || 'Lyrics');
+  return base || 'Lyrics';
+}
+
 async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, maxRetries = 3) {
   let attempt = 0;
   const absPath = path.resolve(filePath);
@@ -3324,13 +3345,18 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
     }
     const sentIds = [];
     for (const f of files) {
-      const fpath = `/tmp/am_lyr_only_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${f.filename.split('.').pop()}`;
+      // Local Bot API 用 file:// 直传时，Telegram 取的是文件自身的文件名，
+      // 传入的 fileName 会被忽略 —— 所以临时文件必须直接使用正确的展示名，
+      // 否则用户看到的就是 am_lyr_only_xxx.tml 这种无意义名字。
+      const ext = String(f.filename || '').split('.').pop().toLowerCase();
+      const displayStem = lyricsDisplayStem(f.filename, details);
+      const fpath = path.join(LYR_TMP_DIR, `${displayStem}.${ext}`);
       fs.writeFileSync(fpath, f.content, 'utf8');
       const cap = safeCaption(`📝 <b>${escapeHtml(details.title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`);
       const r = await unifiedSendMedia({
         chatId,
         filePath: fpath,
-        fileName: f.filename,
+        fileName: `${displayStem}.${ext}`,
         caption: cap,
         isAudio: false,
         isZip: false
@@ -4557,18 +4583,20 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
         continue;
       }
       for (const f of data.data.lyricsFiles) {
-        const fpath = `/tmp/am_lyr_only_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${f.filename.split('.').pop()}`;
+        const ext = String(f.filename || '').split('.').pop().toLowerCase();
+        const displayStem = lyricsDisplayStem(f.filename, { title, artistName: artist });
+        const fpath = path.join(LYR_TMP_DIR, `${displayStem}.${ext}`);
         fs.writeFileSync(fpath, f.content, 'utf8');
         await unifiedSendMedia({
           chatId,
           filePath: fpath,
-          fileName: f.filename,
+          fileName: `${displayStem}.${ext}`,
           caption: safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`),
           isAudio: false,
           isZip: false
         });
         try { fs.rmSync(fpath, { force: true }); } catch {}
-        okFiles.push(f.filename);
+        okFiles.push(`${displayStem}.${ext}`);
       }
     } catch (err) {
       console.warn(`[TG-Bot] 仅歌词 ${title} 失败:`, err.message);
@@ -8029,10 +8057,10 @@ function cleanupStaleTgTempDirs() {
     const maxAge = 15 * 60 * 1000; // 15分钟
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
-      // am_tg_* 为下载临时目录；am_lyr_only_* / am_lyr_fix_* 为仅歌词/补歌词场景写出的临时文件。
+      // am_tg_* 为下载临时目录；am_lyr_only_* / am_lyr_fix_* / am_lyr_named 为歌词临时产物。
       // 后者原先没有任何清理逻辑，会长期堆积在 /tmp。
       const isTgTempDir = entry.startsWith('am_tg_');
-      const isLyricsTemp = entry.startsWith('am_lyr_only_') || entry.startsWith('am_lyr_fix_');
+      const isLyricsTemp = entry.startsWith('am_lyr_only_') || entry.startsWith('am_lyr_fix_') || entry === 'am_lyr_named';
       if (isTgTempDir || isLyricsTemp) {
         const p = path.join(tmpDir, entry);
         try {
