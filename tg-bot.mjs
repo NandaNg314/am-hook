@@ -1078,7 +1078,24 @@ async function offerApprovalRequest({ chatId, messageId, userInfo, quality, albu
     `☁️ Delivery: Gofile link (fixed for approved jobs)`,
   ].join('\n') : '';
 
-  await tgCall('sendMessage', {
+  // 把用户选好的选项编码进回调数据，避免依赖 session（申请卡是独立消息，点提交时原会话已对不上）
+  // Telegram callback_data 上限 64 字节，这里用紧凑编码：
+  //   q=音质  t=翻译  e=内嵌  s=外置  r=注音  m=注音模式
+  //   音质缩写: L=Lossless H=Hi-Res A=Atmos C=AAC
+  const QUAL_SHORT = { Lossless: 'L', 'Hi-Res': 'H', Atmos: 'A', AAC: 'C' };
+  const SHORT_QUAL = { L: 'Lossless', H: 'Hi-Res', A: 'Atmos', C: 'AAC' };
+  const optToken = options
+    ? [
+        `q=${QUAL_SHORT[options.quality] || 'L'}`,
+        `t=${options.needTranslate ? 1 : 0}`,
+        `e=${options.embedLyricsMode === 'ttml' ? 't' : options.embedLyricsMode === 'off' ? 'o' : 'l'}`,
+        `s=${(options.saveLyricsFormats || []).map((f) => (f === 'ttml' ? 't' : 'l')).join('')}`,
+        `r=${options.needRuby ? 1 : 0}`,
+        `m=${options.rubyMode === 'kana' ? 'k' : 'r'}`,
+      ].join(',')
+    : '';
+
+  const sent = await tgCall('sendMessage', {
     chat_id: chatId,
     text: isEn
       ? `📩 <b>Request Approval</b>\n\nThis ${typeLabel.toLowerCase()} needs admin approval (<code>${scale.tracks}</code> tracks, ~${scale.gb.toFixed(1)} GB).${optEn ? `\n\n${optEn}` : ''}\n\n⏱ The admin is in <b>UTC+8</b> and may be offline.\n⏳ Download only starts after approval.\n☁️ Result will be delivered as a <b>Gofile link</b> — please download it early, it expires after inactivity.`
@@ -1087,10 +1104,30 @@ async function offerApprovalRequest({ chatId, messageId, userInfo, quality, albu
     reply_markup: {
       inline_keyboard: [[{
         text: isEn ? '📩 Submit Request' : '📩 提交申请',
-        callback_data: requestKind === 'disc' ? `req:disc:${albumData.albumId}` : `req:sub:${albumData.albumId}`
+        callback_data: requestKind === 'disc'
+          ? `req:disc:${albumData.albumId}:${optToken}`
+          : `req:sub:${albumData.albumId}:${optToken}`
       }]]
     }
   });
+
+  // 双保险：给这条申请卡也建一份会话，万一回调数据被截断还能从会话里取到选项
+  if (sent?.message_id) {
+    userSessions.set(`${chatId}_${sent.message_id}`, {
+      isAlbum: true,
+      albumData,
+      quality: options?.quality || quality || 'Lossless',
+      needLrc: true,
+      embedLyricsMode: options?.embedLyricsMode || 'lrc',
+      saveLyricsFormats: options?.saveLyricsFormats || [],
+      needTranslate: options?.needTranslate || false,
+      needRuby: options?.needRuby || false,
+      rubyMode: options?.rubyMode || 'roman',
+      deliveryMode: 'gofile',
+      lang: isEn ? 'en' : 'zh',
+      createdAt: Date.now(),
+    });
+  }
 }
 
 /** 申请/批准 后需要的东西，统一放在这里方便回溯 */
@@ -4533,6 +4570,15 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
       await offerApprovalRequest({
         chatId, messageId, userInfo: null, quality, albumData, isPl, typeLabel, isEn,
         tracks: albumTrackCount,
+        // 必须带上用户已选好的选项，否则申请卡看不到参数、批准后也会跑成默认值
+        options: {
+          quality,
+          needTranslate,
+          embedLyricsMode,
+          saveLyricsFormats,
+          needRuby,
+          rubyMode,
+        },
       });
       return;
     }
@@ -6684,7 +6730,30 @@ ${quotaText}
 
     /* ==================== 用户提交申请回调 (req:sub / req:disc) ==================== */
     if (data.startsWith('req:')) {
-      const [, kind, targetId] = data.split(':');
+      const [, kind, targetId, optStr] = data.split(':');
+
+      /** 解析编码进回调的选项；缺失时返回 null，交给会话兜底
+       *  紧凑格式：q=L|H|A|C,t=0|1,e=l|t|o,s=lt,r=0|1,m=r|k */
+      const SHORT_QUAL = { L: 'Lossless', H: 'Hi-Res', A: 'Atmos', C: 'AAC' };
+      const SHORT_EMBED = { l: 'lrc', t: 'ttml', o: 'off' };
+      const parseOpt = (raw) => {
+        if (!raw || !raw.includes('=')) return null;
+        const o = {};
+        for (const part of raw.split(',')) {
+          const i = part.indexOf('=');
+          if (i < 0) continue;
+          const k = part.slice(0, i);
+          const v = part.slice(i + 1);
+          if (k === 'q') o.quality = SHORT_QUAL[v] || 'Lossless';
+          else if (k === 't') o.needTranslate = v === '1';
+          else if (k === 'e') o.embedLyricsMode = SHORT_EMBED[v] || 'lrc';
+          else if (k === 's') o.saveLyricsFormats = v ? [...v].map((c) => (c === 't' ? 'ttml' : 'lrc')) : [];
+          else if (k === 'r') o.needRuby = v === '1';
+          else if (k === 'm') o.rubyMode = v === 'k' ? 'kana' : 'roman';
+        }
+        return Object.keys(o).length ? o : null;
+      };
+      const cbOptions = parseOpt(optStr);
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
       const applicant = { name: cb.from?.first_name || '', username: cb.from?.username || '' };
       try { db.set(`name_${chatId}`, applicant.name); } catch {}
@@ -6732,7 +6801,7 @@ ${quotaText}
           payload: {
             artistId: discArtistId,
             selectionIds: albumList.map((a) => String(a.id)),
-            options: {
+            options: cbOptions || {
               quality: session?.quality || 'Lossless',
               needTranslate: session?.needTranslate || false,
               embedLyricsMode: session?.embedLyricsMode || 'lrc',
@@ -6754,19 +6823,21 @@ ${quotaText}
           await tgCall('sendMessage', { chat_id: chatId, text: isEn ? '❌ Session expired, please send the link again.' : '❌ 会话已过期，请重新发送链接。' });
           return;
         }
+        // 优先用回调里编码的选项（申请卡是独立消息，原会话早已对不上），其次才是会话
+        const eff = cbOptions || {
+          quality: sess.quality || 'Lossless',
+          needTranslate: sess.needTranslate || false,
+          embedLyricsMode: sess.embedLyricsMode || 'lrc',
+          saveLyricsFormats: sess.saveLyricsFormats || [],
+          needRuby: sess.needRuby || false,
+          rubyMode: sess.rubyMode || 'roman',
+        };
         const res = await submitAlbumRequest({
           chatId, userInfo: applicant, albumData,
-          quality: sess.quality || 'Lossless',
+          quality: eff.quality || 'Lossless',
           isPl: albumData.isPlaylist === true,
           isEn,
-          options: {
-            quality: sess.quality || 'Lossless',
-            needTranslate: sess.needTranslate || false,
-            embedLyricsMode: sess.embedLyricsMode || 'lrc',
-            saveLyricsFormats: sess.saveLyricsFormats || [],
-            needRuby: sess.needRuby || false,
-            rubyMode: sess.rubyMode || 'roman',
-          },
+          options: eff,
         });
         await replyRequestResult(chatId, isEn, res, estimateScale((albumData.tracks || []).length));
         return;
