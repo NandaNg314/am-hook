@@ -2809,6 +2809,19 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
     ]);
   }
 
+  // 交付模式：ZIP 打包 / Gofile 云盘链接（批量时最实用，不受 2GB 限制）
+  const dmOrder = ['zip', 'gofile'];
+  const nextDm = dmOrder[(dmOrder.indexOf(ao.deliveryMode || 'zip') + 1) % dmOrder.length];
+  const dmLabel = (ao.deliveryMode || 'zip') === 'gofile'
+    ? (isEn ? '☁️ Gofile Link ✅' : '☁️ Gofile 云盘链接 ✅')
+    : (isEn ? '📦 Single ZIP ✅' : '📦 打包 ZIP ✅');
+  inlineKeyboard.push([
+    {
+      text: `${dmLabel}`,
+      callback_data: `aao:d:${nextDm}:${artistData.artistId}`
+    }
+  ]);
+
   // 底部：一键下载所选专辑。所有用户都能用（和普通下载一样）；
   // 只有超出每日额度时，执行阶段才会转为「申请站长授权」。
   inlineKeyboard.push([
@@ -2916,6 +2929,7 @@ function getArtistOpts(chatId) {
       needTranslate: false,
       needRuby: false,
       rubyMode: 'roman',
+      deliveryMode: 'zip',
       updatedAt: Date.now(),
     };
     artistOptsMap.set(key, o);
@@ -4858,6 +4872,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 coverUrl: albumData.coverUrl
               },
               batchId: batchGofileId,
+              // 每首只做缓存，不触发上传；全部就绪后统一触发一次打包上传
               isLastTrack: false,
               saveLrc: saveLyricsFormats.length > 0,
               embedLyrics: embedLyricsMode !== 'off',
@@ -4913,27 +4928,89 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
             }
           });
 
+          // 全部曲目缓存完毕后，单独触发一次「打包 + 上传 Gofile」。
+          // cloud-service 只有收到 isLastTrack:true 才会打包上传并返回链接；
+          // 若交给并发中的某一首触发，会出现「它完成时其余曲目还没缓存好」的竞态，
+          // 所以等 pMap 全部结束再统一触发。
+          if (allDownloadedFiles.length > 0) {
+            const trigger = allDownloadedFiles[0];
+            try {
+              await tgCall('editMessageText', {
+                chat_id: chatId,
+                message_id: messageId,
+                text: isEn
+                  ? `${progressPrefix}📦 <b>Packaging and uploading to Gofile...</b> (${allDownloadedFiles.length} tracks)`
+                  : `${progressPrefix}📦 <b>正在打包并上传至 Gofile...</b>（共 ${allDownloadedFiles.length} 首）`,
+                parse_mode: 'HTML'
+              }).catch(() => {});
+
+              const packRes = await fetch(CLOUD_API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  adamId: trigger.track.id,
+                  quality,
+                  meta: {
+                    title: trigger.track.name,
+                    artist: trigger.track.artistName || albumData.artistName,
+                    album: albumData.name,
+                    albumArtist: albumData.artistName,
+                    trackNumber: 1,
+                    totalTracks,
+                    coverUrl: albumData.coverUrl,
+                  },
+                  batchId: batchGofileId,
+                  isLastTrack: true,
+                  saveLrc: saveLyricsFormats.length > 0,
+                  embedLyrics: embedLyricsMode !== 'off',
+                  lyricsFormat: embedLyricsMode === 'ttml' ? 'ttml' : 'lrc',
+                  saveLyricsFormats,
+                  translateLyrics: needTranslate || false,
+                  ruby: needRuby || false,
+                  rubyMode: rubyMode || 'roman',
+                  lang: userLang,
+                  noUpload: false,
+                }),
+                signal: AbortSignal.timeout(300000),
+              });
+              const packJson = await packRes.json();
+              if (packJson.status === 'ok' && packJson.data) {
+                allDownloadedFiles.push({ ...packJson.data, packResult: true });
+              } else {
+                console.warn('[TG-Bot] Gofile 打包失败:', packJson.error || JSON.stringify(packJson).slice(0, 200));
+              }
+            } catch (packErr) {
+              console.warn('[TG-Bot] Gofile 打包请求异常:', packErr.message);
+            }
+          }
+
+
           if (allDownloadedFiles.length === 0) {
             throw new Error(isEn
               ? `All tracks in this ${typeLabel.toLowerCase()} are unavailable in the resolving region or failed to download.`
               : `整张专辑的所有曲目均在当前地区无版权或下载失败，无法转存。`);
           }
 
-          // 汇总 folderId / guestToken / downloadPage：逐曲上传时 cloud-service 会把它们带回来
-          const parentFolder = allDownloadedFiles.find(f => f.folderId)?.folderId || null;
-          const guestToken = allDownloadedFiles.find(f => f.guestToken)?.guestToken || null;
-          const downloadPage = allDownloadedFiles.map(f => f.downloadPage).filter(Boolean).pop()
+          // 汇总链接：最终链接来自「打包上传」那一次的结果（packResult），
+          // 逐曲缓存返回的是 queued，本身不含任何链接。
+          const packResult = allDownloadedFiles.find(f => f.packResult) || {};
+          const parentFolder = packResult.folderId || allDownloadedFiles.find(f => f.folderId)?.folderId || null;
+          const guestToken = packResult.guestToken || allDownloadedFiles.find(f => f.guestToken)?.guestToken || null;
+          const downloadPage = packResult.downloadPage
+            || allDownloadedFiles.map(f => f.downloadPage).filter(Boolean).pop()
             || (parentFolder ? `https://gofile.io/d/${parentFolder}` : '');
+          // 打包结果不是真实曲目，统计时要排除
+          const trackFiles = allDownloadedFiles.filter(f => !f.packResult);
 
           // 提前把链接挂到外层变量：万一后续发送环节抛错，外层 catch 仍能把链接补发给用户
           lastGofileUrl = downloadPage;
           _lastGofileUrlByChat.set(String(chatId), downloadPage);
 
-          if (hasPendingReservation(chatId)) settleQuotaReservation(chatId, allDownloadedFiles.length);
-          else quotaManager.incrementQuota(chatId, allDownloadedFiles.length);
+          if (hasPendingReservation(chatId)) settleQuotaReservation(chatId, trackFiles.length);
+          else quotaManager.incrementQuota(chatId, trackFiles.length);
 
           const goTotalDurationSec = ((performance.now() - albumStartTime) / 1000).toFixed(1);
-          const totalMb = (allDownloadedFiles.reduce((s, f) => s + (f.fileSize || 0), 0) / (1024 * 1024)).toFixed(1);
+          const totalMb = ((packResult.fileSize || trackFiles.reduce((s, f) => s + (f.fileSize || 0), 0)) / (1024 * 1024)).toFixed(1);
 
           if (downloadPage) {
             // 第一优先：用最简格式把链接先送出去。
@@ -4952,8 +5029,8 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
             await tgCall('sendMessage', {
               chat_id: chatId,
               text: isEn
-                ? `☁️ <b>${typeLabel} uploaded to Gofile!</b>\n💿 ${escapeHtml(albumData.name)}\n🎵 ${allDownloadedFiles.length} tracks · ${totalMb} MB\n${skippedTracks.length ? `⚠️ ${skippedTracks.length} unavailable skipped\n` : ''}\n🔗 ${downloadPage}`
-                : `☁️ <b>整张${typeLabel}已上传至 Gofile！</b>\n💿 ${escapeHtml(albumData.name)}\n🎵 ${allDownloadedFiles.length} 首 · ${totalMb} MB\n${skippedTracks.length ? `⚠️ 已跳过 ${skippedTracks.length} 首无版权曲目\n` : ''}\n🔗 ${downloadPage}`,
+                ? `☁️ <b>${typeLabel} uploaded to Gofile!</b>\n💿 ${escapeHtml(albumData.name)}\n🎵 ${trackFiles.length} tracks · ${totalMb} MB\n${skippedTracks.length ? `⚠️ ${skippedTracks.length} unavailable skipped\n` : ''}\n🔗 ${downloadPage}`
+                : `☁️ <b>整张${typeLabel}已上传至 Gofile！</b>\n💿 ${escapeHtml(albumData.name)}\n🎵 ${trackFiles.length} 首 · ${totalMb} MB\n${skippedTracks.length ? `⚠️ 已跳过 ${skippedTracks.length} 首无版权曲目\n` : ''}\n🔗 ${downloadPage}`,
               parse_mode: 'HTML',
               reply_markup: {
                 inline_keyboard: [[
@@ -4966,7 +5043,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
             if (!linkSent) {
               notifyOwnerGofileDone({
                 chatId, albumName: albumData.name, artistName: albumData.artistName,
-                url: downloadPage, tracks: allDownloadedFiles.length,
+                url: downloadPage, tracks: trackFiles.length,
                 sizeMb: Number(totalMb), elapsedSec: goTotalDurationSec,
               }).catch(() => {});
             }
@@ -4977,7 +5054,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
             allGroupMsgIds: [],
             albumName: albumData.name,
             artistName: albumData.artistName,
-            downloadedCount: allDownloadedFiles.length,
+            downloadedCount: trackFiles.length,
             skippedTracks,
             totalDurationSec: goTotalDurationSec,
             gofileUrl: downloadPage,
@@ -5198,7 +5275,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             zipFileId: lastSendResult.fileId || null,
             albumName: albumData.name,
             artistName: albumData.artistName,
-            downloadedCount: allDownloadedFiles.length,
+            downloadedCount: trackFiles.length,
             skippedTracks,
             totalDurationSec,
             zipSizeMb: totalZipMb,
@@ -5460,7 +5537,7 @@ ${artistTag} ${albumTag} #${typeLabel}`);
           zipFileId: null,
           albumName: albumData.name,
           artistName: albumData.artistName,
-          downloadedCount: allDownloadedFiles.length,
+          downloadedCount: trackFiles.length,
           skippedTracks,
           totalDurationSec,
           sendResult: null
@@ -7228,13 +7305,15 @@ ${quotaText}
         o.needRuby = !o.needRuby;
       } else if (field === 'm') {
         o.rubyMode = o.rubyMode === 'kana' ? 'roman' : 'kana';
+      } else if (field === 'd') {
+        o.deliveryMode = p[2] === 'gofile' ? 'gofile' : 'zip';
       }
       o.updatedAt = Date.now();
       console.log(`[CB] aao 生效 → ${JSON.stringify(o)}`);
 
       await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-      // 重绘这一页，让 ✅ 标记跟上。artistId 位置随字段不同：q/e/s 是 p[3]，其余是 p[2]
-      const adId = ['q', 'e', 's'].includes(field) ? p[3] : p[2];
+      // 重绘这一页，让 ✅ 标记跟上。artistId 位置随字段不同：q/e/s/d 是 p[3]，其余是 p[2]
+      const adId = ['q', 'e', 's', 'd'].includes(field) ? p[3] : p[2];
       const ad = await getArtistData(adId, 'hk', userLang, getUserTagLang(chatId));
       // 保持当前页码：不传 page 会回到第 1 页，用户会以为点击把列表重置了
       const keepPage = artistPageMap.get(`${chatId}:${adId}`) ?? 0;
@@ -7283,7 +7362,7 @@ ${quotaText}
           chatId, messageId, artistId,
           ao.quality || 'Lossless',
           ao.embedLyricsMode !== 'off' || ao.saveLyricsFormats.length > 0,
-          'zip',
+          ao.deliveryMode || 'zip',
           ao.needTranslate || false,
           ao.embedLyricsMode || 'lrc',
           ao.saveLyricsFormats || [],
