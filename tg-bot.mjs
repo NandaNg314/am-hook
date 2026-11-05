@@ -5315,7 +5315,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             zipFileId: lastSendResult.fileId || null,
             albumName: albumData.name,
             artistName: albumData.artistName,
-            downloadedCount: trackFiles.length,
+            downloadedCount: allDownloadedFiles.length,
             skippedTracks,
             totalDurationSec,
             zipSizeMb: totalZipMb,
@@ -5577,7 +5577,7 @@ ${artistTag} ${albumTag} #${typeLabel}`);
           zipFileId: null,
           albumName: albumData.name,
           artistName: albumData.artistName,
-          downloadedCount: trackFiles.length,
+          downloadedCount: allDownloadedFiles.length,
           skippedTracks,
           totalDurationSec,
           sendResult: null
