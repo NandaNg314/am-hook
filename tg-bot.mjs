@@ -2752,6 +2752,63 @@ async function showArtistAlbums(chatId, artistData, lang = 'zh', messageId = nul
     inlineKeyboard.push(navRow);
   }
 
+  // 音质选择（与专辑卡一致的四档）
+  const ao = getArtistOpts(chatId);
+  const qMark = (q) => (ao.quality === q ? ' ✅' : '');
+  inlineKeyboard.push([
+    { text: `🎧 ${isEn ? 'Lossless' : '无损'}${qMark('Lossless')}`, callback_data: `aao:q:Lossless:${artistData.artistId}` },
+    { text: `💎 ${isEn ? 'Hi-Res' : '高解析'}${qMark('Hi-Res')}`, callback_data: `aao:q:Hi-Res:${artistData.artistId}` }
+  ]);
+  inlineKeyboard.push([
+    { text: `🌌 ${isEn ? 'Atmos' : '杜比全景声'}${qMark('Atmos')}`, callback_data: `aao:q:Atmos:${artistData.artistId}` },
+    { text: `⚡ AAC${qMark('AAC')}`, callback_data: `aao:q:AAC:${artistData.artistId}` }
+  ]);
+
+  // 歌词内嵌
+  const eMark = (m) => (ao.embedLyricsMode === m ? ' ✅' : '');
+  const eLabel = (m) => (m === 'lrc' ? 'LRC' : m === 'ttml' ? 'TTML' : (isEn ? 'Off' : '关'));
+  inlineKeyboard.push([
+    { text: `📝 ${isEn ? 'Embed' : '内嵌'} ${eLabel('lrc')}${eMark('lrc')}`, callback_data: `aao:e:lrc:${artistData.artistId}` },
+    { text: `${eLabel('ttml')}${eMark('ttml')}`, callback_data: `aao:e:ttml:${artistData.artistId}` },
+    { text: `${eLabel('off')}${eMark('off')}`, callback_data: `aao:e:off:${artistData.artistId}` }
+  ]);
+
+  // 外置歌词
+  inlineKeyboard.push([
+    {
+      text: `📄 ${isEn ? 'External' : '外置'} .lrc${ao.saveLyricsFormats.includes('lrc') ? ' ✅' : ''}`,
+      callback_data: `aao:s:lrc:${artistData.artistId}`
+    },
+    {
+      text: `.ttml${ao.saveLyricsFormats.includes('ttml') ? ' ✅' : ''}`,
+      callback_data: `aao:s:ttml:${artistData.artistId}`
+    }
+  ]);
+
+  // 中文翻译 + 注音
+  inlineKeyboard.push([
+    {
+      text: isEn
+        ? `🇨🇳 Translation: ${ao.needTranslate ? 'Yes ✅' : 'No ❌'}`
+        : `🇨🇳 中文翻译: ${ao.needTranslate ? '需要 ✅' : '不需要 ❌'}`,
+      callback_data: `aao:t:${artistData.artistId}`
+    },
+    {
+      text: isEn
+        ? `あ Ruby: ${ao.needRuby ? (ao.rubyMode === 'kana' ? 'Hiragana ✅' : 'Romaji ✅') : 'No ❌'}`
+        : `あ 注音: ${ao.needRuby ? (ao.rubyMode === 'kana' ? '平假名 ✅' : '罗马音 ✅') : '不需要 ❌'}`,
+      callback_data: `aao:r:${artistData.artistId}`
+    }
+  ]);
+  if (ao.needRuby) {
+    inlineKeyboard.push([
+      {
+        text: ao.rubyMode === 'kana' ? 'あ→Aa' : 'Aa→あ',
+        callback_data: `aao:m:${artistData.artistId}`
+      }
+    ]);
+  }
+
   // 底部：一键下载所选专辑。所有用户都能用（和普通下载一样）；
   // 只有超出每日额度时，执行阶段才会转为「申请站长授权」。
   inlineKeyboard.push([
@@ -2840,8 +2897,32 @@ const artistNameMap = new Map();
 function rememberArtistName(artistId, name) {
   if (artistId && name) artistNameMap.set(String(artistId), name);
 }
-// 批量勾选状态: key=`${chatId}:${kind}:${id}` (kind: 'art' 艺人专辑 | 'trk' 专辑曲目) -> { set: Set, createdAt }
+// 艺人对勾选状态: key=`${chatId}:${kind}:${id}` (kind: 'art' 艺人专辑 | 'trk' 专辑曲目) -> { set: Set, createdAt }
 const selectionMap = new Map();
+
+/**
+ * 每个用户的「艺人全专辑下载选项」（音质 / 歌词 / 翻译 / 注音）。
+ * 专辑卡用 userSessions 存，这个页面不是会话式消息，单独存一份，互不干扰。
+ */
+const artistOptsMap = new Map();
+function getArtistOpts(chatId) {
+  const key = String(chatId);
+  let o = artistOptsMap.get(key);
+  if (!o) {
+    o = {
+      quality: 'Lossless',
+      embedLyricsMode: 'lrc',
+      saveLyricsFormats: [],
+      needTranslate: false,
+      needRuby: false,
+      rubyMode: 'roman',
+      updatedAt: Date.now(),
+    };
+    artistOptsMap.set(key, o);
+  }
+  return o;
+}
+
 function getSelection(chatId, kind, id) {
   const key = `${chatId}:${kind}:${id}`;
   let entry = selectionMap.get(key);
@@ -4719,8 +4800,11 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           // 相比 ZIP 直发 Telegram，这个模式不占 TG 上行带宽、不受 2GB 单文件限制，适合超大歌手全辑。
           let completedCount = 0;
           const batchGofileId = batchId;
+          // 单曲异常绝不能逃逸出 worker：pMap 内部是 Promise.all，任一 worker 抛错会立刻 reject，
+          // 整个批次中断，已经成功上传的曲目全部作废，用户一条链接都收不到。这里整段兜底。
           await pMap(albumData.tracks, TG_TRACK_CONCURRENCY, async (track, i) => {
             const trackOrder = i + 1;
+            try {
             const payload = {
               adamId: track.id,
               quality: quality,
@@ -4782,6 +4866,11 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 }
               }
             }
+            } catch (outerErr) {
+              // 组装 payload、推送进度等任何环节出错，都只影响这一首，不牵连整批
+              console.warn(`[TG-Bot] Gofile 曲目 [${trackOrder}/${totalTracks}] ${track?.name} 彻底失败:`, outerErr.message);
+              skippedTracks.push({ track, error: outerErr.message });
+            }
           });
 
           if (allDownloadedFiles.length === 0) {
@@ -4839,6 +4928,8 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           let completedCount = 0;
           await pMap(albumData.tracks, TG_TRACK_CONCURRENCY, async (track, i) => {
             const trackOrder = i + 1;
+            // 单曲异常绝不能逃逸出 worker：pMap 是 Promise.all，任一 worker 抛错会中断整批
+            try {
             const payload = {
               adamId: track.id,
               quality: quality,
@@ -4898,6 +4989,10 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                   skippedTracks.push({ track, error: trackErr.message });
                 }
               }
+            }
+            } catch (outerErr) {
+              console.warn(`[TG-Bot] 专辑曲目 [${trackOrder}/${totalTracks}] ${track?.name} 彻底失败:`, outerErr.message);
+              skippedTracks.push({ track, error: outerErr.message });
             }
           });
 
@@ -7046,6 +7141,39 @@ ${quotaText}
       const parts = data.split(':');
       const artistId = parts[1] || null;
 
+      // 艺人全专辑页的选项回调（音质 / 歌词 / 翻译 / 注音）
+      if (data.startsWith('aao:')) {
+        const p = data.split(':');
+        const field = p[1];
+        const o = getArtistOpts(chatId);
+        if (field === 'q') {
+          o.quality = ['Lossless', 'Hi-Res', 'Atmos', 'AAC'].includes(p[2]) ? p[2] : 'Lossless';
+        } else if (field === 'e') {
+          o.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(p[2]) ? p[2] : 'lrc';
+        } else if (field === 's') {
+          const f = p[2];
+          if (f === 'lrc' || f === 'ttml') {
+            o.saveLyricsFormats = o.saveLyricsFormats.includes(f)
+              ? o.saveLyricsFormats.filter((x) => x !== f)
+              : [...o.saveLyricsFormats, f];
+          }
+        } else if (field === 't') {
+          o.needTranslate = !o.needTranslate;
+        } else if (field === 'r') {
+          o.needRuby = !o.needRuby;
+        } else if (field === 'm') {
+          o.rubyMode = o.rubyMode === 'kana' ? 'roman' : 'kana';
+        }
+        o.updatedAt = Date.now();
+
+        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+        // 重绘这一页，让 ✅ 标记跟上。artistId 位置随字段不同：q/e/s 是 p[3]，其余是 p[2]
+        const adId = ['q', 'e', 's'].includes(field) ? p[3] : p[2];
+        const ad = await getArtistData(adId, 'hk', userLang, getUserTagLang(chatId));
+        await showArtistAlbums(chatId, ad, userLang, messageId, isOwner);
+        return;
+      }
+
       // 分页按钮（atsel_art_more）只做界面刷新，不需要额外应答动作
       if (data.startsWith('atsel_art_more')) {
         await tgCall('answerCallbackQuery', {
@@ -7076,16 +7204,18 @@ ${quotaText}
         }
         await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
         // 额度内直接下载；超额时由 handleArtistAlbumsDownload 内部转为「申请站长授权」
+        // 选项来自本页自己的 artistOpts（这个页面不是会话式消息，session 不存在）
+        const ao = getArtistOpts(chatId);
         handleArtistAlbumsDownload(
           chatId, messageId, artistId,
-          session?.quality || 'Lossless',
-          true,
-          session?.deliveryMode || 'zip',
-          session?.needTranslate || false,
-          session?.embedLyricsMode || 'lrc',
-          session?.saveLyricsFormats || [],
-          session?.needRuby || false,
-          session?.rubyMode || 'roman',
+          ao.quality || 'Lossless',
+          ao.embedLyricsMode !== 'off' || ao.saveLyricsFormats.length > 0,
+          'zip',
+          ao.needTranslate || false,
+          ao.embedLyricsMode || 'lrc',
+          ao.saveLyricsFormats || [],
+          ao.needRuby || false,
+          ao.rubyMode || 'roman',
           false
         )
           .catch(e => console.error('[TG-Bot] 全专辑批量转存任务出错:', e.message))
