@@ -1,12 +1,43 @@
 {
-  "latestVersion": "2.9",
+  "latestVersion": "2.10",
   "date": "2026-11-06",
-  "oneLinerVersion": "2.9",
+  "oneLinerVersion": "2.10",
   "oneLiner": {
-    "zh": "TG Bot：所有专辑打包进同一个 Gofile 链接，只发一条消息；参数选择在下载页就能直接改",
-    "en": "TG Bot: all albums now go into a single Gofile link with one message; options can be set right on the download page"
+    "zh": "TG Bot：文件名完全自定义，歌曲、歌词、压缩包都能按自己的规则命名",
+    "en": "TG Bot: fully customisable filenames — name tracks, lyrics and album archives however you like"
   },
   "releases": [
+    {
+      "version": "2.10",
+      "date": "2026-11-06",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：文件名完全自定义，歌曲、歌词、压缩包都能按自己的规则命名",
+        "en": "TG Bot: fully customisable filenames — name tracks, lyrics and album archives however you like"
+      },
+      "title": {
+        "zh": "TG Bot 自定义文件名模板 · 文件命名修正",
+        "en": "TG Bot: Custom Filename Templates · Naming Fixes"
+      },
+      "items": {
+        "zh": [
+          "📝 文件名可自定义：在 /tags 里新增「自定义文件名」，歌曲/歌词与压缩包可分别设置模板",
+          "🔤 可用变量：{artist} {albumartist} {title} {album} {track} {total} {disc} {year} {genre} {composer} {quality}，压缩包额外支持 {count}",
+          "💡 例如 {track}. {artist} - {title} 会得到「01. 周杰伦 - 晴天」；默认仍是 {artist} - {title}，不改设置行为完全不变",
+          "🎵 歌词自动跟随歌曲名，只差扩展名，解压后一眼能对上",
+          "🛠 修复：压缩包显示为 album_418443842_1793920151673.zip 这类随机名，现为「专辑名 [音质].zip」",
+          "🛠 修复：歌词文件显示为 am_lyr_only_1793920921015_kmoi.ttml 这类随机名，现为「艺人 - 歌名.lrc」"
+        ],
+        "en": [
+          "📝 Custom filenames: a new “Filename templates” entry in /tags lets you set naming rules separately for tracks/lyrics and album archives",
+          "🔤 Variables: {artist} {albumartist} {title} {album} {track} {total} {disc} {year} {genre} {composer} {quality}, plus {count} for archives",
+          "💡 e.g. {track}. {artist} - {title} gives “01. Jay Chou - Sunny Day”; the default stays {artist} - {title}, so nothing changes unless you opt in",
+          "🎵 Lyrics always follow the track name — same name, different extension, so they match up at a glance after unzipping",
+          "🛠 Fixed: archives showed random names like album_418443842_1793920151673.zip; now “Album [Quality].zip”",
+          "🛠 Fixed: lyric files showed random names like am_lyr_only_1793920921015_kmoi.ttml; now “Artist - Title.lrc”"
+        ]
+      }
+    },
     {
       "version": "2.9",
       "date": "2026-11-06",
