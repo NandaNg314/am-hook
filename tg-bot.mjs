@@ -1453,6 +1453,17 @@ const LYR_TMP_DIR = '/tmp/am_lyr_named';
 try { fs.mkdirSync(LYR_TMP_DIR, { recursive: true }); } catch {}
 
 /**
+ * 生成可安全用于磁盘的文件名：去掉非法字符、限制长度，保留中文与常见符号。
+ */
+function sanitizeLocalName(name) {
+  return String(name || 'file')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 150) || 'file';
+}
+
+/**
  * 生成歌词文件的展示名（不含扩展名）。
  * 优先用 cloud-service 返回的规范名（艺人 - 歌名），
  * 拿不到时用当前曲目信息兜底，绝不出现随机串。
@@ -1659,6 +1670,41 @@ async function unifiedSendMedia({
     throw new Error(`文件体积 (${sizeMb} MB) 超过 Telegram 上限 2000MB`);
   }
 
+  // Local Bot API 走 file:// 直传时，Telegram 用的是「路径里的文件名」，
+  // 传入的 fileName 会被忽略（于是用户看到 album_xxx_timestamp.zip 这种随机名）。
+  // 这里统一把文件硬链/复制成期望的文件名再上传，保证频道和私聊里显示的都是可读名字。
+  let uploadPath = filePath;
+  let tempLink = null;
+  /** 清理为规范化文件名而建的硬链/副本及子目录 */
+  const cleanupTempLink = () => {
+    if (!tempLink) return;
+    try {
+      fs.rmSync(tempLink, { force: true });
+      fs.rmdirSync(path.dirname(tempLink));
+    } catch {}
+    tempLink = null;
+  };
+  if (fileName && !filePath.endsWith(fileName)) {
+    try {
+      const dir = '/tmp/am_named';
+      fs.mkdirSync(dir, { recursive: true });
+      const safe = sanitizeLocalName(fileName);
+      // 每个上传用独立子目录，避免并发同名冲突；文件名保持纯净，Telegram 显示的就是它
+      const sub = path.join(dir, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      fs.mkdirSync(sub, { recursive: true });
+      const target = path.join(sub, safe);
+      try {
+        fs.linkSync(filePath, target);   // 硬链：零拷贝，同一文件系统
+      } catch {
+        fs.copyFileSync(filePath, target); // 跨设备时退回复制
+      }
+      uploadPath = target;
+      tempLink = target;
+    } catch (e) {
+      console.warn('[TG-Bot] 规范化文件名失败，按原路径上传:', e.message);
+    }
+  }
+
   const uploadStart = performance.now();
   let groupMsg = null;
 
@@ -1674,7 +1720,11 @@ async function unifiedSendMedia({
     if (thumbPath && fs.existsSync(thumbPath)) {
       audioFields.thumbnailPath = thumbPath;
     }
-    groupMsg = await tgSendFile('sendAudio', 'audio', filePath, fileName, audioFields);
+    try {
+      groupMsg = await tgSendFile('sendAudio', 'audio', uploadPath, fileName, audioFields);
+    } finally {
+      cleanupTempLink();
+    }
   } else {
     const docFields = {
       chat_id: AUTHORIZED_GROUP_ID,
@@ -1684,7 +1734,11 @@ async function unifiedSendMedia({
     if (replyToMessageId) {
       docFields.reply_to_message_id = replyToMessageId;
     }
-    groupMsg = await tgSendFile('sendDocument', 'document', filePath, fileName, docFields);
+    try {
+      groupMsg = await tgSendFile('sendDocument', 'document', uploadPath, fileName, docFields);
+    } finally {
+      cleanupTempLink();
+    }
   }
 
   if (!groupMsg || !groupMsg.message_id) {
@@ -1693,6 +1747,9 @@ async function unifiedSendMedia({
 
   const groupMsgId = groupMsg.message_id;
   const fileId = groupMsg.audio?.file_id || groupMsg.document?.file_id || null;
+
+  // 上传完成，清理为规范化文件名而建的硬链/副本及子目录
+  cleanupTempLink();
 
   // 若用户私聊不是归档频道本身，则秒级调用 copyMessage 瞬发给用户私聊 (批量场景可关闭，由调用方最后统一推送)
   if (privateCopy && String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
@@ -8060,7 +8117,7 @@ function cleanupStaleTgTempDirs() {
       // am_tg_* 为下载临时目录；am_lyr_only_* / am_lyr_fix_* / am_lyr_named 为歌词临时产物。
       // 后者原先没有任何清理逻辑，会长期堆积在 /tmp。
       const isTgTempDir = entry.startsWith('am_tg_');
-      const isLyricsTemp = entry.startsWith('am_lyr_only_') || entry.startsWith('am_lyr_fix_') || entry === 'am_lyr_named';
+      const isLyricsTemp = entry.startsWith('am_lyr_only_') || entry.startsWith('am_lyr_fix_') || entry === 'am_lyr_named' || entry === 'am_named';
       if (isTgTempDir || isLyricsTemp) {
         const p = path.join(tmpDir, entry);
         try {
