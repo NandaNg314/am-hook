@@ -1,6 +1,7 @@
 {
   "latestVersion": "2.8",
   "date": "2026-11-05",
+  "oneLinerVersion": "2.8",
   "oneLiner": {
     "zh": "额度内的下载一切照旧直接给；只有超出每日额度才需要站长审批，批准后自动开跑并发 Gofile 链接",
     "en": "Everything within quota downloads instantly as before; only requests above the daily quota need admin approval, then run automatically and deliver a Gofile link"
@@ -9,9 +10,14 @@
     {
       "version": "2.8",
       "date": "2026-11-05",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：额度内的下载一切照旧直接给；只有超出每日额度才需要站长审批，批准后自动开跑并发 Gofile 链接",
+        "en": "TG Bot: everything within quota downloads instantly as before; only requests above the daily quota need admin approval, then run automatically and deliver a Gofile link"
+      },
       "title": {
-        "zh": "超额下载申请与站长审批",
-        "en": "Over-Quota Requests with Admin Approval"
+        "zh": "TG Bot 超额下载申请与站长审批",
+        "en": "TG Bot: Over-Quota Requests with Admin Approval"
       },
       "items": {
         "zh": [
@@ -35,6 +41,10 @@
     {
       "version": "2.7",
       "date": "2026-11-04",
+      "oneLiner": {
+        "zh": "TG Bot 新增 /tags 命令：网页端「曲库语言」一直支持，现在机器人也能选任意 BCP-47 标签语言（如 ar-EG、ja-JP）",
+        "en": "New /tags command in the TG bot: the web UI has always had a catalog-language picker, now the bot can choose any BCP-47 tag language too"
+      },
       "title": {
         "zh": "TG Bot 补齐「标签语言」选择",
         "en": "TG Bot Catches Up on Tag Language Selection"

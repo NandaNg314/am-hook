@@ -3139,12 +3139,38 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 双语更新日志（唯一事实源 changelog.json，Web 端与 TG Bot 共用，支持热修改免重编）
+  // 每条 release 可带 "audience": "tg"（TG Bot 专属，Web 不显示）或 "web"（反之）。
+  // 这里返回给 Web 的永远只包含 Web 可见的条目，并把 latestVersion/oneLiner 对齐到该视图的最新版本，
+  // 否则网页会显示一个自己看不到内容的版本号。
   if (req.method === 'GET' && (u.pathname === '/api/quota/changelog' || u.pathname === '/api/changelog')) {
     try {
       const clPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'changelog.json');
-      const raw = fs.readFileSync(clPath, 'utf8');
+      const full = JSON.parse(fs.readFileSync(clPath, 'utf8'));
+      const out = { ...full };
+      if (Array.isArray(full.releases)) {
+        // Web 视图：排除 TG 专属条目
+        out.releases = full.releases.filter((r) => r && r.audience !== 'tg');
+        if (full.audience === 'tg') {
+          out.releases = [];
+        }
+        const head = out.releases[0];
+        if (head) {
+          out.latestVersion = head.version || full.latestVersion;
+          out.date = head.date || full.date;
+          // oneLiner 的归属版本要一起回退：顶层摘要属于 2.8（TG 专属）时，Web 必须用 2.7 自己的摘要
+          const topLinerVersion = full.oneLinerVersion || full.latestVersion;
+          if (head.version && topLinerVersion !== head.version) {
+            if (head.oneLiner) {
+              out.oneLiner = head.oneLiner;
+              out.oneLinerVersion = head.version;
+            }
+          } else if (head.oneLiner) {
+            out.oneLiner = head.oneLiner;
+          }
+        }
+      }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify({ status: 'ok', data: JSON.parse(raw) }));
+      res.end(JSON.stringify({ status: 'ok', data: out }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'error', error: e.message }));
