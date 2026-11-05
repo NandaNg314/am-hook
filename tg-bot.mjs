@@ -4541,6 +4541,13 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
 }
 
 // 单张专辑下载入口：命中缓存秒传直发 -> 配额检查 -> 入队 -> transferAlbumCore 下载归档 -> 统一推送私聊
+/**
+ * 每个 chat 最近一次算出的 Gofile 链接。
+ * 用途：transferAlbumCore 即使在中途抛错，只要链接已经算出，外层 catch 仍能补发给用户，
+ * 避免出现「已经上传成功却什么都没收到」。
+ */
+const _lastGofileUrlByChat = new Map();
+
 async function handleAlbumDownload(chatId, messageId, albumData, quality, needLrc, deliveryMode, needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman', approved = false) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
@@ -4759,6 +4766,26 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
             parse_mode: 'HTML'
           });
         } catch {}
+
+        // 最后一道保险：即使流程抛错，只要 transferAlbumCore 已经把「部分成功的 Gofile 链接」
+        // 挂到错误对象上，也要把它送给用户，避免"明明下好了却什么都没收到"。
+        // （core 内部会通过 err.gofileUrl 上报）
+        try {
+          const partial = err?.gofileUrl || _lastGofileUrlByChat.get(String(chatId));
+          if (partial) {
+            await tgCall('sendMessage', {
+              chat_id: chatId,
+              text: partial,
+              disable_web_page_preview: true
+            }).catch(() => {});
+            await tgCall('sendMessage', {
+              chat_id: chatId,
+              text: isEn
+                ? `⚠️ The batch stopped early, but this link contains what was already uploaded.`
+                : `⚠️ 本批中途停止，上面的链接包含已经上传成功的部分。`
+            }).catch(() => {});
+          }
+        } catch {}
       } finally {
         // 整单失败/异常：退回尚未对账的预留额度，不让用户为失败任务付费
         // （成功路径已在 transferAlbumCore 内按实际下载数对账）
@@ -4775,6 +4802,9 @@ async function handleAlbumDownload(chatId, messageId, albumData, quality, needLr
 async function transferAlbumCore({ chatId, messageId, albumData, quality, needLrc, deliveryMode, progressPrefix = '', needTranslate = false, embedLyricsMode = 'lrc', saveLyricsFormats = [], needRuby = false, rubyMode = 'roman' }) {
   const userLang = getUserLang(chatId);
   const isEn = userLang === 'en';
+  // Gofile 链接一旦算出就存这里：后续任何环节抛错，调用方仍能把它补发给用户
+  let lastGofileUrl = '';
+  _lastGofileUrlByChat.set(String(chatId), '');
   const albumId = albumData.albumId;
   const isPl = albumData.isPlaylist === true;
   saveLyricsFormats = resolveLyricsIntent(embedLyricsMode, saveLyricsFormats).formats;
@@ -4895,6 +4925,10 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           const downloadPage = allDownloadedFiles.map(f => f.downloadPage).filter(Boolean).pop()
             || (parentFolder ? `https://gofile.io/d/${parentFolder}` : '');
 
+          // 提前把链接挂到外层变量：万一后续发送环节抛错，外层 catch 仍能把链接补发给用户
+          lastGofileUrl = downloadPage;
+          _lastGofileUrlByChat.set(String(chatId), downloadPage);
+
           if (hasPendingReservation(chatId)) settleQuotaReservation(chatId, allDownloadedFiles.length);
           else quotaManager.incrementQuota(chatId, allDownloadedFiles.length);
 
@@ -4902,6 +4936,19 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
           const totalMb = (allDownloadedFiles.reduce((s, f) => s + (f.fileSize || 0), 0) / (1024 * 1024)).toFixed(1);
 
           if (downloadPage) {
+            // 第一优先：用最简格式把链接先送出去。
+            // 详细版依赖 HTML 解析和按钮配置，任何一处出错都会导致整条消息发不出；
+            // 链接才是用户真正要的东西，必须优先保证送达。
+            const linkSent = await tgCall('sendMessage', {
+              chat_id: chatId,
+              text: downloadPage,
+              disable_web_page_preview: true
+            }).then(() => true).catch((e) => {
+              console.error('[TG-Bot] Gofile 链接首发送失败:', e.message);
+              return false;
+            });
+
+            // 第二：详细版（失败也不影响上面那条）
             await tgCall('sendMessage', {
               chat_id: chatId,
               text: isEn
@@ -4913,7 +4960,16 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                   { text: isEn ? '☁️ Open Gofile Folder' : '☁️ 打开 Gofile 文件夹', url: downloadPage }
                 ]]
               }
-            });
+            }).catch((e) => console.warn('[TG-Bot] Gofile 详细消息发送失败(链接已送达):', e.message));
+
+            // 如果连最简链接都发不出去，把这笔失败告诉站长，避免"静默失败"
+            if (!linkSent) {
+              notifyOwnerGofileDone({
+                chatId, albumName: albumData.name, artistName: albumData.artistName,
+                url: downloadPage, tracks: allDownloadedFiles.length,
+                sizeMb: Number(totalMb), elapsedSec: goTotalDurationSec,
+              }).catch(() => {});
+            }
           }
 
           return {
@@ -4925,6 +4981,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
             skippedTracks,
             totalDurationSec: goTotalDurationSec,
             gofileUrl: downloadPage,
+            lastGofileUrl,
             gofileFolderId: parentFolder,
             gofileGuestToken: guestToken,
             totalSizeMb: Number(totalMb),
@@ -6685,6 +6742,8 @@ ${quotaText}
     const chatId = cb.message?.chat?.id;
     const messageId = cb.message?.message_id;
     const sessionKey = `${chatId}_${messageId}`;
+    // 入口埋点：用于区分「回调没到」与「到了但被前面分支吞掉」
+    console.log(`[CB] ${data} | chat=${chatId} msg=${messageId}`);
     // D: 用户语言 / 是否站长 / 会话，必须在所有回调分支之前就绪（审批与申请分支都要用到）
     const userLang = getUserLang(chatId, cb.from?.language_code);
     const isEn = userLang === 'en';
@@ -7146,43 +7205,47 @@ ${quotaText}
       return;
     }
 
+    // ==================== 艺人全专辑页的选项回调（音质 / 歌词 / 翻译 / 注音）====================
+    // 注意：必须独立于 atsel_art_ 分支，aao: 不匹配该前缀，套进去永远进不来
+  if (data.startsWith('aao:')) {
+      const p = data.split(':');
+      const field = p[1];
+      const o = getArtistOpts(chatId);
+      if (field === 'q') {
+        o.quality = ['Lossless', 'Hi-Res', 'Atmos', 'AAC'].includes(p[2]) ? p[2] : 'Lossless';
+      } else if (field === 'e') {
+        o.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(p[2]) ? p[2] : 'lrc';
+      } else if (field === 's') {
+        const f = p[2];
+        if (f === 'lrc' || f === 'ttml') {
+          o.saveLyricsFormats = o.saveLyricsFormats.includes(f)
+            ? o.saveLyricsFormats.filter((x) => x !== f)
+            : [...o.saveLyricsFormats, f];
+        }
+      } else if (field === 't') {
+        o.needTranslate = !o.needTranslate;
+      } else if (field === 'r') {
+        o.needRuby = !o.needRuby;
+      } else if (field === 'm') {
+        o.rubyMode = o.rubyMode === 'kana' ? 'roman' : 'kana';
+      }
+      o.updatedAt = Date.now();
+      console.log(`[CB] aao 生效 → ${JSON.stringify(o)}`);
+
+      await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
+      // 重绘这一页，让 ✅ 标记跟上。artistId 位置随字段不同：q/e/s 是 p[3]，其余是 p[2]
+      const adId = ['q', 'e', 's'].includes(field) ? p[3] : p[2];
+      const ad = await getArtistData(adId, 'hk', userLang, getUserTagLang(chatId));
+      // 保持当前页码：不传 page 会回到第 1 页，用户会以为点击把列表重置了
+      const keepPage = artistPageMap.get(`${chatId}:${adId}`) ?? 0;
+      await showArtistAlbums(chatId, ad, userLang, messageId, isOwner, keepPage);
+      return;
+  }
+
     // ==================== 艺人专辑勾选回调 (无需 session) ====================
     if (data.startsWith('atsel_art_')) {
       const parts = data.split(':');
       const artistId = parts[1] || null;
-
-      // 艺人全专辑页的选项回调（音质 / 歌词 / 翻译 / 注音）
-      if (data.startsWith('aao:')) {
-        const p = data.split(':');
-        const field = p[1];
-        const o = getArtistOpts(chatId);
-        if (field === 'q') {
-          o.quality = ['Lossless', 'Hi-Res', 'Atmos', 'AAC'].includes(p[2]) ? p[2] : 'Lossless';
-        } else if (field === 'e') {
-          o.embedLyricsMode = ['lrc', 'ttml', 'off'].includes(p[2]) ? p[2] : 'lrc';
-        } else if (field === 's') {
-          const f = p[2];
-          if (f === 'lrc' || f === 'ttml') {
-            o.saveLyricsFormats = o.saveLyricsFormats.includes(f)
-              ? o.saveLyricsFormats.filter((x) => x !== f)
-              : [...o.saveLyricsFormats, f];
-          }
-        } else if (field === 't') {
-          o.needTranslate = !o.needTranslate;
-        } else if (field === 'r') {
-          o.needRuby = !o.needRuby;
-        } else if (field === 'm') {
-          o.rubyMode = o.rubyMode === 'kana' ? 'roman' : 'kana';
-        }
-        o.updatedAt = Date.now();
-
-        await tgCall('answerCallbackQuery', { callback_query_id: cb.id });
-        // 重绘这一页，让 ✅ 标记跟上。artistId 位置随字段不同：q/e/s 是 p[3]，其余是 p[2]
-        const adId = ['q', 'e', 's'].includes(field) ? p[3] : p[2];
-        const ad = await getArtistData(adId, 'hk', userLang, getUserTagLang(chatId));
-        await showArtistAlbums(chatId, ad, userLang, messageId, isOwner);
-        return;
-      }
 
       // 分页按钮（atsel_art_more）只做界面刷新，不需要额外应答动作
       if (data.startsWith('atsel_art_more')) {
@@ -7500,11 +7563,16 @@ ${quotaText}
     }
 
     if (!session) {
+      // 用户点了按钮却没有任何反应的常见原因：会话已过期（重启/超时/换消息）。
+      // 这里必须给出明确提示，否则界面上看起来就是"按钮坏了"。
+      console.warn(`[CB] 无会话，拒绝处理: ${data} (key=${sessionKey})`);
       await tgCall('answerCallbackQuery', {
         callback_query_id: cb.id,
-        text: isEn ? 'Session expired. Please send link again!' : '会话已过期，请重新发送链接！',
+        text: isEn
+          ? 'Session expired. Please send the link again.'
+          : '会话已过期，请重新发送链接。',
         show_alert: true
-      });
+      }).catch(() => {});
       return;
     }
 
@@ -7820,6 +7888,17 @@ ${quotaText}
         .finally(() => userSessions.delete(sessionKey));
       return;
     }
+
+    // ==================== 兜底：任何没被上面分支处理的回调 ====================
+    // 绝不能让按钮点了毫无反应——至少告诉用户「这个按钮没生效」并留下日志。
+    console.warn(`[CB] 未匹配任何分支: ${data}`);
+    await tgCall('answerCallbackQuery', {
+      callback_query_id: cb.id,
+      text: isEn
+        ? `This button is not available here (${data.split(':')[0]}). Please reopen the menu.`
+        : `该按钮在此处不可用（${data.split(':')[0]}），请重新打开菜单。`,
+      show_alert: true
+    }).catch(() => {});
   }
 }
 
