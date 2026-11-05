@@ -1789,10 +1789,11 @@ function renderNameTemplate(template, meta = {}, quality = '') {
 
   // 清理模板残留：连续的「 - 」「_  」等分隔符空位
   let cleaned = out
-    .replace(/\[\s*\]/g, '')               // 空方括号
-    .replace(/\(\s*\)/g, '')               // 空圆括号
-    .replace(/\s*-\s*(?=(\s*-|\s*$))/g, '') // 连续/悬空连字符
-    .replace(/^[\s\-_]+|[\s\-_]+$/g, '')   // 首尾分隔符
+    .replace(/\[\s*\]/g, '')                 // 空方括号
+    .replace(/\(\s*\)/g, '')                 // 空圆括号
+    .replace(/(\s*-\s*){2,}/g, ' - ')        // 连续连字符折叠为单个
+    .replace(/^\s*-\s*|\s*-\s*$/g, '')       // 首尾悬空连字符
+    .replace(/^[\s\-_]+|[\s\-_]+$/g, '')     // 首尾分隔符
     .replace(/\s{2,}/g, ' ')
     .replace(/_{2,}/g, '_')
     .trim();

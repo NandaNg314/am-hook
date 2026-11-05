@@ -5961,6 +5961,8 @@ async function handleUpdate(update) {
     const nameTplWait = userSessions.get(`${chatId}_nametpl_wait`);
     if (nameTplWait && nameTplWait.awaitingNameTemplate) {
       if (text.startsWith('/')) {
+        // 发送命令视为取消，交给后面的命令处理器；但先清掉等待状态，
+        // 否则用户会以为「上次输入还挂着」，再发模板时行为难以预测。
         userSessions.delete(`${chatId}_nametpl_wait`);
       } else {
         const rawTpl = text.trim();
