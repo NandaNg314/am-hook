@@ -4992,11 +4992,11 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
   // Gofile 模式在 TG 侧不落任何群消息，缓存 key 与 zip/media 分开，避免秒传命中错误的分支
   const cacheKey = `album_${albumId}_${quality.toLowerCase()}_${deliveryMode}${isEn ? '_en' : ''}`;
   const totalTracks = albumData.tracks.length;
-  // 外置歌词（.lrc / .ttml）改为用户可选：
-  // 勾了就真的生成并写进压缩包/文件夹；不勾就只保留内嵌歌词。
-  // 唯一例外是「原生音频合辑」模式 —— 它走 TG 媒体组逐条发送，外置文件无法随包附带，
-  // 强行保留会变成一堆零散消息，所以该模式仍收敛为空。
-  if (deliveryMode === 'media') saveLyricsFormats = [];
+  // 外置歌词（.lrc / .ttml）由用户决定：勾了就生成，不勾就只保留内嵌歌词。
+  // 三种交付模式都支持外置歌词：
+  //   zip   → 打进压缩包
+  //   gofile→ 打包上传到云盘
+  //   media → 音频以媒体组发送，外置歌词随后单独作为文件发送
       await tgCall('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
@@ -5686,6 +5686,40 @@ ${artistTag} ${albumTag} #${typeLabel}`);
                   await new Promise(r => setTimeout(r, 2500));
                 } catch (sendErr) {
                   console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
+                }
+              }
+            }
+          }
+
+          // 外置歌词：MediaGroup 模式发的是音频媒体组，.lrc/.ttml 塞不进去，作为独立文件补发。
+          // 批处理模式下歌词落在 sessionDir 里，按音频名匹配同前缀的歌词文件。
+          if (saveLyricsFormats.length > 0) {
+            for (const f of chunkDownloadedFiles) {
+              const dir = f.sessionDir || (f.audioFilePath ? path.dirname(f.audioFilePath) : '');
+              if (!dir || !fs.existsSync(dir)) continue;
+              const audioStem = (f.fileName || '').replace(/\.[^.]+$/, '');
+              let entries = [];
+              try { entries = fs.readdirSync(dir); } catch { continue; }
+              const lyrFiles = entries.filter((n) => {
+                if (!/\.(lrc|ttml)$/i.test(n)) return false;
+                const ext = n.split('.').pop().toLowerCase();
+                if (!saveLyricsFormats.includes(ext)) return false;
+                const stem = n.replace(/\.[^.]+$/, '');
+                // 同名或共享「歌手 - 歌名」主干即视为同一首的歌词
+                return stem === audioStem
+                  || stem.endsWith(' ' + audioStem)
+                  || (audioStem.includes(' - ') && stem.endsWith(audioStem.slice(audioStem.indexOf(' - '))));
+              });
+              for (const name of lyrFiles) {
+                try {
+                  await tgCall('sendDocument', {
+                    chat_id: AUTHORIZED_GROUP_ID,
+                    document: 'file://' + path.resolve(path.join(dir, name)),
+                    caption: safeCaption('📝 <b>' + escapeHtml(f.title || audioStem) + '</b> - ' + (isEn ? 'Lyrics' : '歌词')),
+                    parse_mode: 'HTML'
+                  });
+                } catch (lyrErr) {
+                  console.warn('[TG-Bot] 外置歌词发送失败 ' + name + ':', lyrErr.message);
                 }
               }
             }

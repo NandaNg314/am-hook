@@ -2339,8 +2339,14 @@ async function processTransfer(body) {
       const needsMeta = shouldTranslateLyrics || shouldRuby;
       const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${needsMeta ? '?language=zh-Hans-CN' : ''}`;
       const lRes = await fetch(lyricsUrl, { signal: AbortSignal.timeout(5000) });
+      if (!lRes.ok) {
+        console.log(`[Cloud-Transfer] 歌词接口返回 ${lRes.status} (adamId=${adamId})`);
+      }
       if (lRes.ok) {
         const rawTtml = await lRes.text();
+        if (!rawTtml || !rawTtml.trim()) {
+          console.log(`[Cloud-Transfer] 歌词接口返回空内容 (adamId=${adamId})`);
+        }
         let base = null;
         if (shouldTranslateLyrics) {
           base = buildBilingualLrc(rawTtml, 'zh-Hans-CN');
@@ -2350,6 +2356,7 @@ async function processTransfer(body) {
       }
     } catch (e) {
       console.warn('[Cloud-Transfer] 歌词抓取失败:', e.message);
+      return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     }
     return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
   };
@@ -2553,8 +2560,10 @@ async function processTransfer(body) {
   let lyricsMime = 'text/plain;charset=utf-8';
   /** 额外外置歌词文件（与主文件同时交付，如 .lrc + .ttml 并存） */
   const extraLyrics = [];
-  if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {
-    // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
+  if (saveLyricsFormats.length > 0 && !lyricsData.hasLyrics) {
+    console.log(`[Cloud-Transfer] 未取到歌词，跳过外置歌词文件 (title=${meta.title || ''})`);
+  }
+  if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {    // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
     const primary = buildLyricsFile(saveLyricsFormats[0]);
     if (primary) {
       lyricsFilename = primary.filename;
@@ -2814,7 +2823,6 @@ async function processTransfer(body) {
         elapsedMs: Math.round(tEnd - t0)
       };
     }
-
     try {
       const srv = await getGofileServer();
       const form = new FormData();
