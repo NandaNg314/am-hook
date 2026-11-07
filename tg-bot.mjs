@@ -1484,14 +1484,15 @@ function sanitizeLocalName(name) {
  */
 function lyricsDisplayStem(remoteName, info = {}) {
   const clean = (x) => String(x || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120);
+  const isBadName = (s) => !s || /\bUnknown\b/i.test(s) || /^am_lyr_|^[a-z0-9]{6,}_[a-z0-9]{4}$/i.test(s);
   if (remoteName && String(remoteName).includes('.')) {
     const stem = clean(String(remoteName).replace(/\.[^.]+$/, ''));
-    if (stem && !/^am_lyr_|^[a-z0-9]{6,}_[a-z0-9]{4}$/i.test(stem)) return stem;
+    if (!isBadName(stem)) return stem;
   }
   const artist = clean(info.artistName || info.artist || info.artistTitle || '');
   const title = clean(info.title || info.name || '');
   const base = artist && title ? `${artist} - ${title}` : (title || artist || 'Lyrics');
-  return base || 'Lyrics';
+  return isBadName(base) ? 'Lyrics' : base;
 }
 
 async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, maxRetries = 3) {
@@ -3446,19 +3447,26 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
       // 否则用户看到的就是 am_lyr_only_xxx.tml 这种无意义名字。
       const ext = String(f.filename || '').split('.').pop().toLowerCase();
       const displayStem = lyricsDisplayStem(f.filename, details);
-      const fpath = path.join(LYR_TMP_DIR, `${displayStem}.${ext}`);
+      // 独立子目录，避免同名文件在多请求间互相覆盖
+      const sub = path.join(LYR_TMP_DIR, `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      fs.mkdirSync(sub, { recursive: true });
+      const fpath = path.join(sub, `${displayStem}.${ext}`);
       fs.writeFileSync(fpath, f.content, 'utf8');
       const cap = safeCaption(`📝 <b>${escapeHtml(details.title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`);
-      const r = await unifiedSendMedia({
-        chatId,
-        filePath: fpath,
-        fileName: `${displayStem}.${ext}`,
-        caption: cap,
-        isAudio: false,
-        isZip: false
-      });
-      sentIds.push(r.groupMsgId || r.fileId);
-      try { fs.rmSync(fpath, { force: true }); } catch {}
+      try {
+        const r = await unifiedSendMedia({
+          chatId,
+          filePath: fpath,
+          fileName: `${displayStem}.${ext}`,
+          caption: cap,
+          isAudio: false,
+          isZip: false
+        });
+        sentIds.push(r.groupMsgId || r.fileId);
+      } finally {
+        try { fs.rmSync(fpath, { force: true }); } catch {}
+        try { fs.rmdirSync(sub); } catch {}
+      }
     }
     await tgCall('editMessageText', {
       chat_id: chatId,
@@ -4656,9 +4664,17 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
   const failList = [];
   for (let i = 0; i < tracks.length; i++) {
     const t = tracks[i];
-    const attr = t.attributes || {};
-    const title = attr.name || 'Unknown';
-    const artist = attr.artistName || albumData.artistName || '';
+    // albumData.tracks 的元素形如 { id, name, trackNumber, artistName }，
+    // 没有 attributes 层；直接取 t.attributes 会全部得到 undefined → "Unknown"。
+    const attr = t.attributes || t;
+    const rawTitle = attr.name || t.name || '';
+    const trackNo = String(i + 1).padStart(2, '0');
+    // 拿不到真实歌名时用「专辑名 + 曲序」兜底，确保每首都可区分，
+    // 而不是全部变成 "Unknown" 导致文件名撞车、互相覆盖。
+    const title = rawTitle
+      ? rawTitle
+      : `${albumData.name || 'Album'} - ${trackNo}`;
+    const artist = attr.artistName || t.artistName || albumData.artistName || '';
     try {
       const payload = {
         adamId: t.id,
@@ -4685,18 +4701,31 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
       }
       for (const f of data.data.lyricsFiles) {
         const ext = String(f.filename || '').split('.').pop().toLowerCase();
-        const displayStem = lyricsDisplayStem(f.filename, { title, artistName: artist });
-        const fpath = path.join(LYR_TMP_DIR, `${displayStem}.${ext}`);
+        let displayStem = lyricsDisplayStem(f.filename, { title, artistName: artist });
+        // 兜底：仍是通用名时补上专辑与曲序，避免批量下载时多个文件同名
+        if (!displayStem || displayStem === 'Lyrics') {
+          const trackNo = String(i + 1).padStart(2, '0');
+          displayStem = `${albumData.artistName || artist} - ${albumData.name || 'Album'} - ${trackNo}`;
+        }
+        // 每首歌用独立子目录：批量时同名曲目（如都是「艺人 - Unknown」）会互相覆盖，
+        // 导致前一个还在上传、后一个已被删除 → ENOENT。
+        const sub = path.join(LYR_TMP_DIR, `${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`);
+        fs.mkdirSync(sub, { recursive: true });
+        const fpath = path.join(sub, `${displayStem}.${ext}`);
         fs.writeFileSync(fpath, f.content, 'utf8');
-        await unifiedSendMedia({
-          chatId,
-          filePath: fpath,
-          fileName: `${displayStem}.${ext}`,
-          caption: safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`),
-          isAudio: false,
-          isZip: false
-        });
-        try { fs.rmSync(fpath, { force: true }); } catch {}
+        try {
+          await unifiedSendMedia({
+            chatId,
+            filePath: fpath,
+            fileName: `${displayStem}.${ext}`,
+            caption: safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`),
+            isAudio: false,
+            isZip: false
+          });
+        } finally {
+          try { fs.rmSync(fpath, { force: true }); } catch {}
+          try { fs.rmdirSync(sub); } catch {}
+        }
         okFiles.push(`${displayStem}.${ext}`);
       }
     } catch (err) {
