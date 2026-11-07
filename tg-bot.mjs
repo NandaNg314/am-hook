@@ -1484,15 +1484,27 @@ function sanitizeLocalName(name) {
  */
 function lyricsDisplayStem(remoteName, info = {}) {
   const clean = (x) => String(x || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120);
-  const isBadName = (s) => !s || /\bUnknown\b/i.test(s) || /^am_lyr_|^[a-z0-9]{6,}_[a-z0-9]{4}$/i.test(s);
-  if (remoteName && String(remoteName).includes('.')) {
-    const stem = clean(String(remoteName).replace(/\.[^.]+$/, ''));
-    if (!isBadName(stem)) return stem;
-  }
-  const artist = clean(info.artistName || info.artist || info.artistTitle || '');
+  const isBadName = (s) => !s || /^am_lyr_|^[a-z0-9]{6,}_[a-z0-9]{4}$/i.test(s);
+  const hasPlaceholder = (s) => /\bUnknown\b|\bTrack\b/i.test(s);
+
+  const artist = clean(info.artistName || info.artist || '');
   const title = clean(info.title || info.name || '');
-  const base = artist && title ? `${artist} - ${title}` : (title || artist || 'Lyrics');
-  return isBadName(base) ? 'Lyrics' : base;
+  const fallback = artist && title ? `${artist} - ${title}` : (title || artist || 'Lyrics');
+
+  if (remoteName && String(remoteName).includes('.')) {
+    let stem = clean(String(remoteName).replace(/\.[^.]+$/, ''));
+    if (!isBadName(stem)) {
+      // 「艺人 - Unknown」这类：保留艺人，只替换占位曲名，避免多首同名
+      if (hasPlaceholder(stem) && fallback) {
+        const dash = stem.indexOf(' - ');
+        const prefix = dash > 0 ? stem.slice(0, dash) : artist;
+        const realTitle = title || (stem.slice(dash + 3) || '').replace(/\bUnknown\b|\bTrack\b/gi, '').trim();
+        stem = prefix && realTitle ? `${prefix} - ${realTitle}` : fallback;
+      }
+      if (!isBadName(stem) && !hasPlaceholder(stem)) return stem;
+    }
+  }
+  return isBadName(fallback) ? 'Lyrics' : fallback;
 }
 
 async function tgSendFile(method, fieldName, filePath, fileName, fields = {}, maxRetries = 3) {
@@ -5741,12 +5753,15 @@ ${artistTag} ${albumTag} #${typeLabel}`);
               });
               for (const name of lyrFiles) {
                 try {
-                  await tgCall('sendDocument', {
+                  const lyrMsg = await tgCall('sendDocument', {
                     chat_id: AUTHORIZED_GROUP_ID,
                     document: 'file://' + path.resolve(path.join(dir, name)),
                     caption: safeCaption('📝 <b>' + escapeHtml(f.title || audioStem) + '</b> - ' + (isEn ? 'Lyrics' : '歌词')),
                     parse_mode: 'HTML'
                   });
+                  // 歌词消息也记入归档清单：这样秒传（缓存命中）时歌词会随音频一起推送，
+                  // 不会出现「第一次有歌词、第二次只剩音频」。
+                  if (lyrMsg?.message_id) allGroupMsgIds.push(lyrMsg.message_id);
                 } catch (lyrErr) {
                   console.warn('[TG-Bot] 外置歌词发送失败 ' + name + ':', lyrErr.message);
                 }
