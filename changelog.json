@@ -1,11 +1,137 @@
 {
-  "latestVersion": "2.6",
-  "date": "2026-11-04",
+  "latestVersion": "2.10",
+  "date": "2026-11-06",
+  "oneLinerVersion": "2.10",
   "oneLiner": {
-    "zh": "支持直接发歌名搜索点歌、英文模式全英文音乐标签、歌单整包开放与歌手全辑完整分页",
-    "en": "Direct song/artist search in bot, native English .m4a tags, open playlist downloads & full artist discography pagination"
+    "zh": "TG Bot：文件名完全自定义，歌曲、歌词、压缩包都能按自己的规则命名",
+    "en": "TG Bot: fully customisable filenames — name tracks, lyrics and album archives however you like"
   },
   "releases": [
+    {
+      "version": "2.10",
+      "date": "2026-11-06",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：文件名完全自定义，歌曲、歌词、压缩包都能按自己的规则命名",
+        "en": "TG Bot: fully customisable filenames — name tracks, lyrics and album archives however you like"
+      },
+      "title": {
+        "zh": "TG Bot 自定义文件名模板 · 文件命名修正",
+        "en": "TG Bot: Custom Filename Templates · Naming Fixes"
+      },
+      "items": {
+        "zh": [
+          "📝 文件名可自定义：在 /tags 里新增「自定义文件名」，歌曲/歌词与压缩包可分别设置模板",
+          "🔤 可用变量：{artist} {albumartist} {title} {album} {track} {total} {disc} {year} {genre} {composer} {quality}，压缩包额外支持 {count}",
+          "💡 例如 {track}. {artist} - {title} 会得到「01. 周杰伦 - 晴天」；默认仍是 {artist} - {title}，不改设置行为完全不变",
+          "🎵 歌词自动跟随歌曲名，只差扩展名，解压后一眼能对上",
+          "🛠 修复：压缩包显示为 album_418443842_1793920151673.zip 这类随机名，现为「专辑名 [音质].zip」",
+          "🛠 修复：歌词文件显示为 am_lyr_only_1793920921015_kmoi.ttml 这类随机名，现为「艺人 - 歌名.lrc」"
+        ],
+        "en": [
+          "📝 Custom filenames: a new “Filename templates” entry in /tags lets you set naming rules separately for tracks/lyrics and album archives",
+          "🔤 Variables: {artist} {albumartist} {title} {album} {track} {total} {disc} {year} {genre} {composer} {quality}, plus {count} for archives",
+          "💡 e.g. {track}. {artist} - {title} gives “01. Jay Chou - Sunny Day”; the default stays {artist} - {title}, so nothing changes unless you opt in",
+          "🎵 Lyrics always follow the track name — same name, different extension, so they match up at a glance after unzipping",
+          "🛠 Fixed: archives showed random names like album_418443842_1793920151673.zip; now “Album [Quality].zip”",
+          "🛠 Fixed: lyric files showed random names like am_lyr_only_1793920921015_kmoi.ttml; now “Artist - Title.lrc”"
+        ]
+      }
+    },
+    {
+      "version": "2.9",
+      "date": "2026-11-06",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：所有专辑打包进同一个 Gofile 链接，只发一条消息；参数选择在下载页就能直接改",
+        "en": "TG Bot: all albums now go into a single Gofile link with one message; options can be set right on the download page"
+      },
+      "title": {
+        "zh": "TG Bot 全专辑归集为一链接 · 下载参数可选 · 多处修复",
+        "en": "TG Bot: One Gofile Link per Batch · Selectable Options · Various Fixes"
+      },
+      "items": {
+        "zh": [
+          "🔗 整批只发一个链接：过去 29 张专辑会发 29 条 Gofile 链接刷屏，现在全部归集到同一个文件夹，只发一条汇总消息",
+          "🎛 歌手全专辑页可直接改参数：音质、歌词内嵌、外置 .lrc/.ttml、中文翻译、注音都能在勾选专辑时设定，卡片上有「当前设置」一行汇总",
+          "📄 外置歌词真正生效：此前批量下载会强制清空外置歌词，勾了也没用；现在 Gofile 与 ZIP 模式都会把 .lrc/.ttml 打进包里",
+          "📊 体积显示修复：Gofile 完成消息此前恒显示 0 MB，现已正确显示大小",
+          "🧭 按钮状态可见：歌词、音质按钮统一用 ✅ 标记当前选择，点击后弹出明确提示，不再是点了没反应",
+          "🛠 修复：普通专辑下载报 trackFiles is not defined 导致完全无法下载",
+          "🛠 修复：Gofile 模式永远拿不到链接（打包从未被触发），以及单曲异常中断整批导致全部结果作废",
+          "🛠 修复：歌手全专辑页的音质等按钮因回调写错层级而完全无响应"
+        ],
+        "en": [
+          "🔗 One link per batch: a 29-album pull used to spam 29 separate Gofile links; everything is now collected into a single folder and sent as one summary message",
+          "🎛 Set options on the discography page: quality, embedded lyrics, external .lrc/.ttml, Chinese translation and ruby can all be chosen while picking albums, with a “Current settings” line summarising them",
+          "📄 External lyrics actually work now: batch downloads used to silently drop them regardless of your choice; Gofile and ZIP modes now include .lrc/.ttml in the archive",
+          "📊 Size display fixed: Gofile completion messages always showed 0 MB; the real size is shown now",
+          "🧭 Visible button state: lyric and quality buttons use a consistent ✅ marker and give explicit feedback when tapped instead of appearing unresponsive",
+          "🛠 Fixed: normal album downloads failed with “trackFiles is not defined”, making downloads completely unusable",
+          "🛠 Fixed: Gofile mode never produced a link (packaging was never triggered), and a single failing track aborted the whole batch, discarding everything already uploaded",
+          "🛠 Fixed: discography-page option buttons did nothing at all due to the callback being registered in the wrong scope"
+        ]
+      }
+    },
+    {
+      "version": "2.8",
+      "date": "2026-11-05",
+      "audience": "tg",
+      "oneLiner": {
+        "zh": "TG Bot：额度内的下载一切照旧直接给；只有超出每日额度才需要站长审批，批准后自动开跑并发 Gofile 链接",
+        "en": "TG Bot: everything within quota downloads instantly as before; only requests above the daily quota need admin approval, then run automatically and deliver a Gofile link"
+      },
+      "title": {
+        "zh": "TG Bot 超额下载申请与站长审批",
+        "en": "TG Bot: Over-Quota Requests with Admin Approval"
+      },
+      "items": {
+        "zh": [
+          "✅ 额度内一切照旧：单曲、专辑、歌单、歌手全专辑，只要在每日 200 首以内就直接开始下载，不再有任何审批门槛",
+          "📩 只有超出每日额度才会弹出申请卡：写明站长在东八区、可能不在线、批准后才开始下载、完成后发 Gofile 链接请尽快下载",
+          "🎛 申请人选的音质、歌词内嵌、中文翻译、注音会随申请一起提交，站长批准时原样执行，不会悄悄变回默认值",
+          "🔔 站长在 Telegram 里点「同意」后真正开始下载（不批准就一直不跑、不占队列），完成后 Gofile 链接同时发给申请人和站长",
+          "⏱ 申请频率：每人每小时 1 次、每天最多 3 次；一轮跑完授权即失效",
+          "🛠 修复：歌手全专辑批量下载完成后申请人收不到 Gofile 链接、申请数据只存内存重启即丢、卡住时静默无提示"
+        ],
+        "en": [
+          "✅ Within quota nothing changes: singles, albums, playlists and full artist discographies start downloading immediately as long as you're inside the 200-track daily quota — no approval gate at all",
+          "📩 Only over-quota requests show a request card: it states the admin is in UTC+8 and may be offline, that the download starts only after approval, and that a Gofile link is sent afterwards",
+          "🎛 Quality, lyric embedding, Chinese translation and ruby choices are submitted along with the request and honoured exactly when approved — no silent reset to defaults",
+          "🔔 Nothing runs until the admin taps Approve in Telegram (no background jobs, no queue slot while pending); when it finishes the Gofile link goes to both the requester and the admin",
+          "⏱ Request limits: once per hour per user, up to 3 per day; the approval is single-use",
+          "🛠 Fixed: requester never received the Gofile link after a full-discography batch, request data lived only in memory and was lost on restart, and stalled jobs failed silently"
+        ]
+      }
+    },
+    {
+      "version": "2.7",
+      "date": "2026-11-04",
+      "oneLiner": {
+        "zh": "TG Bot 新增 /tags 命令：网页端「曲库语言」一直支持，现在机器人也能选任意 BCP-47 标签语言（如 ar-EG、ja-JP）",
+        "en": "New /tags command in the TG bot: the web UI has always had a catalog-language picker, now the bot can choose any BCP-47 tag language too"
+      },
+      "title": {
+        "zh": "TG Bot 补齐「标签语言」选择",
+        "en": "TG Bot Catches Up on Tag Language Selection"
+      },
+      "items": {
+        "zh": [
+          "🏷 新增 /tags 命令：网页端的朋友早就用惯了左下角「曲库语言」，现在机器人在对话里也能选 —— 内置 19 种常用语言预设，也可直接输入任意 BCP-47 代码（如 ar-EG、ja-JP、zh-Hant-HK）",
+          "🔀 与网页端一致，标签语言和界面语言互不影响：可以「英文界面 + 日语标签」",
+          "🔍 按各地区实际支持的 supportedLanguageTags 精准匹配，而不是盲发一次就完事 —— Apple Music 遇到不支持的语言会静默回退，只发一次很容易拿到错语言",
+          "©️ 一旦你明确指定了语言，就不再转简体、不做华语艺名映射、不做跨区嗅探：要什么语言就给什么语言",
+          "💡 小提示：Apple Music 并非所有语言组合都有本地化名称（例如阿拉伯语、泰语在多数区没有），这类情况下会回退到该区默认语言，属于平台限制"
+        ],
+        "en": [
+          "🏷 New /tags command: the web UI has had a catalog-language picker in the bottom-left forever — now the bot can do it in chat too. 19 built-in presets, plus any custom BCP-47 code (ar-EG, ja-JP, zh-Hant-HK…)",
+          "🔀 Matching the web UI, tag language and interface language are independent: run an English UI while tagging files in Japanese",
+          "🔍 Matches against each storefront's actual supportedLanguageTags instead of firing one blind request — Apple Music silently falls back for unsupported languages, so a single request often returns the wrong language",
+          "©️ Once you pick a language explicitly, names are kept verbatim: no simplification, no artist-alias mapping, no cross-region sniffing",
+          "💡 Heads-up: Apple Music doesn't have localized names for every language combination (Arabic and Thai are missing in most regions); those fall back to the storefront default — that's a platform limit"
+        ]
+      }
+    },
     {
       "version": "2.6",
       "date": "2026-11-04",
@@ -19,14 +145,14 @@
           "🔎 TG 机器人直接搜索：除发送链接外，现在可直接向机器人发送「歌名 / 歌手名」实时搜索并一键点歌",
           "💿 歌手全辑完整分页：突破原先仅显示 10 张专辑的限制，自动拉取歌手名下全部录音室专辑、Live 与单曲/EP，支持跨页勾选与「仅选录音室专辑」",
           "🔓 歌单整包全面开放：普通用户现可整包下载单曲、专辑与歌单（共享每日 200 首免费配额，已归档秒传不扣配额）",
-          "📱 手机与电脑双端优化：修复手机端专辑/歌单按钮横向溢出，移除冗余口令框，新增双语历史更新日志"
+          "📱 手机与电脑双端优化：修复手机端专辑/歌单按钮横向溢出，移除冗余口令框，首页下载偏好设置正式接通并新增双语历史更新日志"
         ],
         "en": [
           "🏷️ Native English Audio Tags: In English mode, all exported .m4a metadata tags (title, artist, album, genre) and filenames are written in English",
           "🔎 Direct Search in TG Bot: Send any song or artist name directly to the bot to search Apple Music and download without needing a link",
           "💿 Full Artist Discography Pagination: Loads all Studio Albums, Live Albums, Singles & EPs across pages instead of only the first 10",
           "🔓 Full Playlist Downloads for All: Standard users can now batch-download full playlists, albums, and single tracks (200 tracks/day shared quota; cached items are free)",
-          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, synced home download preferences, and bilingual release history"
+          "📱 Mobile & Desktop Polish: Responsive action buttons on mobile screens, home download preferences now actually wired up, and a bilingual release history"
         ]
       }
     },

@@ -386,6 +386,8 @@
 
       'dl.busy': '该音质正在下载',
       'dl.preparing': '正在准备下载…',
+      'dl.queued': '排队中：前面还有 {n} 个任务，轮到后自动开始',
+      'dl.queuedHint': '提示：切换为「Gofile 云端转存」可跳过排队，更快拿到链接',
       'dl.progress': '浏览器解密下载中 {pct}% · {done} / {total}',
       'dl.defrag': '正在整理为标准 MP4…',
       'dl.done': '解密完成，已交给浏览器保存（{size}）',
@@ -836,6 +838,8 @@
 
       'dl.busy': 'This quality is already downloading',
       'dl.preparing': 'Preparing download…',
+      'dl.queued': 'Queued: {n} task(s) ahead, starts automatically',
+      'dl.queuedHint': 'Tip: switch to “Gofile Cloud Transfer” to skip the queue and get a link faster',
       'dl.progress': 'Decrypting in browser {pct}% · {done} / {total}',
       'dl.defrag': 'Converting to progressive MP4…',
       'dl.done': 'Decrypted and handed to the browser to save ({size})',
