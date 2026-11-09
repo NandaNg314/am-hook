@@ -604,6 +604,7 @@ function uniqueNameInDir(dir, baseName, trackPrefix = '') {
   const exists = (n) => fs.existsSync(path.join(dir, n));
   if (!exists(baseName)) return baseName;
   if (trackPrefix && !exists(`${trackPrefix}${baseName}`)) return `${trackPrefix}${baseName}`;
+  // 重名时保留已有前缀，序号插在扩展名之前，确保与音频文件仍能一眼配对
   for (let n = 2; n <= 999; n++) {
     const cand = `${stem} (${n})${ext}`;
     if (!exists(cand)) return cand;
@@ -1736,6 +1737,80 @@ function sanitizeFilename(name, maxBytes = 120) {
   return cleaned || 'track';
 }
 
+/* ==================== 文件名模板 ==================== */
+
+/** 默认模板：与历史行为完全一致，不传模板时走这里 */
+const DEFAULT_TRACK_TEMPLATE = '{artist} - {title}';
+const DEFAULT_ALBUM_TEMPLATE = '{album}';
+
+/**
+ * 文件名模板可用变量。
+ * 变量名取自用户熟悉的标签体系（类似 wrapper-lite 的 config 参数）。
+ */
+const TEMPLATE_VARS = ['artist', 'albumartist', 'title', 'album', 'track', 'trackno', 'total', 'disc', 'year', 'genre', 'composer', 'quality'];
+
+/**
+ * 按模板生成文件名主干（不含扩展名）。
+ * - 未知变量原样保留为 {xxx}，便于用户发现拼写错误
+ * - 生成结果仍会经过 sanitizeFilename，杜绝非法字符
+ * - 若渲染为空（如模板只含缺失字段），回落到默认模板
+ */
+function renderNameTemplate(template, meta = {}, quality = '') {
+  const tpl = String(template || '').trim() || DEFAULT_TRACK_TEMPLATE;
+  const pad = (n, w = 2) => {
+    const s = String(n || '').trim();
+    return s ? s.padStart(w, '0') : '';
+  };
+  const discRaw = meta.discNumber || meta.disc || 1;
+  const disc = Number(discRaw) > 1 ? pad(discRaw) : '';
+  const trackNo = meta.trackNumber || '';
+  const total = meta.totalTracks || meta.total || '';
+
+  const map = {
+    artist: meta.artist || meta.artistName || '',
+    albumartist: meta.albumArtist || meta.albumartist || meta.artist || '',
+    title: meta.title || meta.name || '',
+    album: meta.album || meta.albumName || '',
+    track: pad(trackNo),
+    trackno: pad(trackNo),
+    total: total ? String(total) : '',
+    disc: disc,
+    year: (meta.releaseDate || meta.year || '').toString().slice(0, 4),
+    genre: meta.genre || '',
+    composer: meta.composer || '',
+    quality: quality || '',
+  };
+
+  const out = tpl.replace(/\{(\w+)\}/g, (all, key) => {
+    const k = key.toLowerCase();
+    if (!(k in map)) return all;          // 未知变量：原样保留，方便排错
+    return map[k] || '';                   // 已知但值为空：留空
+  });
+
+  // 清理模板残留：连续的「 - 」「_  」等分隔符空位
+  let cleaned = out
+    .replace(/\[\s*\]/g, '')                 // 空方括号
+    .replace(/\(\s*\)/g, '')                 // 空圆括号
+    .replace(/(\s*-\s*){2,}/g, ' - ')        // 连续连字符折叠为单个
+    .replace(/^\s*-\s*|\s*-\s*$/g, '')       // 首尾悬空连字符
+    .replace(/^[\s\-_]+|[\s\-_]+$/g, '')     // 首尾分隔符
+    .replace(/\s{2,}/g, ' ')
+    .replace(/_{2,}/g, '_')
+    .trim();
+
+  return sanitizeFilename(cleaned || renderNameTemplate(DEFAULT_TRACK_TEMPLATE, meta, quality));
+}
+
+/**
+ * 按模板生成压缩包名主干。
+ * 除曲目变量外还支持 {count}（曲目数）。
+ */
+function renderZipTemplate(template, meta = {}, quality = '', count = 0) {
+  const tpl = String(template || '').trim() || DEFAULT_ALBUM_TEMPLATE;
+  const withCount = tpl.replace(/\{count\}/gi, count ? String(count) : '');
+  return renderNameTemplate(withCount, { ...meta, album: meta.album || meta.albumName || meta.title }, quality);
+}
+
 /* ==================== CENC fMP4 重组 ==================== */
 
 /**
@@ -1847,7 +1922,9 @@ async function processTransfer(body) {
     noUpload = false,
     outputDir,
     failedTracks,
-    lang = 'zh'
+    lang = 'zh',
+    nameTemplate = '',
+    zipTemplate = ''
   } = body;
   const isEn = String(lang || 'zh').toLowerCase().startsWith('en');
 
@@ -1857,7 +1934,11 @@ async function processTransfer(body) {
     if (!fs.existsSync(sessionDir)) {
       throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
     }
-    const rawZipName = zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip');
+    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」
+    const rawZipName = (zipFilename && String(zipFilename).trim())
+      || (zipTemplate || meta.album
+        ? `${renderZipTemplate(zipTemplate, meta, quality, body.totalFiles || 0)} [${quality}].zip`
+        : 'Album.zip');
     const finalZipName = sanitizeFilename(isEn ? rawZipName : toSimplifiedChinese(rawZipName));
     const zipFilePath = `/tmp/${batchId}.zip`;
     // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
@@ -2258,8 +2339,14 @@ async function processTransfer(body) {
       const needsMeta = shouldTranslateLyrics || shouldRuby;
       const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${needsMeta ? '?language=zh-Hans-CN' : ''}`;
       const lRes = await fetch(lyricsUrl, { signal: AbortSignal.timeout(5000) });
+      if (!lRes.ok) {
+        console.log(`[Cloud-Transfer] 歌词接口返回 ${lRes.status} (adamId=${adamId})`);
+      }
       if (lRes.ok) {
         const rawTtml = await lRes.text();
+        if (!rawTtml || !rawTtml.trim()) {
+          console.log(`[Cloud-Transfer] 歌词接口返回空内容 (adamId=${adamId})`);
+        }
         let base = null;
         if (shouldTranslateLyrics) {
           base = buildBilingualLrc(rawTtml, 'zh-Hans-CN');
@@ -2269,6 +2356,7 @@ async function processTransfer(body) {
       }
     } catch (e) {
       console.warn('[Cloud-Transfer] 歌词抓取失败:', e.message);
+      return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
     }
     return { hasLyrics: false, isDynamic: false, lrc: '', plain: '', ttml: '' };
   };
@@ -2443,22 +2531,23 @@ async function processTransfer(body) {
   }
 
   // 3. 标签注入
-  const cleanTitle = sanitizeFilename(meta.title || 'Unknown Title');
-  const cleanArtist = sanitizeFilename(meta.artist || 'Unknown Artist');
-  const standardM4aName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.m4a`;
+  // 文件名由用户模板决定（{artist} - {title} 为默认，与历史行为一致）；
+  // 音频、外置歌词、压缩包共用同一套变量。
+  const nameStem = renderNameTemplate(nameTemplate, meta, quality);
+  const standardM4aName = `${nameStem}.m4a`;
 
   // 准备外挂独立歌词文件 (支持多格式：主文件 + extraLyrics 附加格式)
   const buildLyricsFile = (fmt) => {
     if (fmt === 'ttml' && lyricsData.ttml) {
       return {
-        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.ttml`,
+        filename: `${nameStem}.ttml`,
         content: lyricsData.ttml,
         mime: 'application/xml;charset=utf-8'
       };
     }
     if (fmt === 'lrc' && lyricsData.lrc) {
       return {
-        filename: `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.lrc`,
+        filename: `${nameStem}.lrc`,
         content: lyricsData.lrc,
         mime: 'text/plain;charset=utf-8'
       };
@@ -2471,6 +2560,9 @@ async function processTransfer(body) {
   let lyricsMime = 'text/plain;charset=utf-8';
   /** 额外外置歌词文件（与主文件同时交付，如 .lrc + .ttml 并存） */
   const extraLyrics = [];
+  if (saveLyricsFormats.length > 0 && !lyricsData.hasLyrics) {
+    console.log(`[Cloud-Transfer] 未取到歌词，跳过外置歌词文件 (title=${meta.title || ''})`);
+  }
   if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {
     // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
     const primary = buildLyricsFile(saveLyricsFormats[0]);
@@ -2546,12 +2638,24 @@ async function processTransfer(body) {
     const trackPrefix = meta.trackNumber ? `${String(meta.trackNumber).padStart(2, '0')}. ` : '';
     const written = writeFileExclusive(sessionDir, standardM4aName, finalAudioBuf, trackPrefix);
     const finalM4aName = written.fileName;
+    // 歌词文件与音频严格同名（仅扩展名不同）：
+    // 批量歌单里经常出现同名曲目（伴奏版/Live 版/重录版），只靠「艺人 - 歌名」
+    // 无法判断这份歌词属于哪一首，所以这里沿用音频最终用的前缀。
     let finalLyricsName = lyricsFilename
       ? `${written.prefix}${lyricsFilename}`
       : lyricsFilename;
     if (written.collisionSeq > 0) {
       // 序号前缀拼接后仍可能重名（如曲目号相同），歌词名也走一次唯一化
-      if (finalLyricsName) finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
+      if (finalLyricsName) {
+        // 用音频最终名的词干（已含唯一化序号）来构造歌词名，保证与音频配对
+        const audioExt = path.extname(finalM4aName);
+        const audioStem = finalM4aName.slice(0, finalM4aName.length - audioExt.length);
+        const lyrExt = path.extname(finalLyricsName);
+        finalLyricsName = `${audioStem}${lyrExt}`;
+        if (fs.existsSync(path.join(sessionDir, finalLyricsName))) {
+          finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
+        }
+      }
       console.log(`[Cloud-Transfer] ⚠️ 检测到同名曲目，已自动重命名避免覆盖: ${finalM4aName}`);
     }
 
@@ -2574,8 +2678,19 @@ async function processTransfer(body) {
       }
     }
     for (const extra of extraLyrics) {
-      const baseExtraName = finalLyricsName && extra.filename === lyricsFilename ? finalLyricsName : `${trackPrefix}${extra.filename}`;
-      const extraName = uniqueNameInDir(sessionDir, baseExtraName, trackPrefix);
+      // 附加格式（如同时要 .lrc + .ttml）与音频同名，仅扩展名不同，
+      // 这样解压后一眼能看出这首歌的音频和歌词是一套
+      let extraName;
+      if (finalM4aName) {
+        const audioExt = path.extname(finalM4aName);
+        const audioStem = finalM4aName.slice(0, finalM4aName.length - audioExt.length);
+        extraName = `${audioStem}${path.extname(extra.filename)}`;
+      } else {
+        extraName = `${trackPrefix}${extra.filename}`;
+      }
+      if (fs.existsSync(path.join(sessionDir, extraName))) {
+        extraName = uniqueNameInDir(sessionDir, extraName, '');
+      }
       fs.writeFileSync(path.join(sessionDir, extraName), extra.content, 'utf8');
       console.log(`[Cloud-Transfer] 缓存歌词(附加): ${extraName} 到 session: ${batchId}`);
     }
@@ -2595,9 +2710,14 @@ async function processTransfer(body) {
 
     // 最后一首曲目：打包为单个 .zip 压缩包并极速直传 Gofile
     console.log(`[Cloud-Transfer] 最后一首曲目已就绪，正在将全辑打包为 .zip 压缩包...`);
-    const finalZipName = sanitizeFilename(zipFilename || (meta.album ? `${meta.album} [${quality}].zip` : 'Album.zip'));
     const zipFilePath = `/tmp/${batchId}.zip`;
     const files = fs.readdirSync(sessionDir);
+    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」。
+    // 必须在 files 之后计算，{count} 需要用到曲目数。
+    const finalZipName = sanitizeFilename(
+      (zipFilename && String(zipFilename).trim())
+        || `${renderZipTemplate(zipTemplate, meta, quality, files.length)} [${quality}].zip`
+    );
     await packZipFolder(sessionDir, zipFilePath);
 
     if (noUpload) {
@@ -2650,6 +2770,8 @@ async function processTransfer(body) {
         fileId: upData.data?.fileId,
         fileName: finalZipName,
         isZip: true,
+        // 前端需要体积做展示，必须带上（此前缺失导致显示 0 MB）
+        fileSize: zipStat.size,
         totalFiles: files.length,
         qualityName: chosenFormatName,
         qualityFallback: qualityFallback || undefined,
@@ -2676,7 +2798,7 @@ async function processTransfer(body) {
       fs.writeFileSync(path.join(singleDir, extra.filename), extra.content, 'utf8');
     }
 
-    const finalZipName = `${cleanArtist ? cleanArtist + ' - ' : ''}${cleanTitle}.zip`;
+    const finalZipName = `${renderZipTemplate(zipTemplate, meta, quality, 1)}.zip`;
     const zipFilePath = `${singleDir}.zip`;
     const files = fs.readdirSync(singleDir);
     await packZipFolder(singleDir, zipFilePath);
@@ -2702,7 +2824,6 @@ async function processTransfer(body) {
         elapsedMs: Math.round(tEnd - t0)
       };
     }
-
     try {
       const srv = await getGofileServer();
       const form = new FormData();
@@ -2881,10 +3002,19 @@ class GlobalTransferQueue {
   }
 
   get status() {
+    const now = Date.now();
     return {
       active: this.activeCount,
       waiting: this.queue.length,
-      concurrency: this.concurrency
+      concurrency: this.concurrency,
+      // 队列头部任务的简要信息，供前端/TG 提示「前面还有什么在跑」
+      running: this.queue.length
+        ? this.queue.slice(0, 3).map((it) => ({
+            name: it.meta.name || 'Transfer',
+            source: it.meta.source || 'WebUI',
+            waitingSec: Math.round((now - it.enqueuedAt) / 1000)
+          }))
+        : []
     };
   }
 
@@ -3110,7 +3240,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && (u.pathname === '/queue' || u.pathname === '/api/queue-status')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ status: 'ok', data: globalQueue.status }));
     return;
   }
@@ -3130,12 +3260,38 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 双语更新日志（唯一事实源 changelog.json，Web 端与 TG Bot 共用，支持热修改免重编）
+  // 每条 release 可带 "audience": "tg"（TG Bot 专属，Web 不显示）或 "web"（反之）。
+  // 这里返回给 Web 的永远只包含 Web 可见的条目，并把 latestVersion/oneLiner 对齐到该视图的最新版本，
+  // 否则网页会显示一个自己看不到内容的版本号。
   if (req.method === 'GET' && (u.pathname === '/api/quota/changelog' || u.pathname === '/api/changelog')) {
     try {
       const clPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'changelog.json');
-      const raw = fs.readFileSync(clPath, 'utf8');
+      const full = JSON.parse(fs.readFileSync(clPath, 'utf8'));
+      const out = { ...full };
+      if (Array.isArray(full.releases)) {
+        // Web 视图：排除 TG 专属条目
+        out.releases = full.releases.filter((r) => r && r.audience !== 'tg');
+        if (full.audience === 'tg') {
+          out.releases = [];
+        }
+        const head = out.releases[0];
+        if (head) {
+          out.latestVersion = head.version || full.latestVersion;
+          out.date = head.date || full.date;
+          // oneLiner 的归属版本要一起回退：顶层摘要属于 2.8（TG 专属）时，Web 必须用 2.7 自己的摘要
+          const topLinerVersion = full.oneLinerVersion || full.latestVersion;
+          if (head.version && topLinerVersion !== head.version) {
+            if (head.oneLiner) {
+              out.oneLiner = head.oneLiner;
+              out.oneLinerVersion = head.version;
+            }
+          } else if (head.oneLiner) {
+            out.oneLiner = head.oneLiner;
+          }
+        }
+      }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(JSON.stringify({ status: 'ok', data: JSON.parse(raw) }));
+      res.end(JSON.stringify({ status: 'ok', data: out }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'error', error: e.message }));
@@ -3361,7 +3517,7 @@ const server = http.createServer(async (req, res) => {
 // 磁盘水位保护：转存要落临时文件（Hi-Res 单首可达 170MB，大专辑可堆数十 GB）。
 // 磁盘写满时 ffmpeg 会报 "No space left on device"，用户跑到一半才失败、且临时文件残留。
 // 这里在任务开始前预估所需空间，不足则直接拒绝并主动清理最旧的临时目录。
-const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '5');
+const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '8');
 
 function getFreeDiskGB(dirPath = '/tmp') {
   try {
