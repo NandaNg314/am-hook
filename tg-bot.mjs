@@ -1780,32 +1780,43 @@ async function unifiedSendMedia({
 
   // 若用户私聊不是归档频道本身，则秒级调用 copyMessage 瞬发给用户私聊 (批量场景可关闭，由调用方最后统一推送)
   if (privateCopy && String(chatId) !== String(AUTHORIZED_GROUP_ID)) {
-    try {
-      await tgCall('copyMessage', {
-        chat_id: chatId,
-        from_chat_id: AUTHORIZED_GROUP_ID,
-        message_id: groupMsgId
-      });
-    } catch (copyErr) {
-      console.warn(`[UnifiedUpload] copyMessage 失败，尝试直接复用 file_id 推送: ${copyErr.message}`);
-      if (isAudio && fileId) {
-        await tgCall('sendAudio', {
+    let copyOk = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await tgCall('copyMessage', {
           chat_id: chatId,
-          audio: fileId,
-          caption: caption,
-          parse_mode: 'HTML',
-          title: title || fileName.replace(/\.(m4a|mp3|flac)$/, ''),
-          performer: performer
+          from_chat_id: AUTHORIZED_GROUP_ID,
+          message_id: groupMsgId
         });
-      } else if (fileId) {
-        await tgCall('sendDocument', {
-          chat_id: chatId,
-          document: fileId,
-          caption: caption,
-          parse_mode: 'HTML'
-        });
-      } else {
-        throw copyErr;
+        copyOk = true;
+        break;
+      } catch (copyErr) {
+        console.warn(`[UnifiedUpload] copyMessage 失败 (第 ${attempt}/3 次): ${copyErr.message}`);
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+        } else {
+          // 重试 3 次仍失败：仅针对音频可通过 sendAudio(fileId) 兜底（音频方法会保留曲名与艺人元数据）
+          if (isAudio && fileId) {
+            try {
+              await tgCall('sendAudio', {
+                chat_id: chatId,
+                audio: fileId,
+                caption: caption,
+                parse_mode: 'HTML',
+                title: title || fileName.replace(/\.(m4a|mp3|flac)$/, ''),
+                performer: performer
+              });
+              copyOk = true;
+            } catch (audioErr) {
+              console.warn(`[UnifiedUpload] sendAudio fileId 降级推送失败: ${audioErr.message}`);
+            }
+          } else {
+            // 普通文档（歌词/ZIP 等）绝对严禁使用裸 file_id 调用 sendDocument！
+            // Local Bot API 模式下裸 file_id 会丢失文件名退化为「File」且尺寸显示 0 KB（空文件损坏消息），
+            // 客户端点击或转发会直接引发崩溃。此处记录错误，杜绝产生损坏文件。
+            console.error(`[UnifiedUpload] copyMessage 最终失败，放弃裸 file_id 发送以防止产生 0KB 损坏文件: ${copyErr.message}`);
+          }
+        }
       }
     }
   }
@@ -3472,13 +3483,17 @@ async function handleLyricsOnlyDownload(chatId, messageId, details, want, needTr
           fileName: `${displayStem}.${ext}`,
           caption: cap,
           isAudio: false,
-          isZip: false
+          isZip: false,
+          privateCopy: false
         });
-        sentIds.push(r.groupMsgId || r.fileId);
+        if (r?.groupMsgId) sentIds.push(r.groupMsgId);
       } finally {
         try { fs.rmSync(fpath, { force: true }); } catch {}
         try { fs.rmdirSync(sub); } catch {}
       }
+    }
+    if (sentIds.length > 0) {
+      await pushAlbumMsgsToPrivate(chatId, sentIds);
     }
     await tgCall('editMessageText', {
       chat_id: chatId,
@@ -4629,7 +4644,7 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
 // 将一批已归档群消息统一复制到用户私聊 (分批 ≤90 条/次，失败逐条降级重试)
 async function pushAlbumMsgsToPrivate(chatId, msgIds) {
   if (!msgIds.length || String(chatId) === String(AUTHORIZED_GROUP_ID)) return;
-  await new Promise(r => setTimeout(r, 1500));
+  await new Promise((r) => setTimeout(r, msgIds.length <= 2 ? 800 : 1500));
   for (let i = 0; i < msgIds.length; i += 90) {
     const chunk = msgIds.slice(i, i + 90);
     try {
@@ -4647,7 +4662,7 @@ async function pushAlbumMsgsToPrivate(chatId, msgIds) {
             from_chat_id: AUTHORIZED_GROUP_ID,
             message_id: mid
           });
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, 600));
         } catch (singleErr) {
           console.warn(`[TG-Bot] 单条复制失败: ${singleErr.message}`);
         }
@@ -4674,6 +4689,7 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
 
   const okFiles = [];
   const failList = [];
+  const allGroupMsgIds = [];
   for (let i = 0; i < tracks.length; i++) {
     const t = tracks[i];
     // albumData.tracks 的元素形如 { id, name, trackNumber, artistName }，
@@ -4726,14 +4742,20 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
         const fpath = path.join(sub, `${displayStem}.${ext}`);
         fs.writeFileSync(fpath, f.content, 'utf8');
         try {
-          await unifiedSendMedia({
+          const r = await unifiedSendMedia({
             chatId,
             filePath: fpath,
             fileName: `${displayStem}.${ext}`,
             caption: safeCaption(`📝 <b>${escapeHtml(title)}</b> - ${isEn ? 'Lyrics' : '歌词'}`),
             isAudio: false,
-            isZip: false
+            isZip: false,
+            privateCopy: false
           });
+          if (r?.groupMsgId) {
+            allGroupMsgIds.push(r.groupMsgId);
+          }
+          // 上传到群组之间加入 350ms 节流，避免群组 429 速率限制
+          await new Promise((r) => setTimeout(r, 350));
         } finally {
           try { fs.rmSync(fpath, { force: true }); } catch {}
           try { fs.rmdirSync(sub); } catch {}
@@ -4744,6 +4766,11 @@ async function handleAlbumLyricsOnlyDownload(chatId, messageId, albumData, want,
       console.warn(`[TG-Bot] 仅歌词 ${title} 失败:`, err.message);
       failList.push(`${i + 1}. ${title} (${err.message})`);
     }
+  }
+
+  // 全部归档完毕后，统一通过 copyMessages 批量复制到私聊（原子级、无 0KB 损坏、无 1条/秒 限流冲突）
+  if (allGroupMsgIds.length > 0) {
+    await pushAlbumMsgsToPrivate(chatId, allGroupMsgIds);
   }
 
   const failNote = failList.length
