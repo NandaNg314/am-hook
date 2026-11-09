@@ -53,3 +53,6 @@ PROJECT_MEMORY.md
 
 # 本地解码对照样本（含商业音源，勿上传）
 /sample/
+
+# TG Bot 运行时请求状态（含会话细节，勿上传）
+tg_request_state.json

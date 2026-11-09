@@ -2563,7 +2563,8 @@ async function processTransfer(body) {
   if (saveLyricsFormats.length > 0 && !lyricsData.hasLyrics) {
     console.log(`[Cloud-Transfer] 未取到歌词，跳过外置歌词文件 (title=${meta.title || ''})`);
   }
-  if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {    // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
+  if (lyricsData.hasLyrics && saveLyricsFormats.length > 0) {
+    // 主文件 = 用户显式勾选的首选外置格式；未勾选任何外置格式时一律不外发文件
     const primary = buildLyricsFile(saveLyricsFormats[0]);
     if (primary) {
       lyricsFilename = primary.filename;
