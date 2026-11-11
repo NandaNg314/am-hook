@@ -2473,7 +2473,10 @@ async function fetchAlbumDetails(albumId, storefront = 'hk', lang = 'zh', tagLan
         id: t.id,
         name: isEn ? rawTrackName : zhName,
         trackNumber: t.attributes?.trackNumber,
-        artistName: normalizeArtistName(t.attributes?.artistName || artistName, isEn)
+        artistName: normalizeArtistName(t.attributes?.artistName || artistName, isEn),
+        // 优先用曲目自身封面；缺席时由调用方回落到 albumData.coverUrl。
+        // 合辑/精选集里单曲封面可能与专辑封面不同，不能一律套专辑图。
+        coverUrl: (t.attributes?.artwork?.url || '').replace('{w}x{h}', '600x600') || undefined
       };
     })
   };
@@ -2564,7 +2567,10 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh', 
         id: t.id,
         name: locByName.get(String(t.id)) || t.attributes?.name || 'Track',
         trackNumber: idx + 1,
-        artistName: t.attributes?.artistName || 'Various Artists'
+        artistName: t.attributes?.artistName || 'Various Artists',
+        // 每首歌自己的封面：歌单里的曲目来自不同专辑，必须逐曲嵌入，
+        // 否则整张歌单都会盖上「播放列表封面」（Features/ 编辑图）。
+        coverUrl: (t.attributes?.artwork?.url || '').replace('{w}x{h}', '600x600') || undefined
       })),
       tagLang: explicitTag
     };
@@ -2581,7 +2587,9 @@ async function fetchPlaylistDetails(playlistId, storefront = 'hk', lang = 'zh', 
       id: t.id,
       name: isEn ? (t.attributes?.name || 'Track') : toSimplifiedChinese(t.attributes?.name || 'Track'),
       trackNumber: idx + 1,
-      artistName: normalizeArtistName(t.attributes?.artistName || 'Various Artists', isEn)
+      artistName: normalizeArtistName(t.attributes?.artistName || 'Various Artists', isEn),
+      // 同上：歌单逐曲封面，避免全部嵌入播放列表封面
+      coverUrl: (t.attributes?.artwork?.url || '').replace('{w}x{h}', '600x600') || undefined
     }))
   };
 }
@@ -5263,7 +5271,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 releaseDate: albumData.releaseDate || track.releaseDate || '',
                 genre: albumData.genre || track.genre || '',
                 composer: track.composer || '',
-                coverUrl: albumData.coverUrl
+                coverUrl: track.coverUrl || albumData.coverUrl
               },
               batchId: batchGofileId,
               // 每首只做缓存，不触发上传；全部就绪后统一触发一次打包上传
@@ -5353,7 +5361,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                     albumArtist: albumData.artistName,
                     trackNumber: 1,
                     totalTracks,
-                    coverUrl: albumData.coverUrl,
+                    coverUrl: trigger.track.coverUrl || albumData.coverUrl,
                   },
                   batchId: batchGofileId,
                   isLastTrack: true,
@@ -5489,7 +5497,7 @@ async function transferAlbumCore({ chatId, messageId, albumData, quality, needLr
                 releaseDate: albumData.releaseDate || track.releaseDate || '',
                 genre: albumData.genre || track.genre || '',
                 composer: track.composer || '',
-                coverUrl: albumData.coverUrl
+                coverUrl: track.coverUrl || albumData.coverUrl
               },
               batchId: batchId,
               isLastTrack: false,
@@ -5734,7 +5742,7 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
                 albumArtist: albumData.artistName,
                 trackNumber: track.trackNumber || globalIdx,
                 totalTracks: totalTracks,
-                coverUrl: albumData.coverUrl
+                coverUrl: track.coverUrl || albumData.coverUrl
               },
               isLastTrack: false,
               saveLrc: saveLyricsFormats.length > 0,
