@@ -17,7 +17,7 @@ use crate::m3u8::{
 use crate::log;
 use crate::monitor::ensure_template;
 use crate::source::{self, SourceKind};
-use crate::state::{is_allowed_cdn_url, AppState, Track};
+use crate::state::{is_allowed_cdn_url, AppState, KeyKind, Track};
 use crate::ui::app_handler;
 
 const M3U8_TYPE: &str = "application/vnd.apple.mpegurl; charset=utf-8";
@@ -328,9 +328,9 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
         .segments
         .get_or_load((track.fileuri.clone(), idx), || async {
             let seg = track.segments[idx];
-            // 下载与等待模板并行
+            // 下载与等待模板并行；按 m3u8 中该分片实际声明的 EXT-X-KEY 决定是否需要轨道模板
             let (raw, init, tmpl) = tokio::try_join!(download(state, target, seg.offset, seg.length), load_init(state, track, target), async {
-                if idx >= 2 {
+                if seg.key == KeyKind::Track {
                     track.wait_template(state.config.template_timeout).await.map(Some)
                 } else {
                     Ok(None)
@@ -339,11 +339,12 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
 
             // 解密是 CPU 密集操作（内部用 temari 线程池并行），不能占用 async worker
             let out = tokio::task::spawn_blocking(move || {
-                let mut out = match (idx, tmpl) {
-                    (1, _) => decrypt_fragment(&raw, fixed_template()),
-                    (_, Some(t)) => decrypt_fragment(&raw, &t),
-                    (_, None) => unreachable!("template awaited above"),
-                }?;
+                let mut out = match (seg.key, tmpl) {
+                    (KeyKind::None, _) => raw.to_vec(),
+                    (KeyKind::Fixed, _) => decrypt_fragment(&raw, fixed_template())?,
+                    (KeyKind::Track, Some(t)) => decrypt_fragment(&raw, &t)?,
+                    (KeyKind::Track, None) => unreachable!("template awaited above"),
+                };
                 if let Some(codec) = alac_track(&init) { repair_alac_fragment(&mut out, &codec)?; }
                 Ok::<_, String>(out)
             })

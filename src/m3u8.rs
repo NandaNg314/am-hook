@@ -5,7 +5,7 @@ use regex::Regex;
 
 use am_mp4::FIXED_KEY_URI;
 
-use crate::state::{Segment, Track};
+use crate::state::{KeyKind, Segment, Track};
 
 static SONG_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
@@ -188,7 +188,7 @@ pub fn media_playlist_to_file(name: &str) -> String {
 }
 
 /// 解析 `LEN[@OFF]`，缺省 OFF 时接在 `next` 之后
-fn parse_byterange(value: &str, next: u64) -> Result<Segment, String> {
+fn parse_byterange(value: &str, next: u64, key: KeyKind) -> Result<Segment, String> {
     let value = value.trim().trim_matches('"');
     let (len, off) = match value.split_once('@') {
         Some((l, o)) => (l, Some(o)),
@@ -199,7 +199,7 @@ fn parse_byterange(value: &str, next: u64) -> Result<Segment, String> {
         Some(o) => o.parse().map_err(|e| format!("Invalid BYTERANGE offset '{value}': {e}"))?,
         None => next,
     };
-    Ok(Segment { offset, length })
+    Ok(Segment { offset, length, key })
 }
 
 /// 解析 media m3u8：提取 adamId / key uri / fileuri / range1 与全部 segment 字节范围，
@@ -213,6 +213,7 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         .ok_or_else(|| format!("Could not find '_A<digits>_' in source URL: {source_url}"))?;
 
     let mut uri = None;
+    let mut current_key = KeyKind::None;
     let mut fileuri = None;
     let mut range1 = None;
     let mut segments: Vec<Segment> = Vec::new();
@@ -222,12 +223,24 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         let trimmed = line.trim();
 
         if trimmed.starts_with("#EXT-X-KEY:") || trimmed.starts_with("#EXT-X-SESSION-KEY:") {
+            let is_session = trimmed.starts_with("#EXT-X-SESSION-KEY:");
             let (_, attrs) = trimmed.split_once(':').unwrap();
             let attrs = parse_attributes(attrs);
-            if attrs.get("METHOD") == Some(&"SAMPLE-AES") {
-                if let Some(u) = attrs.get("URI").filter(|u| **u != FIXED_KEY_URI) {
+            let method = attrs.get("METHOD").copied();
+            let key_uri = attrs.get("URI").copied();
+            if method == Some("SAMPLE-AES") {
+                if let Some(u) = key_uri.filter(|u| *u != FIXED_KEY_URI) {
                     uri.get_or_insert_with(|| u.to_string());
                 }
+            }
+            if !is_session {
+                current_key = if method == Some("NONE") || key_uri.is_none() {
+                    KeyKind::None
+                } else if key_uri == Some(FIXED_KEY_URI) {
+                    KeyKind::Fixed
+                } else {
+                    KeyKind::Track
+                };
             }
             continue;
         }
@@ -239,13 +252,13 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
             let attrs = parse_attributes(attrs);
             fileuri = attrs.get("URI").map(|s| s.to_string());
             let range = attrs.get("BYTERANGE").ok_or("EXT-X-MAP has no BYTERANGE")?;
-            segments.push(parse_byterange(range, 0)?);
+            segments.push(parse_byterange(range, 0, KeyKind::None)?);
         } else if let Some(value) = trimmed.strip_prefix("#EXT-X-BYTERANGE:") {
             if segments.is_empty() {
                 return Err("EXT-X-BYTERANGE before EXT-X-MAP".into());
             }
             let next = segments.last().map_or(0, Segment::end);
-            segments.push(parse_byterange(value, next)?);
+            segments.push(parse_byterange(value, next, current_key)?);
             range1.get_or_insert_with(|| value.trim().to_string());
         }
 
@@ -253,7 +266,11 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         cleaned.push('\n');
     }
 
-    let uri = uri.ok_or("Could not find non-fixed SAMPLE-AES key URI in m3u8")?;
+    let uri = if segments.iter().any(|s| s.key == KeyKind::Track) {
+        uri.ok_or("Could not find non-fixed SAMPLE-AES key URI in m3u8")?
+    } else {
+        uri.unwrap_or_default()
+    };
     let fileuri = fileuri.ok_or("Could not find EXT-X-MAP URI in m3u8")?;
     let range1 = range1.ok_or("Could not find first EXT-X-BYTERANGE in m3u8")?;
 
@@ -331,15 +348,30 @@ mod tests {
         assert_eq!(
             track.segments,
             vec![
-                Segment { offset: 0, length: 1058 },
-                Segment { offset: 1058, length: 1441673 },
-                Segment { offset: 1442731, length: 1441601 },
+                Segment { offset: 0, length: 1058, key: KeyKind::None },
+                Segment { offset: 1058, length: 1441673, key: KeyKind::Fixed },
+                Segment { offset: 1442731, length: 1441601, key: KeyKind::Track },
             ]
         );
         assert_eq!(track.total_size, 1442731 + 1441601);
         assert!(!cleaned.contains("#EXT-X-KEY"));
         assert!(cleaned.contains("#EXT-X-MAP:URI="));
         assert_eq!(cleaned.lines().count(), raw.lines().count() - 2);
+    }
+
+    #[test]
+    fn test_parse_media_m3u8_multi_fixed_segments() {
+        let raw = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/P000000000/s1/e1\",KEYFORMAT=\"com.apple.streamingkeydelivery\"\n#EXT-X-MAP:URI=\"test_m.mp4\",BYTERANGE=\"1023@0\"\n#EXTINF:14.95365,\n#EXT-X-BYTERANGE:1354182@1023\ntest_m.mp4\n#EXTINF:14.95365,\n#EXT-X-BYTERANGE:1519462@1355205\ntest_m.mp4\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/p1540940924/c6\",KEYFORMAT=\"com.apple.streamingkeydelivery\"\n#EXTINF:14.95365,\n#EXT-X-BYTERANGE:1591907@2874667\ntest_m.mp4\n#EXT-X-ENDLIST\n";
+        let (track, _) = parse_media_m3u8("P1540940924_A1720919827_audio_en_gr1411_alac.m3u8", raw).unwrap();
+        assert_eq!(
+            track.segments,
+            vec![
+                Segment { offset: 0, length: 1023, key: KeyKind::None },
+                Segment { offset: 1023, length: 1354182, key: KeyKind::Fixed },
+                Segment { offset: 1355205, length: 1519462, key: KeyKind::Fixed },
+                Segment { offset: 2874667, length: 1591907, key: KeyKind::Track },
+            ]
+        );
     }
 
     #[test]
