@@ -1807,7 +1807,9 @@ async function defragMp4Buffer(inputBuf, codecHint = null) {
     if (problem) {
       throw new Error(`解碎片产物结构异常（${problem}），拒绝交付损坏文件`);
     }
-    return new Uint8Array(outBuf);
+    // 直接返回 Buffer（Node 的 Buffer 本身就是 Uint8Array 子类）：跳过这里再整份拷贝一次，
+    // 大专辑并发时能省掉每首一份与音频等长的额外内存占用。调用方只用 writeFileSync 与 .length。
+    return outBuf;
   } catch (err) {
     // 绝不静默回退：未解碎片的分片 MP4 在多数播放器上表现为「文件损坏」，
     // 静默交付比直接失败更糟（用户拿到坏文件却以为是资源问题）。
@@ -2188,6 +2190,72 @@ async function finalizeBatchSession({
   }
 }
 
+// finalize 互斥表：同一 batchId 的并发 finalize 会重复打包同一 session，并在失败路径里互删目录/互删 zip，
+// 导致两边都可能拿不到成品。这里让重复请求复用第一个请求的 Promise（不新增任何 HTTP 行为）。
+const finalizeInFlight = new Map(); // batchId -> Promise<result>
+
+/** 用 ffprobe 读取音频时长（秒）；失败返回 0，交由调用方降级 */
+async function probeAudioDurationSec(filePath) {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=nw=1:nk=1',
+      filePath
+    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const dur = parseFloat(String(stdout).trim());
+    return Number.isFinite(dur) && dur > 0 ? dur : 0;
+  } catch (e) {
+    console.warn('[Cloud-Transfer] ffprobe 读取时长失败 (降级为全量解码校验):', (e.message || '').slice(0, 120));
+    return 0;
+  }
+}
+
+/**
+ * 解密后音频可解码性校验：单点 `-t 1` 只覆盖开头 1 秒，中后段若仍有残留密文（CENC 部分样本未解密
+ * 非常常见）会照样交付坏文件。这里改为三段抽样解码：0s / 50% / 结尾前 2s；任一采样点解码失败
+ * 即拒绝交付，并记录具体位置与 ffmpeg 原因。取不到时长时降级为全量解码（带超时）。
+ */
+async function assertDecryptedAudioPlayable(filePath, tag = '') {
+  const durationSec = await probeAudioDurationSec(filePath);
+  const samplePoints = durationSec > 0
+    ? [...new Set([0, durationSec / 2, Math.max(0, durationSec - 2)].map((p) => Math.max(0, Math.round(p * 1000) / 1000)))]
+    : [];
+  const prefix = tag ? `${tag} ` : '';
+
+  if (!samplePoints.length) {
+    // 时长未知：全量解码；超时只说明「没验完」，不算解码错误（避免超大文件被误杀）
+    try {
+      await execFileAsync('ffmpeg', ['-v', 'error', '-xerror', '-i', filePath, '-f', 'null', '-'], { timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
+    } catch (e) {
+      if (e.killed || e.signal || /ETIMEDOUT|timed?\s?out/i.test(String(e.message || ''))) {
+        console.warn(`[Cloud-Transfer] ${prefix}全量解码校验超时，按已解出的部分放行`);
+        return { durationSec: 0, sampled: [], mode: 'full-timeout' };
+      }
+      const reason = String(e.stderr || e.message || '').trim().slice(0, 200);
+      console.error(`[Cloud-Transfer] ${prefix}全量解码校验失败: ${reason}`);
+      throw new Error('此歌曲解密校验失败（全量解码不可用），暂无法转存');
+    }
+    return { durationSec: 0, sampled: [], mode: 'full' };
+  }
+
+  for (const p of samplePoints) {
+    try {
+      await execFileAsync('ffmpeg', [
+        '-v', 'error', '-xerror',
+        '-ss', String(p),
+        '-i', filePath,
+        '-t', '1', '-f', 'null', '-'
+      ], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
+    } catch (e) {
+      const reason = String(e.stderr || e.message || '').trim().slice(0, 200);
+      console.error(`[Cloud-Transfer] ${prefix}解密校验失败 @${p.toFixed(2)}s/${durationSec.toFixed(1)}s: ${reason}`);
+      throw new Error(`此歌曲解密校验失败（${p.toFixed(1)}s 处无法解码），暂无法转存`);
+    }
+  }
+  return { durationSec, sampled: samplePoints, mode: 'sampled' };
+}
+
 async function processTransfer(body, { signal } = {}) {
   const t0 = performance.now();
   const {
@@ -2227,25 +2295,40 @@ async function processTransfer(body, { signal } = {}) {
 
   // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
   if (finalizeBatch && batchId) {
-    if (!fs.existsSync(safeSessionDir)) {
-      throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
+    // 同一 batchId 的并发 finalize 复用同一 Promise，避免重复打包 / 互删目录
+    const inflight = finalizeInFlight.get(batchId);
+    if (inflight) {
+      console.log(`[Cloud-Transfer] ♻️ 批次 ${batchId} 已有 finalize 在执行，复用同一结果`);
+      return inflight;
     }
-    return finalizeBatchSession({
-      batchId,
-      sessionDir: safeSessionDir,
-      zipFilename,
-      zipTemplate,
-      meta,
-      quality,
-      totalFilesHint: body.totalFiles || 0,
-      failedTracks,
-      noUpload,
-      splitMaxMB: Number(body.splitMaxMB || 0),
-      folderId,
-      token,
-      isEn,
-      t0
-    });
+    const task = (async () => {
+      if (!fs.existsSync(safeSessionDir)) {
+        throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
+      }
+      return finalizeBatchSession({
+        batchId,
+        sessionDir: safeSessionDir,
+        zipFilename,
+        zipTemplate,
+        meta,
+        quality,
+        totalFilesHint: body.totalFiles || 0,
+        failedTracks,
+        noUpload,
+        splitMaxMB: Number(body.splitMaxMB || 0),
+        folderId,
+        token,
+        isEn,
+        t0
+      });
+    })();
+    finalizeInFlight.set(batchId, task);
+    try {
+      return await task;
+    } finally {
+      // 仅由创建者清理登记，避免复用方提前释放互斥锁
+      if (finalizeInFlight.get(batchId) === task) finalizeInFlight.delete(batchId);
+    }
   }
 
   const shouldSaveLyricsFile = saveLyricsFile !== undefined 
@@ -2411,14 +2494,12 @@ async function processTransfer(body, { signal } = {}) {
           maxBuffer: 10 * 1024 * 1024
         });
 
-        // 4. 兜底校验：确保解密后音频可解码（防止任何残留密文交付）
+        // 4. 兜底校验：三段抽样解码（0s / 50% / 结尾前 2s），确保解密后音频全程可解码，
+        //    防止任何残留密文交付（只查开头 1 秒会漏掉中后段的未解密样本）。
         try {
-          await execFileAsync('ffmpeg', [
-            '-v', 'error', '-xerror',
-            '-i', decOut,
-            '-t', '1', '-f', 'null', '-'
-          ], { timeout: 15000 });
+          await assertDecryptedAudioPlayable(decOut, `adamId=${adamId}`);
         } catch (checkErr) {
+          console.error(`[Cloud-Transfer] 解密校验拒绝交付 adamId=${adamId}: ${checkErr.message}`);
           throw new Error('此歌曲解密校验失败，暂无法转存');
         }
 
@@ -3186,11 +3267,16 @@ const REMOTE_OWNER_IPS = new Set(
   (process.env.OWNER_IPS ? process.env.OWNER_IPS.split(',').map(s => normalizeIp(s)) : [])
     .filter(ip => ip && ip !== '127.0.0.1' && ip !== '::1' && ip !== 'localhost')
 );
-const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt }
-// 整单额度预留台账：`${clientIp}|${batchId}` -> { reserved, consumed, inflight, createdAt }
+const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt, dailyDate }
+// 整单额度预留台账：`${clientIp}|${batchId}` -> { reserved, consumed, inflight, createdAt, dateStr }
 const webBatchQuotaLedger = new Map();
-// /api/quota/consume 预留凭据：reservationId -> { ip, tracks, refunded, createdAt }
+// /api/quota/consume 预留凭据：reservationId -> { ip, tracks, refunded, createdAt, dateStr }
 const quotaReservations = new Map();
+// 批次归属表：batchId -> { ip, privileged, createdAt }
+// batchId（album_xxx_<毫秒>）可被枚举猜测，finalize / cancel 必须校验归属，
+// 否则任何人猜到 batchId 就能取走别人的下载链接、删除别人的会话目录。
+const webBatchOwners = new Map();
+const BATCH_OWNER_TTL_MS = 6 * 60 * 60 * 1000; // 6 小时（会话本身 2 小时过期，归属记录留更久）
 
 // 批量转存结果缓存：`${clientIp}|${batchId}` -> { downloadPage, folderId, guestToken, partCount, ... }
 const webBatchResultCache = new Map();
@@ -3208,9 +3294,14 @@ setInterval(() => {
     if (!led.createdAt || now - led.createdAt > 2 * 60 * 60 * 1000) {
       const ip = key.split('|')[0];
       if (ip && led.reserved > led.consumed) {
-        try { refundWebQuota(ip, led.reserved - led.consumed); } catch {}
+        try { refundWebQuota(ip, led.reserved - led.consumed, led.dateStr); } catch {}
       }
       webBatchQuotaLedger.delete(key);
+    }
+  }
+  for (const [batchId, owner] of webBatchOwners.entries()) {
+    if (!owner.createdAt || now - owner.createdAt > BATCH_OWNER_TTL_MS) {
+      webBatchOwners.delete(batchId);
     }
   }
   for (const [rid, rec] of quotaReservations.entries()) {
@@ -3266,6 +3357,32 @@ function getClientIp(req) {
   return remote || '127.0.0.1';
 }
 
+/** 首次见到 batchId 时登记归属（已登记则不覆盖，防止后来者抢占） */
+function rememberBatchOwner(batchId, clientIp, privileged = false) {
+  if (!batchId) return;
+  if (webBatchOwners.has(batchId)) return;
+  webBatchOwners.set(batchId, { ip: clientIp, privileged: Boolean(privileged), createdAt: Date.now() });
+}
+
+/**
+ * 批次归属校验：
+ * - 特权调用（本机直连 tg-bot / 站长 IP / ADMIN_KEY）一律放行，绝不破坏 tg-bot 的 album_* 批量流程；
+ * - 其余请求必须与首次登记归属的 clientIp 一致；
+ * - 归属记录丢失（服务重启）时，若该 IP 在同一 batchId 上仍有额度台账，视为合法归属并补登记；
+ * - 其余情况一律拒绝（调用方统一返回 403，不透露该 batchId 是否存在）。
+ */
+function isBatchOwnedByClient(batchId, clientIp, privileged = false, req = null) {
+  if (!batchId) return false;
+  if (privileged || (req && isDirectLoopback(req))) return true;
+  const owner = webBatchOwners.get(batchId);
+  if (owner) return owner.ip === clientIp;
+  if (webBatchQuotaLedger.has(`${clientIp}|${batchId}`)) {
+    webBatchOwners.set(batchId, { ip: clientIp, privileged: Boolean(privileged), createdAt: Date.now() });
+    return true;
+  }
+  return false;
+}
+
 function isValidAdminKey(adminKeyHeader) {
   const secret = (process.env.ADMIN_KEY || '').trim();
   const provided = String(adminKeyHeader || '').trim();
@@ -3289,21 +3406,27 @@ function isPrivilegedClient(clientIp, adminKeyHeader, req = null) {
   return isValidAdminKey(adminKeyHeader);
 }
 
-/** 取（并按需重置）每日额度记录 */
+/** 北京时间日期桶标识 YYYY-MM-DD：把「预留」与「退款」绑定到同一天，跨天退款直接丢弃 */
+function beijingDateStr(ts = Date.now()) {
+  return new Date(ts + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/** 取（并按需重置）每日额度记录；dailyDate 标记当前 dailyCount 所属的北京日期桶 */
 function getDailyRecord(clientIp) {
   const now = Date.now();
   let rec = webIpLimitMap.get(clientIp);
   if (!rec) {
-    rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight() };
+    rec = { count: 0, resetAt: now + 60000, dailyCount: 0, dailyResetAt: nextBeijingMidnight(), dailyDate: beijingDateStr(now) };
     webIpLimitMap.set(clientIp, rec);
   }
   if (now > rec.resetAt) {
     rec.count = 0;
     rec.resetAt = now + 60000;
   }
-  if (now > rec.dailyResetAt) {
+  if (now > rec.dailyResetAt || !rec.dailyDate) {
     rec.dailyCount = 0;
     rec.dailyResetAt = nextBeijingMidnight();
+    rec.dailyDate = beijingDateStr(now);
   }
   return rec;
 }
@@ -3339,15 +3462,26 @@ function reserveWebQuota(clientIp, tracks, isEn = false) {
     };
   }
   rec.dailyCount += count;
-  return { ok: true, reserved: true, reservedCount: count, used: rec.dailyCount, max: WEB_DAILY_TRACK_QUOTA, remaining: WEB_DAILY_TRACK_QUOTA - rec.dailyCount };
+  return { ok: true, reserved: true, reservedCount: count, used: rec.dailyCount, max: WEB_DAILY_TRACK_QUOTA, remaining: WEB_DAILY_TRACK_QUOTA - rec.dailyCount, dateStr: beijingDateStr() };
 }
 
-/** 预留了但未实际消耗时退回，避免误伤用户 */
-function refundWebQuota(clientIp, tracks) {
+/**
+ * 预留了但未实际消耗时退回，避免误伤用户。
+ * dateStr：本次预留所属的北京日期桶。跨天（预留在昨天、退款落在今天）时直接丢弃退款，
+ * 绝不扣减/填补新一天的额度桶，否则用户昨天失败的一单会平白吃掉今天的额度。
+ */
+function refundWebQuota(clientIp, tracks, dateStr = null) {
   const refund = Math.max(0, Math.floor(Number(tracks) || 0));
-  if (!refund) return;
+  if (!refund) return 0;
   const rec = getDailyRecord(clientIp);
+  const bucket = rec.dailyDate || beijingDateStr();
+  if (dateStr && String(dateStr) !== bucket) {
+    console.warn(`[WebQuota] 跨天退款已丢弃: ip=${clientIp} 预留日=${dateStr} 当前桶=${bucket} 数量=${refund}`);
+    return 0;
+  }
+  const applied = Math.min(refund, rec.dailyCount);
   rec.dailyCount = Math.max(0, rec.dailyCount - refund);
+  return applied;
 }
 
 function checkWebRateLimit(clientIp, adminKeyHeader, isEn = false, req = null) {
@@ -3563,7 +3697,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const reservationId = crypto.randomUUID();
-    quotaReservations.set(reservationId, { ip: clientIp, tracks, refunded: 0, createdAt: Date.now() });
+    quotaReservations.set(reservationId, { ip: clientIp, tracks, refunded: 0, createdAt: Date.now(), dateStr: beijingDateStr() });
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ status: 'ok', data: { reserved: tracks, remaining: reserved.remaining, reservationId } }));
     return;
@@ -3596,16 +3730,18 @@ const server = http.createServer(async (req, res) => {
     const maxRefundable = Math.max(0, rec.tracks - rec.refunded);
     const reqRefund = body.tracks !== undefined ? Math.max(0, Math.floor(Number(body.tracks) || 0)) : maxRefundable;
     const actualRefund = Math.min(maxRefundable, reqRefund);
+    let appliedRefund = 0;
     if (actualRefund > 0) {
-      refundWebQuota(clientIp, actualRefund);
-      rec.refunded += actualRefund;
+      const applied = refundWebQuota(clientIp, actualRefund, rec.dateStr);
+      rec.refunded += applied;
+      appliedRefund = applied;
     }
     if (rec.refunded >= rec.tracks) {
       quotaReservations.delete(rid);
     }
     const quota = getWebQuota(clientIp);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ status: 'ok', data: { refunded: actualRefund, remaining: quota.remaining } }));
+    res.end(JSON.stringify({ status: 'ok', data: { refunded: appliedRefund, remaining: quota.remaining } }));
     return;
   }
 
@@ -3634,6 +3770,13 @@ const server = http.createServer(async (req, res) => {
     const batchKey = `${clientIp}|${body.batchId}`;
     const led = webBatchQuotaLedger.get(batchKey);
     const privileged = isPrivilegedClient(clientIp, adminKey, req);
+    // 归属校验：只允许批次创建者（或本机 / 特权调用）取消，统一 403 不透露批次是否存在
+    if (!isBatchOwnedByClient(String(body.batchId), clientIp, privileged, req)) {
+      console.warn(`[BatchOwner] 🔒 拒绝 ${clientIp} 取消批次 ${body.batchId}（归属不符）`);
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: 'Forbidden' }));
+      return;
+    }
     if (!led && !privileged) {
       res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'error', error: 'Batch session not found for client' }));
@@ -3643,7 +3786,7 @@ const server = http.createServer(async (req, res) => {
     if (led) {
       if (led.reserved > led.consumed) {
         refunded = led.reserved - led.consumed;
-        try { refundWebQuota(clientIp, refunded); } catch {}
+        try { refundWebQuota(clientIp, refunded, led.dateStr); } catch {}
       }
       webBatchQuotaLedger.delete(batchKey);
     }
@@ -3677,14 +3820,39 @@ const server = http.createServer(async (req, res) => {
     const isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
     const privileged = isPrivilegedClient(clientIp, adminKey, req);
     const allowLocalOutput = isDirectLoopback(req) || isValidAdminKey(adminKey);
+    // 本次请求所属的北京日期桶：所有退款都带上它，跨天退款自动丢弃（不污染新一天额度）
+    const reqDateStr = beijingDateStr();
 
     // 1. 强校验 batchId 与 outputDir / noUpload 权限边界
-    if (body.batchId !== undefined && body.batchId !== null && body.batchId !== '') {
+    const hasBatchId = body.batchId !== undefined && body.batchId !== null && body.batchId !== '';
+    if (hasBatchId) {
       try {
         resolveSafeSessionDir(body.batchId);
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: 'Invalid batchId' }));
+        return;
+      }
+    }
+    // 仅下载歌词与批量会话互斥：lyricsOnly 在批处理分支之前就早退，二者同传会导致音频/歌词静默不落盘，
+    // 且整单配额已预扣却拿不到产物。直接拒绝，避免用户以为成功。
+    if (hasBatchId && Boolean(body.lyricsOnly)) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        status: 'error',
+        error: isEn
+          ? 'lyricsOnly cannot be combined with batchId. Request lyrics separately without a batch session.'
+          : '仅下载歌词模式不能与批处理 batchId 同时使用，请单独发起歌词下载。'
+      }));
+      return;
+    }
+    // 批次归属校验：batchId 可被枚举猜测，非创建者不得写入该会话（否则可污染他人产物）
+    if (hasBatchId) {
+      rememberBatchOwner(String(body.batchId), clientIp, privileged);
+      if (!isBatchOwnedByClient(String(body.batchId), clientIp, privileged, req)) {
+        console.warn(`[BatchOwner] 🔒 拒绝 ${clientIp} 写入批次 ${body.batchId}（归属不符）`);
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'error', error: 'Forbidden' }));
         return;
       }
     }
@@ -3770,7 +3938,7 @@ const server = http.createServer(async (req, res) => {
             return;
           }
           if (tracks > 1) {
-            led = { reserved: tracks, consumed: 0, inflight: 1, createdAt: Date.now() };
+            led = { reserved: tracks, consumed: 0, inflight: 1, createdAt: Date.now(), dateStr: beijingDateStr() };
             webBatchQuotaLedger.set(batchKey, led);
             ledgerTrackClaimed = true;
           } else {
@@ -3827,7 +3995,7 @@ const server = http.createServer(async (req, res) => {
         if (batchKey) {
           const led = webBatchQuotaLedger.get(batchKey);
           if (led && led.reserved > led.consumed) {
-            try { refundWebQuota(clientIp, led.reserved - led.consumed); } catch {}
+            try { refundWebQuota(clientIp, led.reserved - led.consumed, led.dateStr); } catch {}
           }
           webBatchQuotaLedger.delete(batchKey);
         }
@@ -3847,7 +4015,7 @@ const server = http.createServer(async (req, res) => {
       req.off('close', onReqClose);
       // 失败曲目退回 1 首预留，绝不误删整批台账让后续曲目异常计费
       if (singleTrackReserved > 0) {
-        try { refundWebQuota(clientIp, singleTrackReserved); } catch {}
+        try { refundWebQuota(clientIp, singleTrackReserved, reqDateStr); } catch {}
       }
       if (ledgerTrackClaimed && batchKey) {
         const led = webBatchQuotaLedger.get(batchKey);
@@ -3855,14 +4023,14 @@ const server = http.createServer(async (req, res) => {
           led.inflight = Math.max(0, led.inflight - 1);
           if (led.reserved > led.consumed) {
             led.reserved--;
-            try { refundWebQuota(clientIp, 1); } catch {}
+            try { refundWebQuota(clientIp, 1, led.dateStr); } catch {}
           }
         }
       }
       if (body.finalizeBatch && batchKey) {
         const led = webBatchQuotaLedger.get(batchKey);
         if (led && led.reserved > led.consumed) {
-          try { refundWebQuota(clientIp, led.reserved - led.consumed); } catch {}
+          try { refundWebQuota(clientIp, led.reserved - led.consumed, led.dateStr); } catch {}
         }
         webBatchQuotaLedger.delete(batchKey);
       }
@@ -3893,6 +4061,11 @@ const server = http.createServer(async (req, res) => {
 // 磁盘写满时 ffmpeg 会报 "No space left on device"，用户跑到一半才失败、且临时文件残留。
 // 这里在任务开始前预估所需空间，不足则直接拒绝并主动清理最旧的临时目录。
 const MIN_FREE_DISK_GB = parseFloat(process.env.MIN_FREE_DISK_GB || '8');
+// 磁盘守卫只允许清理「自己的」临时产物前缀；任意 .zip 必须足够旧（可能正是别人正在上传的包）
+const DISK_GUARD_OWN_PREFIXES = ['am_up_', 'am_defrag_', 'am_wp_'];
+const DISK_GUARD_ZIP_MIN_AGE_MS = 30 * 60 * 1000; // 30 分钟
+// 主动清理 TTL：大专辑上传途中可能持续数十分钟，15 分钟会误删正在使用的会话/zip
+const TMP_CLEANUP_TTL_MS = 2 * 60 * 60 * 1000; // 2 小时
 
 function getFreeDiskGB(dirPath = '/tmp') {
   try {
@@ -3904,8 +4077,20 @@ function getFreeDiskGB(dirPath = '/tmp') {
 }
 
 /**
+ * 磁盘守卫的可清理判定（纯函数，便于单测）：
+ * - 只认「自己的」临时前缀（am_up_* / am_defrag_* / am_wp_*）；
+ * - 任意 .zip 必须 30 分钟未被写过才允许删（可能正是并发曲目 / 别人正在上传的包）。
+ */
+function isDiskGuardCleanable(entry, mtimeMs, now = Date.now()) {
+  if (DISK_GUARD_OWN_PREFIXES.some((p) => entry.startsWith(p))) return true;
+  if (!/\.zip$/i.test(entry)) return false;
+  return now - mtimeMs > DISK_GUARD_ZIP_MIN_AGE_MS;
+}
+
+/**
  * 任务开始前的磁盘检查。空间不足以容纳预计用量时，先按 mtime 从旧到新清理
- * /tmp 下的 am_tg_* / am_defrag_* / am_sessions 临时目录，再复查；仍不足则返回失败。
+ * /tmp 下**自己前缀**的临时产物（am_up_* / am_defrag_* / am_wp_*）与「30 分钟未更新」的 .zip，
+ * 再复查；仍不足则返回失败。绝不无条件删任意 .zip。
  * @param {number} needBytes 预计需要写入的字节数（未知传 0）
  */
 function ensureDiskSpace(needBytes = 0) {
@@ -3916,14 +4101,13 @@ function ensureDiskSpace(needBytes = 0) {
 
   console.warn(`[DiskGuard] ⚠️ 可用空间 ${free.toFixed(1)}GB < 需要 ${required.toFixed(1)}GB，开始清理旧临时文件...`);
   try {
+    const now = Date.now();
     const entries = fs.readdirSync('/tmp')
-      .filter((n) => n.startsWith('am_tg_') || n.startsWith('am_defrag_') || n.startsWith('am_single_') ||
-                     n.endsWith('.zip') || n.startsWith('am_wp_'))
       .map((n) => {
         const p = path.join('/tmp', n);
-        try { return { p, m: fs.statSync(p).mtimeMs }; } catch { return null; }
+        try { return { p, name: n, m: fs.statSync(p).mtimeMs }; } catch { return null; }
       })
-      .filter(Boolean)
+      .filter((e) => e && isDiskGuardCleanable(e.name, e.m, now))
       .sort((a, b) => a.m - b.m); // 最旧优先
     for (const e of entries) {
       if (getFreeDiskGB() >= required) break;
@@ -3941,6 +4125,21 @@ function ensureDiskSpace(needBytes = 0) {
   }
   console.log(`[DiskGuard] ✔ 清理后可用 ${free.toFixed(1)}GB，继续任务`);
   return { ok: true, free };
+}
+
+/** /tmp 顶层条目是否属于「可自动清理」的临时产物（纯函数，便于单测） */
+function isCleanableTmpEntry(entry) {
+  // 分卷 zip：<batchId>.zip / <batchId>.part<N>.zip
+  if (/\.part\d+\.zip$/i.test(entry)) return true;
+  if (/^(album_|playlist_|disco_|am_single_)[A-Za-z0-9_.-]*\.zip$/i.test(entry)) return true;
+  // 各模式自建的临时产物目录/文件（崩溃残留也由这里兜底）
+  return entry.startsWith('am_defrag_') ||
+    entry.startsWith('am_tg_') ||
+    entry.startsWith('am_up_') ||
+    entry.startsWith('am_wp_') ||
+    // 临时歌词文件：原先无任何清理逻辑，会长期堆积
+    entry.startsWith('am_lyr_only_') ||
+    entry.startsWith('am_lyr_fix_');
 }
 
 function cleanupStaleSessions() {
@@ -3966,23 +4165,44 @@ function cleanupStaleSessions() {
   try {
     const tmpDir = '/tmp';
     const now = Date.now();
-    const maxAge = 15 * 60 * 1000; // 15 分钟自动过期：Hi-Res 大文件堆积快，30 分钟易撑满磁盘
+    const maxAge = TMP_CLEANUP_TTL_MS;
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
-      if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
-          (entry.startsWith('am_defrag_') && entry.endsWith('.m4a')) ||
-          entry.startsWith('am_tg_') ||
-          // 临时歌词文件：原先无任何清理逻辑，会长期堆积
-          entry.startsWith('am_lyr_only_') ||
-          entry.startsWith('am_lyr_fix_')) {
-        const p = path.join(tmpDir, entry);
-        try {
-          const stat = fs.statSync(p);
-          if (now - stat.mtimeMs > maxAge) {
-            fs.rmSync(p, { recursive: true, force: true });
-            console.log(`[am-cloud] 自动清理过期临时文件或目录: ${entry}`);
-          }
-        } catch {}
+      if (!isCleanableTmpEntry(entry)) continue;
+      const p = path.join(tmpDir, entry);
+      try {
+        const stat = fs.statSync(p);
+        if (now - stat.mtimeMs > maxAge) {
+          fs.rmSync(p, { recursive: true, force: true });
+          console.log(`[am-cloud] 自动清理过期临时文件或目录: ${entry}`);
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // 会话目录内部残留的 zip（正常流程打包到 /tmp 根，异常中断时可能落在会话内），同样按 TTL 清理
+  try {
+    const sessionsRoot = '/tmp/am_sessions';
+    if (fs.existsSync(sessionsRoot)) {
+      const now = Date.now();
+      for (const entry of fs.readdirSync(sessionsRoot)) {
+        const dirPath = path.join(sessionsRoot, entry);
+        let st;
+        try { st = fs.statSync(dirPath); } catch { continue; }
+        if (!st.isDirectory()) continue;
+        let inner = [];
+        try { inner = fs.readdirSync(dirPath); } catch { continue; }
+        for (const name of inner) {
+          if (!/\.zip$/i.test(name)) continue;
+          const p = path.join(dirPath, name);
+          try {
+            const s2 = fs.statSync(p);
+            if (now - s2.mtimeMs > TMP_CLEANUP_TTL_MS) {
+              fs.rmSync(p, { recursive: true, force: true });
+              console.log(`[am-cloud] 自动清理会话内过期 zip: ${entry}/${name}`);
+            }
+          } catch {}
+        }
       }
     }
   } catch {}
@@ -4008,7 +4228,12 @@ export {
   isPrivilegedClient,
   reserveWebQuota,
   refundWebQuota,
-  getWebQuota
+  getWebQuota,
+  beijingDateStr,
+  rememberBatchOwner,
+  isBatchOwnedByClient,
+  isCleanableTmpEntry,
+  isDiskGuardCleanable
 };
 
 if (process.env.AM_CLOUD_NO_LISTEN !== '1') {
