@@ -9221,8 +9221,10 @@ function buildUpdatePush(chatId) {
   const lang = getUserLang(chatId);
   const isEn = lang === 'en';
   const v = cl.latestVersion;
-  const line = (isEn ? cl.oneLiner?.en : cl.oneLiner?.zh) || '';
-  const items = ((isEn ? cl.items?.en : cl.items?.zh) || [])
+  // changelog.json 的要点在 releases[0].items，顶层 items 是历史遗留字段（可能不存在）
+  const rel = (Array.isArray(cl.releases) ? cl.releases[0] : null) || {};
+  const line = (isEn ? (rel.oneLiner?.en || cl.oneLiner?.en) : (rel.oneLiner?.zh || cl.oneLiner?.zh)) || '';
+  const items = ((isEn ? rel.items?.en : rel.items?.zh) || (isEn ? cl.items?.en : cl.items?.zh) || [])
     .slice(0, 4)
     .map((x) => `• ${escapeHtml(x)}`)
     .join('\n');

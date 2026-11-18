@@ -212,8 +212,10 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
 
     let segs = track.segments_overlapping(start, end);
 
-    // 首个需要轨道模板的 segment 若就是第一块输出，先等模板就绪，失败时还能返回正常的错误码
-    if segs.start >= 2 && track.template().is_none() {
+    // 请求区间内若存在需要轨道模板的分片且模板尚未就绪，先等模板，失败时返回明确错误码。
+    // 不能按分片下标判断：固定密钥 / 明文分片不需要轨道模板，等它只会白等 20 秒再 504。
+    let needs_track_template = track.segments[segs.clone()].iter().any(|s| s.key == KeyKind::Track);
+    if needs_track_template && track.template().is_none() {
         if let Err(e) = track.wait_template(state.config.template_timeout).await {
             return text(StatusCode::GATEWAY_TIMEOUT, format!("Decryption template not ready: {e}\n"));
         }
