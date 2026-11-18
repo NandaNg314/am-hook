@@ -819,3 +819,59 @@ fetch('/api/quota/changelog', { signal: AbortSignal.timeout(6000) })
 
 entryKey();
 render(new URL(location.href), { initial: true });
+
+// ==================== 公告弹窗（可关闭 / 不再提示） ====================
+const ANNOUNCEMENT = {
+  version: '2026-11-18-15s-fix',
+  zh: {
+    title: '关于部分歌曲约 15 秒处卡顿的修复',
+    body: [
+      '<p>部分曲目在 <strong>约 15 秒处</strong>会卡顿或中断。原因是 HLS 清单在固定密钥下连续出现两个分片时，第二个分片解密错误。该问题已于北京时间 <strong>2026-11-18 22:16</strong> 修复。</p>',
+      '<p><strong>如果你下载的文件在 15 秒处有问题，请重新下载一次，新文件是正常的。</strong>已经保存到本地的文件我们无法代为修正，需要你自行重下。</p>',
+      '<p>今天受影响较多的专辑：罗大佑《爱人同志》、周传雄《我的心太乱》《新出发》《2004 Singapore Live》，以及 Karan Aujla 的部分单曲/EP。</p>',
+      '<p>下载额度已<strong>永久提升到 500 首/天</strong>。发现问题请通过 Telegram 机器人反馈，谢谢理解。</p>',
+    ].join(''),
+    ok: '我知道了',
+    later: '稍后再说',
+    never: '不再提示',
+  },
+  en: {
+    title: 'Fix for tracks stuttering around 15 seconds',
+    body: [
+      '<p>Some tracks stutter or stop around the <strong>15-second mark</strong>. The cause was a playlist that declares two consecutive segments under the fixed prefetch key, where the second segment was decrypted incorrectly. Fixed at <strong>22:16, Nov 18, 2026 (Beijing time)</strong>.</p>',
+      '<p><strong>If a file you downloaded glitches around 15s, please download it again — new files are correct.</strong> Files already saved to your device cannot be fixed by us and need to be downloaded again.</p>',
+      '<p>Albums affected most today include 羅大佑 “愛人同志”, 周傳雄 “我的心太亂” / “新出發” / “2004 Singapore Live”, and some Karan Aujla singles/EPs.</p>',
+      '<p>Daily quota has been <strong>permanently raised to 500 tracks/day</strong>. Please report any issue via the Telegram bot. Thanks for your patience.</p>',
+    ].join(''),
+    ok: 'Got it',
+    later: 'Later',
+    never: "Don't show again",
+  },
+};
+const ANNOUNCE_KEY = 'am-hook:announce-seen';
+
+function mountAnnouncement() {
+  const box = $('announce');
+  if (!box) return;
+  try {
+    if (localStorage.getItem(ANNOUNCE_KEY) === ANNOUNCEMENT.version) return;
+  } catch {}
+  const a = AmI18n.lang === 'en' ? ANNOUNCEMENT.en : ANNOUNCEMENT.zh;
+  $('announce-title').textContent = a.title;
+  $('announce-body').innerHTML = a.body;
+  $('announce-ok').textContent = a.ok;
+  $('announce-later').textContent = a.later;
+  $('announce-never').textContent = a.never;
+  const close = (remember) => {
+    if (remember) {
+      try { localStorage.setItem(ANNOUNCE_KEY, ANNOUNCEMENT.version); } catch {}
+    }
+    box.hidden = true;
+  };
+  $('announce-ok').onclick = () => close(true);
+  $('announce-never').onclick = () => close(true);
+  $('announce-later').onclick = () => close(false);
+  $('announce-x').onclick = () => close(false);
+  box.hidden = false;
+}
+mountAnnouncement();

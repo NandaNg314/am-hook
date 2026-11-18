@@ -7906,6 +7906,32 @@ ${quotaText}
     const isOwner = String(chatId) === String(OWNER_USER_ID);
     const session = userSessions.get(sessionKey);
 
+    // 更新推送开关：不再提示 / 重新开启
+    if (data === 'noupdate' || data === 'yesupdate') {
+      const off = data === 'noupdate';
+      db.set(`noupdate_${chatId}`, off ? '1' : '0');
+      await tgCall('answerCallbackQuery', {
+        callback_query_id: cb.id,
+        text: off
+          ? (isEn ? 'Update notices disabled' : '已关闭更新推送')
+          : (isEn ? 'Update notices enabled' : '已重新开启更新推送'),
+      });
+      try {
+        await tgCall('editMessageReplyMarkup', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [[
+              off
+                ? { text: isEn ? '🔔 Enable update notices' : '🔔 重新开启更新推送', callback_data: 'yesupdate' }
+                : { text: isEn ? '🔕 Stop update notices' : '🔕 不再提示更新', callback_data: 'noupdate' },
+            ]],
+          },
+        });
+      } catch {}
+      return;
+    }
+
     // 处理更新日志查看回调 (支持 latest 与 history 两种模式)
     if (data.startsWith('show_changelog')) {
       const parts = data.split(':');
@@ -9175,6 +9201,90 @@ function cleanupStaleTgTempDirs() {
   } catch {}
 }
 
+// ==================== 主动更新推送 ====================
+const UPDATE_PUSH_STATE = path.join(__dirname, 'tg_update_push_state.json');
+
+/** 从本地偏好键反推所有与 bot 交互过的 chatId（排除已关闭推送的用户） */
+function listKnownChatIds() {
+  const ids = new Set();
+  const re = /^(?:seen_ver_|lang_|taglang_|nametpl_|ziptpl_)(\d+)$/;
+  for (const key of Object.keys(db.data.items || {})) {
+    if (key.startsWith('noupdate_')) continue;
+    const m = key.match(re);
+    if (m) ids.add(m[1]);
+  }
+  return [...ids];
+}
+
+function buildUpdatePush(chatId) {
+  const cl = loadChangelog();
+  const lang = getUserLang(chatId);
+  const isEn = lang === 'en';
+  const v = cl.latestVersion;
+  const line = (isEn ? cl.oneLiner?.en : cl.oneLiner?.zh) || '';
+  const items = ((isEn ? cl.items?.en : cl.items?.zh) || [])
+    .slice(0, 4)
+    .map((x) => `• ${escapeHtml(x)}`)
+    .join('\n');
+  const text = isEn
+    ? `📢 <b>v${escapeHtml(v)} Update</b>\n\n${escapeHtml(line)}\n\n${items}\n\n<i>Send /changelog for the full history</i>`
+    : `📢 <b>v${escapeHtml(v)} 更新</b>\n\n${escapeHtml(line)}\n\n${items}\n\n<i>发送 /changelog 查看完整更新记录</i>`;
+  return {
+    text,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: isEn ? '🔕 Stop update notices' : '🔕 不再提示更新', callback_data: 'noupdate' },
+      ]],
+    },
+  };
+}
+
+/** 版本变化时给所有历史用户推送一次更新说明（分批限流，失败跳过） */
+async function pushChangelogToUsers() {
+  try {
+    const cl = loadChangelog();
+    const ver = String(cl.latestVersion || '');
+    if (!ver) return;
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(UPDATE_PUSH_STATE, 'utf8')); } catch {}
+    if (state.version === ver && state.done) {
+      console.log(`[UpdatePush] v${ver} 已推送过，跳过`);
+      return;
+    }
+    const ids = listKnownChatIds();
+    console.log(`[UpdatePush] 开始推送 v${ver} 给 ${ids.length} 个用户`);
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = ids.slice(i, i + 20);
+      await Promise.all(batch.map(async (chatId) => {
+        if (db.get(`noupdate_${chatId}`) === '1') return;
+        try {
+          const msg = buildUpdatePush(chatId);
+          await tgCall('sendMessage', {
+            chat_id: chatId,
+            text: msg.text,
+            parse_mode: 'HTML',
+            reply_markup: msg.reply_markup,
+            disable_web_page_preview: true,
+          });
+          ok++;
+        } catch (e) {
+          fail++;
+          if (!/blocked|chat not found|bot was blocked|deactivated/i.test(e.message || '')) {
+            console.warn(`[UpdatePush] ${chatId} 失败: ${e.message}`);
+          }
+        }
+      }));
+      if (i + 20 < ids.length) await new Promise((r) => setTimeout(r, 1200));
+    }
+    fs.writeFileSync(UPDATE_PUSH_STATE, JSON.stringify({ version: ver, done: true, pushedAt: Date.now(), ok, fail }, null, 1));
+    console.log(`[UpdatePush] v${ver} 推送完成 ok=${ok} fail=${fail}`);
+  } catch (e) {
+    console.warn('[UpdatePush] 推送异常:', e.message);
+  }
+}
+
 // ==================== 主轮询守护 ====================
 async function startBot() {
   console.log(`[TG-Bot] 🤖 EnkinoAMDBot (v2.3 黄金平衡流式传输与高可用版) 正在启动...`);
@@ -9187,6 +9297,9 @@ async function startBot() {
   try {
     const me = await tgCall('getMe');
     console.log(`[TG-Bot] ✔ 机器人鉴权成功: @${me.username} (${me.first_name})`);
+
+    // 版本变化时向所有历史用户推送更新说明（延迟 15s，避开启动高峰）
+    setTimeout(() => { pushChangelogToUsers().catch(() => {}); }, 15000).unref?.();
 
     // 注册 Telegram 原生指令菜单（普通用户 5 个常用指令；站长专属叠加全套运维指令）
     try {
