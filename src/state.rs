@@ -19,7 +19,7 @@ pub struct Segment {
 
 impl Segment {
     pub fn end(&self) -> u64 {
-        self.offset + self.length
+        self.offset.saturating_add(self.length)
     }
 }
 
@@ -95,7 +95,7 @@ impl Track {
         if self.adam_id.is_empty() || self.uri.is_empty() || self.template.borrow().is_some() {
             return false;
         }
-        let mut f = self.fetch.lock().unwrap();
+        let mut f = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
         if f.in_flight || now_ms() < f.retry_at_ms {
             return false;
         }
@@ -105,7 +105,7 @@ impl Track {
 
     /// 结束一次模板请求；失败时指数退避（1s, 2s, 4s ... 最多 60s）。
     pub(crate) fn end_fetch(&self, ok: bool) -> Duration {
-        let mut f = self.fetch.lock().unwrap();
+        let mut f = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
         f.in_flight = false;
         if ok {
             f.failures = 0;
@@ -152,6 +152,14 @@ pub struct Config {
 pub struct AppState {
     pub config: Config,
     pub http_client: reqwest::Client,
+    /// 同 `http_client`，但重定向只允许跳到 apple.com（处理不受信任的 URL）
+    pub apple_client: reqwest::Client,
+    /// 专用于 `--hook` CDN 代理：重定向只允许留在 Apple CDN（apple.com / mzstatic.com HTTPS）
+    pub cdn_client: reqwest::Client,
+    /// 复用的 Gofile 代理客户端（无固定总时长上限，避免大文件上传 300s 断流）
+    pub gofile_client: reqwest::Client,
+    /// 限制并发 Gofile 流式代理上传数，防止连接/FD 耗尽
+    pub gofile_upload_semaphore: Arc<tokio::sync::Semaphore>,
     /// wrapper-lite 客户端（限速、限并发、鉴权）
     pub wrapper: crate::wrapper::Wrapper,
     /// fileuri -> 轨道。OnceCell 让并发请求同一轨道时只拉取/解析一次 m3u8。
@@ -159,6 +167,8 @@ pub struct AppState {
     pub segments: SegmentCache,
     /// amp-api（Apple Music 目录 / 搜索）代理：专用连接、developer token 与响应缓存
     pub amp: Arc<crate::amp::Amp>,
+    /// `/status` 的 10 秒共用缓存
+    pub status_cache: crate::ui::StatusCache,
 }
 
 impl AppState {
@@ -183,30 +193,69 @@ impl AppState {
 
     pub fn with_config(config: Config, cache_mb: usize) -> Self {
         // wrapper-lite 与 CDN 媒体：保持 HTTP/1.1、不请求压缩，Range 字节偏移与原始文件一致（amp-api 另用专用客户端）
-        let http_client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(30))
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(32)
-            .http1_only()
-            .no_gzip()
-            .no_brotli()
+        let builder = || {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(30))
+                .tcp_nodelay(true)
+                .pool_max_idle_per_host(32)
+                .http1_only()
+                .no_gzip()
+                .no_brotli()
+        };
+        let http_client = builder().build().expect("Failed to build reqwest HTTP client");
+        // 用于 MV master 地址：重定向只允许留在 apple.com 的 HTTPS 地址，最多 10 跳
+        let apple_client = builder()
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    attempt.error("too many redirects")
+                } else if is_apple_https(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
             .build()
-            .expect("Failed to build reqwest HTTP client");
+            .expect("Failed to build reqwest Apple-only HTTP client");
+        // 用于 `--hook` CDN 代理：重定向只允许留在 apple.com / mzstatic.com HTTPS，最多 10 跳
+        let cdn_client = builder()
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    attempt.error("too many redirects")
+                } else if is_apple_cdn_https(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()
+            .expect("Failed to build reqwest CDN HTTP client");
+        let gofile_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(120))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
+            .build()
+            .expect("Failed to build Gofile HTTP client");
         let amp = Arc::new(crate::amp::Amp::new(config.amp_cache_mb * 1024 * 1024));
         let wrapper = crate::wrapper::Wrapper::new(&config);
         Self {
             config,
             http_client,
+            apple_client,
+            cdn_client,
+            gofile_client,
+            gofile_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             wrapper,
             tracks: Mutex::default(),
             segments: SegmentCache::new(cache_mb.max(16) * 1024 * 1024),
             amp,
+            status_cache: Default::default(),
         }
     }
 
     pub fn get_track(&self, fileuri: &str) -> Option<Arc<Track>> {
-        let track = self.tracks.lock().unwrap().get(fileuri)?.get()?.clone();
+        let track = self.tracks.lock().unwrap_or_else(|e| e.into_inner()).get(fileuri)?.get()?.clone();
         track.touch();
         Some(track)
     }
@@ -218,20 +267,20 @@ impl AppState {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Track, String>>,
     {
-        let slot = self.tracks.lock().unwrap().entry(fileuri.to_string()).or_default().clone();
+        let slot = self.tracks.lock().unwrap_or_else(|e| e.into_inner()).entry(fileuri.to_string()).or_default().clone();
         let track = slot.get_or_try_init(|| async { init().await.map(Arc::new) }).await?.clone();
         track.touch();
         Ok(track)
     }
 
     pub fn tracks(&self) -> Vec<Arc<Track>> {
-        self.tracks.lock().unwrap().values().filter_map(|s| s.get().cloned()).collect()
+        self.tracks.lock().unwrap_or_else(|e| e.into_inner()).values().filter_map(|s| s.get().cloned()).collect()
     }
 
     /// 淘汰超过 TTL 未访问的轨道，以及无人等待且初始化失败的空槽。返回淘汰数量。
     pub fn evict_expired(&self) -> usize {
         let ttl = self.config.cache_ttl;
-        let mut map = self.tracks.lock().unwrap();
+        let mut map = self.tracks.lock().unwrap_or_else(|e| e.into_inner());
         let before = map.len();
         map.retain(|_, slot| match slot.get() {
             Some(t) => !t.is_expired(ttl),
@@ -239,6 +288,38 @@ impl AppState {
         });
         before - map.len()
     }
+}
+
+/// HTTPS、无端口、无用户名，且主机为 apple.com 或其子域名
+pub fn is_apple_https(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|host| host == "apple.com" || host.ends_with(".apple.com"))
+}
+
+/// HTTPS、无端口、无用户名，且主机为 apple.com / mzstatic.com 或其子域名
+pub fn is_apple_cdn_https(url: &reqwest::Url) -> bool {
+    is_apple_https(url)
+        || (url.scheme() == "https"
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.host_str().is_some_and(|host| host == "mzstatic.com" || host.ends_with(".mzstatic.com")))
+}
+
+/// `--hook` 音频 CDN 代理白名单：严格要求 `https://aod.itunes.apple.com/itunes-assets/...`（无端口、无认证信息）
+pub fn is_allowed_cdn_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str() == Some("aod.itunes.apple.com")
+        && url.path().starts_with("/itunes-assets/")
 }
 
 /// 已解密 segment 的按字节计量 LRU 缓存 + 同一 segment 并发请求去重。
@@ -258,18 +339,19 @@ impl SegmentCache {
     }
 
     pub fn get(&self, key: &SegmentKey) -> Option<Bytes> {
-        self.lru.lock().unwrap().0.get(key).cloned()
+        self.lru.lock().unwrap_or_else(|e| e.into_inner()).0.get(key).cloned()
     }
 
     pub fn contains(&self, key: &SegmentKey) -> bool {
-        self.lru.lock().unwrap().0.contains(key) || self.inflight.lock().unwrap().contains_key(key)
+        self.lru.lock().unwrap_or_else(|e| e.into_inner()).0.contains(key)
+            || self.inflight.lock().unwrap_or_else(|e| e.into_inner()).contains_key(key)
     }
 
     fn put(&self, key: SegmentKey, data: Bytes) {
         if data.len() > self.capacity {
             return;
         }
-        let mut guard = self.lru.lock().unwrap();
+        let mut guard = self.lru.lock().unwrap_or_else(|e| e.into_inner());
         let (lru, used) = &mut *guard;
         *used += data.len();
         if let Some(old) = lru.put(key, data) {
@@ -284,7 +366,7 @@ impl SegmentCache {
     }
 
     /// 命中缓存直接返回；否则执行 `load`。同一 key 的并发调用共享一次 `load`，
-    /// 若执行 `load` 的请求被取消（客户端断开），由下一个等待者接手。
+    /// 若执行 `load` 的请求被取消（客户端断开），由 `Drop` 守卫立即清理 `inflight` 条目。
     pub async fn get_or_load<F, Fut>(&self, key: SegmentKey, load: F) -> Result<Bytes, String>
     where
         F: FnOnce() -> Fut,
@@ -293,16 +375,32 @@ impl SegmentCache {
         if let Some(hit) = self.get(&key) {
             return Ok(hit);
         }
-        let cell = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
+        let cell = self.inflight.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
+        let _guard = SegmentInflightGuard {
+            inflight: &self.inflight,
+            key: key.clone(),
+            cell: cell.clone(),
+        };
         let result = cell.get_or_try_init(load).await.cloned();
         if let Ok(data) = &result {
-            self.put(key.clone(), data.clone());
-        }
-        let mut inflight = self.inflight.lock().unwrap();
-        if inflight.get(&key).is_some_and(|c| Arc::ptr_eq(c, &cell)) {
-            inflight.remove(&key);
+            self.put(key, data.clone());
         }
         result
+    }
+}
+
+struct SegmentInflightGuard<'a> {
+    inflight: &'a Mutex<HashMap<SegmentKey, Arc<OnceCell<Bytes>>>>,
+    key: SegmentKey,
+    cell: Arc<OnceCell<Bytes>>,
+}
+
+impl Drop for SegmentInflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+        if inflight.get(&self.key).is_some_and(|c| Arc::ptr_eq(c, &self.cell)) {
+            inflight.remove(&self.key);
+        }
     }
 }
 
@@ -363,5 +461,34 @@ mod tests {
 
         cache.put(("f".into(), 2), Bytes::from_static(b"123456"));
         assert!(cache.get(&key).is_none(), "oldest entry evicted once over capacity");
+    }
+
+    #[tokio::test]
+    async fn test_segment_cache_cleans_inflight_on_cancel() {
+        let cache = SegmentCache::new(1024);
+        let key: SegmentKey = ("cancel".into(), 7);
+        let fut = cache.get_or_load(key.clone(), || async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(Bytes::from_static(b"never"))
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(20), fut).await.is_err());
+        assert!(!cache.contains(&key), "cancelled inflight key must be removed on drop");
+    }
+
+    #[test]
+    fn test_url_allowlists() {
+        assert!(is_allowed_cdn_url("https://aod.itunes.apple.com/itunes-assets/HLSMusic/v4/1/2/3/test.m3u8"));
+        assert!(!is_allowed_cdn_url("http://aod.itunes.apple.com/itunes-assets/test.m3u8"));
+        assert!(!is_allowed_cdn_url("https://aod.itunes.apple.com:8443/itunes-assets/test.m3u8"));
+        assert!(!is_allowed_cdn_url("https://user@aod.itunes.apple.com/itunes-assets/test.m3u8"));
+        assert!(!is_allowed_cdn_url("https://evil.com/aod.itunes.apple.com/itunes-assets/test.m3u8"));
+        assert!(!is_allowed_cdn_url("http://127.0.0.1:12340/status?aod.itunes.apple.com/itunes-assets/"));
+        assert!(!is_allowed_cdn_url("https://mvod.itunes.apple.com/itunes-assets/test.m4s"));
+        assert!(!is_allowed_cdn_url("https://aod.itunes.apple.com/other/path.m3u8"));
+
+        let ok = reqwest::Url::parse("https://play.itunes.apple.com/master.m3u8").unwrap();
+        assert!(is_apple_https(&ok));
+        let bad = reqwest::Url::parse("https://evil.com/master.m3u8").unwrap();
+        assert!(!is_apple_https(&bad));
     }
 }

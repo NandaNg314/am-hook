@@ -69,17 +69,29 @@ export function parseTTML(xml, Parser = globalThis.DOMParser) {
   const amllMeta = key => children(head, 'meta').filter(meta => meta.getAttribute('key') === key).map(meta => meta.getAttribute('value'));
   const translation = localization(metadata, 'translations', 'translation');
   const pronunciation = localization(metadata, 'transliterations', 'transliteration');
+  const audioOffsets = Object.fromEntries(children(metadata, 'audio').flatMap((node) => {
+    const offset = Number(node.getAttribute('lyricOffset'));
+    const name = node.getAttribute('role');
+    return name && Number.isFinite(offset) && offset ? [[name, Math.round(offset * 1000)]] : [];
+  }));
   const sections = children(body, 'div').map((section, sectionIndex) => ({
     begin: parseTime(section.getAttribute('begin') || '0'),
     end: parseTime(section.getAttribute('end') || '0'),
     type: attribute(section, APPLE, 'songPart', 'Verse').toLowerCase(),
     lines: children(section, 'p').map((line, lineIndex) => {
       const key = attribute(line, APPLE, 'key', `${sectionIndex}:${lineIndex}`);
-      const tr = translation.entries.get(key), pr = pronunciation.entries.get(key);
+      const pr = pronunciation.entries.get(key);
+      // replacement 类型（如繁转简对照）直接覆盖主词与逐词时间轴，避免翻译与原文混杂
+      const replacement = translation.type === 'replacement' ? translation.entries.get(key) : null;
+      const tr = replacement ? null : translation.entries.get(key);
       const bgNode = children(line, 'span').find(isBackground);
       const background = readVoice(bgNode, children(tr, 'span').find(isBackground), children(pr, 'span').find(isBackground));
       const main = readVoice(line, tr, pr);
-      // The web renderer displays replacement entries as a secondary line too.
+      if (replacement) {
+        Object.assign(main, { text: cleanText(replacement), tokens: tokens(replacement) });
+        const bgReplacement = children(replacement, 'span').find(isBackground);
+        if (bgReplacement) Object.assign(background, { text: cleanText(bgReplacement), tokens: tokens(bgReplacement) });
+      }
       // It separates a parenthesized background translation even when that row
       // has no timed background vocal (e.g. 01.ttml L2).
       const bgText = background.translation.replace(/[()]/g, '') || main.translation.match(/\(+([^)]+)\)+/)?.[1]?.trim() || '';
@@ -92,6 +104,7 @@ export function parseTTML(xml, Parser = globalThis.DOMParser) {
     timing: attribute(root, APPLE, 'timing', 'None'),
     language: attribute(root, XML, 'lang', 'en'),
     duration: parseTime(body.getAttribute('dur') || '0'),
+    audioOffsets,
     sections, lines: sections.flatMap(section => section.lines),
     credits: children(child(metadata, 'songwriters'), 'songwriter').map(cleanText),
     authors: amllMeta('ttmlAuthorGithubLogin'),

@@ -686,13 +686,34 @@ export function ttmlToLrc(ttmlContent) {
   };
 }
 
+const CJK_RE = /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/;
+function collapseCjkSpaces(str) {
+  const trimmed = String(str || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return '';
+  let out = '';
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === ' ') {
+      const prev = out.slice(-1);
+      const next = trimmed[i + 1] || '';
+      if (prev && next && CJK_RE.test(prev) && CJK_RE.test(next)) continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 /** 官方翻译 → 双语 LRC（同时间戳两行：原文 + 译文）。译文按 itunes:key 与 <text for> 对齐。 */
 export function ttmlToBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   if (!ttmlContent || typeof ttmlContent !== 'string') return null;
   ttmlContent = normalizeLyricGlyphs(ttmlContent);
-  // 原文已是中文：无需翻译
-  const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase();
-  if (rootLang.startsWith('zh')) return null;
+  // 粤语/台语歌原文 xml:lang 为 zh-Hant，译文为 zh-Hans（繁→简对照），仅在脚本相同时才跳过
+  const rootLang = (ttmlContent.match(/<tt\b[^>]*xml:lang=["']([^"']+)["']/i)?.[1] || '').toLowerCase().replace(/_/g, '-');
+  const target = String(targetLang || 'zh-Hans-CN').toLowerCase().replace(/_/g, '-');
+  const script = (lang) => lang.split('-')[1] || '';
+  if (rootLang && rootLang === target) return null;
+  if (rootLang.startsWith('zh') && target.startsWith('zh') && script(rootLang) === script(target)) return null;
+  if (rootLang.startsWith('zh') && !target.startsWith('zh')) return null;
 
   const unescape = (s) => s
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -717,7 +738,7 @@ export function ttmlToBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   let xm;
   while ((xm = textRe.exec(block)) !== null) {
     const key = xm[1];
-    const txt = unescape(xm[2].replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '').replace(/<[^>]+>/g, '')).trim();
+    const txt = collapseCjkSpaces(unescape(xm[2].replace(/<span[^>]*ttm:role=["']x-bg["'][^>]*>[\s\S]*?<\/span>/gi, '').replace(/<[^>]+>/g, '')));
     if (key && txt) transMap[key] = txt;
   }
 

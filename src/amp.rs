@@ -100,7 +100,7 @@ impl Amp {
             return (Lookup::Hit, Ok(hit));
         }
         let (pending, lookup) = {
-            let mut inflight = self.cache.inflight.lock().unwrap();
+            let mut inflight = self.cache.inflight.lock().unwrap_or_else(|e| e.into_inner());
             match inflight.get(&url) {
                 Some(pending) => (pending.clone(), Lookup::Shared),
                 None => {
@@ -210,7 +210,7 @@ impl ResponseCache {
     }
 
     fn get(&self, url: &str) -> Option<Arc<Upstream>> {
-        let mut guard = self.lru.lock().unwrap();
+        let mut guard = self.lru.lock().unwrap_or_else(|e| e.into_inner());
         let (lru, used) = &mut *guard;
         let entry = lru.get(url)?.clone();
         if entry.expires_at > Instant::now() {
@@ -225,7 +225,7 @@ impl ResponseCache {
         if !upstream.status.is_success() || upstream.body.len() > self.capacity {
             return;
         }
-        let mut guard = self.lru.lock().unwrap();
+        let mut guard = self.lru.lock().unwrap_or_else(|e| e.into_inner());
         let (lru, used) = &mut *guard;
         *used += upstream.body.len();
         if let Some(old) = lru.put(url.to_owned(), upstream) {
@@ -244,7 +244,7 @@ struct InflightGuard(Arc<Amp>, String);
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0.cache.inflight.lock().unwrap().remove(&self.1);
+        self.0.cache.inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.1);
     }
 }
 
@@ -274,11 +274,11 @@ impl DeveloperToken {
     }
 
     fn cached(&self) -> Option<Arc<str>> {
-        self.current.read().unwrap().as_ref().map(|t| t.value.clone())
+        self.current.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| t.value.clone())
     }
 
     fn needs_refresh(&self) -> bool {
-        self.current.read().unwrap().as_ref().is_none_or(|t| Instant::now() >= t.refresh_at)
+        self.current.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|t| Instant::now() >= t.refresh_at)
     }
 
     /// 后台刷新；其他请求在此期间继续使用旧 token
@@ -296,13 +296,14 @@ impl DeveloperToken {
         let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let refresh_in = refresh_delay(&value, now_unix);
         info!(refresh_in = %format!("{} min", refresh_in.as_secs() / 60), "Fetched Apple Music web developer token");
-        *self.current.write().unwrap() = Some(Token { value: value.clone(), refresh_at: Instant::now() + refresh_in });
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) =
+            Some(Token { value: value.clone(), refresh_at: Instant::now() + refresh_in });
         Ok(value)
     }
 
     /// 丢弃失效的 token；若缓存已被其他请求换成新 token 则保留
     fn invalidate(&self, token: &str) {
-        let mut current = self.current.write().unwrap();
+        let mut current = self.current.write().unwrap_or_else(|e| e.into_inner());
         if current.as_ref().is_some_and(|t| &*t.value == token) {
             *current = None;
         }

@@ -131,11 +131,36 @@ pub async fn mv_master_handler(
     let Some(master_url) = payload.pointer("/data/m3u8").and_then(serde_json::Value::as_str).filter(|url| !url.is_empty()) else {
         return gateway_error("Missing MV master URL");
     };
-    let response = state.http_client.get(master_url)
+    let Ok(parsed_url) = reqwest::Url::parse(master_url) else {
+        return gateway_error("Invalid MV master URL");
+    };
+    let client = if crate::state::is_apple_https(&parsed_url) {
+        &state.apple_client
+    } else if same_origin_as_wrapper(&parsed_url, &state.config.wrapper_url) {
+        &state.http_client
+    } else {
+        return log::note(gateway_error("Invalid MV master URL"), "MV master URL outside apple.com".to_string());
+    };
+    fetch_mv_master(client, master_url).await
+}
+
+fn same_origin_as_wrapper(url: &reqwest::Url, wrapper_url: &str) -> bool {
+    reqwest::Url::parse(wrapper_url).ok().is_some_and(|w| {
+        url.scheme() == w.scheme() && url.host_str() == w.host_str() && url.port_or_known_default() == w.port_or_known_default()
+    })
+}
+
+async fn fetch_mv_master(client: &reqwest::Client, master_url: &str) -> Response<Body> {
+    let response = client.get(master_url)
         .header(axum::http::header::USER_AGENT, "AM")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(15))
         .send().await.and_then(reqwest::Response::error_for_status);
     let response = match response {
+        // 重定向策略遇到非 apple.com 目标会停下并原样返回 3xx，按失败处理
+        Ok(response) if response.status().is_redirection() => {
+            let response = gateway_error("Failed to fetch MV master playlist");
+            return log::note(response, "MV master redirected outside apple.com".to_string());
+        }
         Ok(response) => response,
         Err(error) => {
             let response = gateway_error("Failed to fetch MV master playlist");
@@ -184,13 +209,16 @@ pub async fn mv_license_handler(
 }
 
 async fn mv_forward(state: &AppState, request: reqwest::RequestBuilder) -> Response<Body> {
-    match state.wrapper.send(request.timeout(std::time::Duration::from_secs(30))).await {
-        Ok(reply) => Response::builder()
-            .status(reply.status)
-            .header(CONTENT_TYPE, "application/json")
-            .header(axum::http::header::CACHE_CONTROL, "no-store")
-            .body(Body::from(reply.body))
-            .unwrap(),
+    match state.wrapper.send(request.timeout(std::time::Duration::from_secs(15))).await {
+        Ok(reply) => with_retry_after(
+            Response::builder()
+                .status(reply.status)
+                .header(CONTENT_TYPE, "application/json")
+                .header(axum::http::header::CACHE_CONTROL, "no-store")
+                .body(Body::from(reply.body))
+                .unwrap_or_else(|error| internal_error(&format!("failed to build response: {error}"))),
+            reply.retry_after,
+        ),
         Err(error) => log::note(gateway_error("wrapper-lite request failed"), format!("wrapper-lite request failed: {error}")),
     }
 }
@@ -337,7 +365,18 @@ pub async fn key_handler(
     }
 }
 
+/// `/status` 的结果在所有客户端间共用 10 秒，避免多端轮询打满 wrapper-lite 额度
+const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Default)]
+pub struct StatusCache(tokio::sync::Mutex<Option<(tokio::time::Instant, StatusCode, serde_json::Value, String)>>);
+
 pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body> {
+    let mut cached = state.status_cache.0.lock().await;
+    if let Some((_, status, body, note)) = cached.as_ref().filter(|(at, ..)| at.elapsed() < STATUS_TTL) {
+        return log::note(json_response(*status, body.clone()), format!("{note} · cached"));
+    }
+
     let mut body = json!({
         "code": 1,
         "msg": "wrapper-lite unavailable",
@@ -348,7 +387,7 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
     let mut status = StatusCode::BAD_GATEWAY;
     let mut note = String::from("wrapper-lite unavailable");
 
-    match state.wrapper.send(state.wrapper.get("/status")).await {
+    match state.wrapper.send(state.wrapper.get("/status").timeout(std::time::Duration::from_secs(10))).await {
         Ok(reply) => {
             if let Ok(value) = reply.json::<serde_json::Value>() {
                 if value.get("code").and_then(serde_json::Value::as_i64) == Some(0) {
@@ -370,6 +409,7 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response<Body
         Err(error) => note = format!("wrapper-lite request failed: {error}"),
     }
 
+    *cached = Some((tokio::time::Instant::now(), status, body.clone(), note.clone()));
     log::note(json_response(status, body), note)
 }
 
@@ -381,11 +421,22 @@ pub async fn master_handler(
         return bad_request("Invalid song URL or adamId");
     }
 
-    let reply = state.wrapper.send(state.wrapper.get("/m3u8").query(&[("adamId", adam_id.as_str())])).await;
+    let request = state
+        .wrapper
+        .get("/m3u8")
+        .query(&[("adamId", adam_id.as_str())])
+        .timeout(std::time::Duration::from_secs(15));
+    let reply = state.wrapper.send(request).await;
     let reply = match reply {
         Ok(reply) => reply,
         Err(error) => return upstream_error("failed to fetch master m3u8 from wrapper-lite", error),
     };
+
+    // 限流原样转给调用方（429 + Retry-After），避免被当作 500 掩盖限流信号
+    if reply.status == StatusCode::TOO_MANY_REQUESTS {
+        let response = json_response(StatusCode::TOO_MANY_REQUESTS, json!({ "code": 1, "msg": "wrapper-lite rate limited (HTTP 429)" }));
+        return log::note(with_retry_after(response, reply.retry_after), "wrapper-lite HTTP 429");
+    }
 
     let payload = match reply.json::<serde_json::Value>() {
         Ok(value) => value,
@@ -409,8 +460,21 @@ pub async fn master_handler(
         .pointer("/data/m3u8")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let master_response = state.http_client.get(master_url).send().await;
+    let Ok(parsed_url) = reqwest::Url::parse(master_url) else {
+        return upstream_error("invalid master m3u8 URL from wrapper-lite", "invalid URL");
+    };
+    let client = if crate::state::is_apple_https(&parsed_url) {
+        &state.apple_client
+    } else if same_origin_as_wrapper(&parsed_url, &state.config.wrapper_url) {
+        &state.http_client
+    } else {
+        return upstream_error("rejected non-Apple master m3u8 URL", master_url);
+    };
+    let master_response = client.get(master_url).timeout(std::time::Duration::from_secs(15)).send().await;
     let master_response = match master_response {
+        Ok(response) if response.status().is_redirection() => {
+            return upstream_error("master m3u8 redirected outside apple.com", master_url);
+        }
         Ok(response) => response,
         Err(error) => return upstream_error("failed to fetch master m3u8 from Apple", error),
     };
@@ -482,23 +546,76 @@ fn gateway_error(message: &str) -> Response<Body> {
     log::note(json_response(StatusCode::BAD_GATEWAY, json!({ "code": 1, "msg": message })), message)
 }
 
+/// 带上 wrapper-lite 给出的 `Retry-After`（限流时），调用方据此退避
+fn with_retry_after(mut response: Response<Body>, retry_after: Option<axum::http::HeaderValue>) -> Response<Body> {
+    if let Some(value) = retry_after {
+        response.headers_mut().insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
+}
+
 /// 上游请求失败：响应只带概要，请求日志中附上具体原因
 fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body> {
     log::note(internal_error(message), format!("{message}: {error}"))
 }
 
+const MAX_GOFILE_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn is_same_origin_request(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        if site != "same-origin" {
+            return false;
+        }
+    }
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let Ok(origin_url) = reqwest::Url::parse(origin) else {
+            return false;
+        };
+        let host_hdr = headers
+            .get("x-forwarded-host")
+            .or_else(|| headers.get(axum::http::header::HOST))
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim);
+        if let Some(expected_host) = host_hdr {
+            let Some(origin_host) = origin_url.host_str() else {
+                return false;
+            };
+            let origin_authority = match origin_url.port() {
+                Some(port) => format!("{origin_host}:{port}"),
+                None => origin_host.to_owned(),
+            };
+            if !origin_authority.eq_ignore_ascii_case(expected_host) && !origin_host.eq_ignore_ascii_case(expected_host) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Gofile 服务器列表代理（解决部分网络环境下直连 api.gofile.io 超时的问题）
-pub async fn gofile_servers_handler() -> Response<Body> {
-    let client = reqwest::Client::builder()
+pub async fn gofile_servers_handler(State(state): State<Arc<AppState>>) -> Response<Body> {
+    match state
+        .gofile_client
+        .get("https://api.gofile.io/servers")
         .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-    match client.get("https://api.gofile.io/servers").send().await {
+        .send()
+        .await
+    {
         Ok(resp) => {
-            let bytes = resp.bytes().await.unwrap_or_default();
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let content_type = resp
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/json; charset=utf-8")
+                .to_owned();
+            let bytes = match resp.bytes().await {
+                Ok(b) => b,
+                Err(e) => return gateway_error(&format!("Failed to read Gofile servers response: {e}")),
+            };
             Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .status(status)
+                .header(CONTENT_TYPE, content_type)
                 .body(Body::from(bytes))
                 .unwrap_or_else(|e| internal_error(&format!("failed to build response: {e}")))
         }
@@ -508,13 +625,41 @@ pub async fn gofile_servers_handler() -> Response<Body> {
 
 /// Gofile 上传文件流式代理（直接流式转发客户端的 multipart 请求体至指定的 Gofile 存储服务器，不落盘、不占内存）
 pub async fn gofile_upload_handler(
+    State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response<Body> {
+    if !is_same_origin_request(&headers) {
+        return log::note(
+            json_response(StatusCode::FORBIDDEN, json!({ "code": 1, "msg": "Cross-origin Gofile upload is forbidden" })),
+            "cross-origin gofile upload",
+        );
+    }
+
+    if let Some(len) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    {
+        if len > MAX_GOFILE_UPLOAD_BYTES {
+            return log::note(
+                json_response(StatusCode::PAYLOAD_TOO_LARGE, json!({ "code": 1, "msg": "Upload exceeds 4 GiB limit" })),
+                "gofile upload too large",
+            );
+        }
+    }
+
     let server = match params.get("server") {
-        Some(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => s,
+        Some(s) if !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => s,
         _ => return bad_request("Invalid or missing 'server' parameter"),
+    };
+
+    let Ok(_permit) = state.gofile_upload_semaphore.clone().try_acquire_owned() else {
+        return log::note(
+            json_response(StatusCode::TOO_MANY_REQUESTS, json!({ "code": 1, "msg": "Too many concurrent Gofile uploads" })),
+            "gofile upload busy",
+        );
     };
 
     let target_url = format!("https://{server}.gofile.io/contents/uploadfile");
@@ -523,15 +668,11 @@ pub async fn gofile_upload_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("multipart/form-data");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .unwrap_or_default();
-
     let stream = body.into_data_stream();
     let reqwest_body = reqwest::Body::wrap_stream(stream);
 
-    match client
+    match state
+        .gofile_client
         .post(&target_url)
         .header(CONTENT_TYPE, content_type)
         .body(reqwest_body)
@@ -539,15 +680,96 @@ pub async fn gofile_upload_handler(
         .await
     {
         Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let resp_ct = resp
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/json; charset=utf-8")
+                .to_owned();
             let resp_stream = resp.bytes_stream();
             Response::builder()
                 .status(status)
-                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .header(CONTENT_TYPE, resp_ct)
                 .body(Body::from_stream(resp_stream))
                 .unwrap_or_else(|e| internal_error(&format!("failed to build response: {e}")))
         }
         Err(e) => gateway_error(&format!("Failed to upload to Gofile: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn test_status_cache_and_429_passthrough() {
+        let status_hits = Arc::new(AtomicUsize::new(0));
+        let hits = status_hits.clone();
+        let mock = axum::Router::new()
+            .route(
+                "/status",
+                axum::routing::get(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(json!({"code":0,"msg":"SUCCESS","data":{"regions":["cn"]}}))
+                    }
+                }),
+            )
+            .route(
+                "/m3u8",
+                axum::routing::get(|| async {
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(axum::http::header::RETRY_AFTER, "7")],
+                        axum::Json(json!({"code":429,"msg":"rate limited"})),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+
+        let state = Arc::new(AppState::new(format!("http://{addr}"), 60, 1));
+        let r1 = status_handler(State(state.clone())).await;
+        let r2 = status_handler(State(state.clone())).await;
+        assert_eq!(r1.status(), StatusCode::OK);
+        assert_eq!(r2.status(), StatusCode::OK);
+        assert_eq!(status_hits.load(Ordering::SeqCst), 1, "/status must be cached for 10 s");
+
+        let m = master_handler(State(state), axum::extract::Path("1468058171".into())).await;
+        assert_eq!(m.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(m.headers()[axum::http::header::RETRY_AFTER], "7");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_gofile_upload_origin_and_size_checks() {
+        let state = Arc::new(AppState::new("http://127.0.0.1:12340".into(), 60, 1));
+        let mut cross = HeaderMap::new();
+        cross.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        let resp = gofile_upload_handler(
+            State(state.clone()),
+            axum::extract::Query([("server".into(), "store1".into())].into()),
+            cross,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let mut huge = HeaderMap::new();
+        huge.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        huge.insert(axum::http::header::CONTENT_LENGTH, (MAX_GOFILE_UPLOAD_BYTES + 1).to_string().parse().unwrap());
+        let resp = gofile_upload_handler(
+            State(state),
+            axum::extract::Query([("server".into(), "store1".into())].into()),
+            huge,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
 

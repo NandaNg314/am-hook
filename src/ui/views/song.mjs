@@ -542,6 +542,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     downloads.set(id, job);
     showDownload(id);
     // 本机下载同样消耗 VPS 出站带宽，纳入每日转存配额（owner/admin 由服务端豁免）
+    let localReservationId = null;
     if (!isGofile) {
       try {
         const consumeRes = await fetch('/api/quota/consume', {
@@ -557,6 +558,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           downloads.delete(id);
           return;
         }
+        const consumeJson = await consumeRes.json().catch(() => null);
+        localReservationId = consumeJson?.data?.reservationId || null;
       } catch (err) {
         toast(isEn ? `⚠️ Quota check failed: ${err.message}` : `⚠️ 配额预扣失败: ${err.message}`);
         downloads.delete(id);
@@ -683,6 +686,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
       toast(t('dl.done', { size: formatSize(dl.size) }));
     } catch (err) {
+      if (localReservationId) {
+        try {
+          await fetch('/api/quota/refund', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reservationId: localReservationId, tracks: 1 }),
+            signal: AbortSignal.timeout(5000)
+          });
+        } catch {}
+      }
       const msg = (err && err.message) || String(err);
       if (err && err.name === 'AbortError') toast(t('dl.cancelled'));
       else if (signal.aborted) toast(t('dl.failed', { msg }));
@@ -878,7 +891,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           toast(isEn ? 'Fetching lyrics...' : '正在获取歌词...');
           const o = getLyricsOptions();
           const translateOn = o.translateOn;
-          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese, (s) => s, {
+          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese, toSimplified, {
             ruby: Boolean(o.rubyOn),
             rubyMode: o.rubyMode || 'roman',
           });

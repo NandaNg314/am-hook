@@ -2,21 +2,26 @@
 //! 限制并发数与每秒请求数（wrapper-lite 可能有调用频率限制），并附带可选的 `Authorization` 请求头。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{HeaderValue, AUTHORIZATION, RETRY_AFTER};
 use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use temari::rounds::Template;
 use temari::template::template_from_json;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::state::Config;
 
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+/// 已发出但没有正常结束（超时、读响应出错、客户端断开使请求被取消）的请求，wrapper-lite 上可能仍在处理：
+/// 并发名额再保留这么久才归还，免得 wrapper-lite 实际的并发超过 `--wrapper-concurrency`
+const ABANDONED_HOLD: Duration = Duration::from_secs(30);
 
 /// 规范化 `Authorization` 取值：空值表示不发送；只有 token 时补上 `Bearer `，已带认证方案（含空白）时原样使用
 pub fn normalize_authorization(raw: &str) -> Result<Option<String>, String> {
@@ -29,10 +34,12 @@ pub fn normalize_authorization(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(value))
 }
 
-/// wrapper-lite 的完整响应（响应体读完后才释放并发名额）
+/// wrapper-lite 的完整响应（响应体读完后才释放并发名额，见 [`Slot`]）
 pub struct Reply {
     pub status: StatusCode,
     pub body: Bytes,
+    /// 上游的 `Retry-After`（限流时给出），转发给浏览器让它按此退避
+    pub retry_after: Option<HeaderValue>,
 }
 
 impl Reply {
@@ -45,8 +52,11 @@ pub struct Wrapper {
     pub url: String,
     client: Client,
     authorization: Option<HeaderValue>,
-    concurrency: Option<Semaphore>,
+    concurrency: Option<Arc<Semaphore>>,
     rate: Option<RateLimit>,
+    held: Arc<AtomicUsize>,
+    /// 见 [`ABANDONED_HOLD`]；测试中改短
+    abandoned_hold: Duration,
 }
 
 impl Wrapper {
@@ -73,9 +83,15 @@ impl Wrapper {
             url: config.wrapper_url.clone(),
             client,
             authorization,
-            concurrency: (config.wrapper_concurrency > 0).then(|| Semaphore::new(config.wrapper_concurrency)),
+            concurrency: (config.wrapper_concurrency > 0).then(|| Arc::new(Semaphore::new(config.wrapper_concurrency))),
             rate: (config.wrapper_rate > 0).then(|| RateLimit::new(config.wrapper_rate as usize)),
+            held: Arc::new(AtomicUsize::new(0)),
+            abandoned_hold: ABANDONED_HOLD,
         }
+    }
+
+    pub fn held_permits(&self) -> usize {
+        self.held.load(Ordering::Relaxed)
     }
 
     /// `path` 以 `/` 开头，如 `/key`
@@ -97,18 +113,27 @@ impl Wrapper {
 
     /// 在并发与速率限制内发送请求并读完响应体。先取并发名额再占速率配额，
     /// 使速率按实际发出时间计算（排队等待并发名额的请求不会在名额释放后集中发出）。
+    /// 发出后没有正常结束的请求，并发名额按 [`ABANDONED_HOLD`] 延后归还（见 [`Slot`]）。
     pub async fn send(&self, request: RequestBuilder) -> Result<Reply, reqwest::Error> {
-        let _permit = match &self.concurrency {
-            Some(semaphore) => Some(semaphore.acquire().await.expect("wrapper semaphore is never closed")),
+        let permit = match &self.concurrency {
+            Some(semaphore) => Some(semaphore.clone().acquire_owned().await.expect("wrapper semaphore is never closed")),
             None => None,
         };
         if let Some(rate) = &self.rate {
             rate.acquire().await;
         }
-        let response = request.send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        Ok(Reply { status, body })
+        // 被取消时 slot 随 future 一起丢弃，按未正常结束处理
+        let slot = Slot {
+            permit,
+            held: self.held.clone(),
+            hold: self.abandoned_hold,
+        };
+        let result = read_reply(request).await;
+        // 连接没建立时 wrapper-lite 没收到请求，名额可以马上归还
+        if result.as_ref().map_or_else(reqwest::Error::is_connect, |_| true) {
+            slot.release();
+        }
+        result
     }
 
     /// 从 `/key` 接口获取 `data` 并解析为解密模板
@@ -167,6 +192,42 @@ impl Wrapper {
     }
 }
 
+async fn read_reply(request: RequestBuilder) -> Result<Reply, reqwest::Error> {
+    let response = request.send().await?;
+    let status = response.status();
+    let retry_after = response.headers().get(RETRY_AFTER).cloned();
+    let body = response.bytes().await?;
+    Ok(Reply { status, body, retry_after })
+}
+
+/// 已发出请求占用的并发名额：[`Slot::release`] 立即归还；未调用就被丢弃（请求出错或被取消）时
+/// 由后台任务再保留 `hold` 后归还，期间计入 `held`
+struct Slot {
+    permit: Option<OwnedSemaphorePermit>,
+    held: Arc<AtomicUsize>,
+    hold: Duration,
+}
+
+impl Slot {
+    fn release(mut self) {
+        self.permit = None;
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let Some(permit) = self.permit.take() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let (held, hold) = (self.held.clone(), self.hold);
+        held.fetch_add(1, Ordering::Relaxed);
+        runtime.spawn(async move {
+            tokio::time::sleep(hold).await;
+            held.fetch_sub(1, Ordering::Relaxed);
+            drop(permit);
+        });
+    }
+}
+
 /// 滑动窗口限速：任意 1 秒内最多发出 `per_second` 个请求（不像令牌桶那样允许窗口边界处翻倍突发）。
 /// 等待者按到达顺序排队。
 struct RateLimit {
@@ -186,8 +247,10 @@ impl RateLimit {
             sent.pop_front();
         }
         if sent.len() >= self.per_second {
-            let oldest = sent.pop_front().expect("window is full");
+            // 等到之后才移出：等待中被取消（future 被丢弃）时窗口保持不变，不会多放行一个请求
+            let oldest = *sent.front().expect("window is full");
             tokio::time::sleep_until(oldest + RATE_WINDOW).await;
+            sent.pop_front();
         }
         sent.push_back(Instant::now());
     }
@@ -307,5 +370,66 @@ mod tests {
 
         let anonymous = Wrapper::new(&config(url, 0, 0, None));
         assert_eq!(anonymous.send(anonymous.get("/status")).await.unwrap().body, "", "no Authorization by default");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_rate_limit_cancelled_waiter() {
+        let limit = RateLimit::new(2);
+        let start = Instant::now();
+        limit.acquire().await;
+        limit.acquire().await;
+        assert!(tokio::time::timeout(Duration::from_millis(500), limit.acquire()).await.is_err());
+        limit.acquire().await;
+        assert_eq!((Instant::now() - start).as_millis(), 1000, "window still holds 2 requests sent at 0ms");
+    }
+
+    #[tokio::test]
+    async fn test_abandoned_request_holds_permit() {
+        let app = axum::Router::new()
+            .route("/status", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/slow",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    "late"
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut wrapper = Wrapper::new(&config(url, 0, 1, None));
+        wrapper.abandoned_hold = Duration::from_millis(300);
+        let hold = wrapper.abandoned_hold;
+
+        wrapper.send(wrapper.get("/status")).await.unwrap();
+        let start = Instant::now();
+        wrapper.send(wrapper.get("/status")).await.unwrap();
+        assert!(start.elapsed() < hold / 2, "released right after a complete reply");
+        assert_eq!(wrapper.held_permits(), 0);
+
+        let start = Instant::now();
+        let error = wrapper.send(wrapper.get("/slow").timeout(Duration::from_millis(40))).await.err().unwrap();
+        assert!(error.is_timeout());
+        assert_eq!(wrapper.held_permits(), 1);
+        wrapper.send(wrapper.get("/status")).await.unwrap();
+        assert!(start.elapsed() >= hold, "timed-out request kept the only permit for {hold:?}");
+        assert_eq!(wrapper.held_permits(), 0);
+
+        let start = Instant::now();
+        assert!(tokio::time::timeout(Duration::from_millis(40), wrapper.send(wrapper.get("/slow"))).await.is_err());
+        assert_eq!(wrapper.held_permits(), 1);
+        wrapper.send(wrapper.get("/status")).await.unwrap();
+        assert!(start.elapsed() >= hold, "cancelled request kept the only permit for {hold:?}");
+
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_url = format!("http://{}/status", closed.local_addr().unwrap());
+        drop(closed);
+        let error = wrapper.send(wrapper.client.get(closed_url)).await.err().unwrap();
+        assert!(error.is_connect());
+        let start = Instant::now();
+        wrapper.send(wrapper.get("/status")).await.unwrap();
+        assert!(start.elapsed() < hold / 2, "connect failure released the permit at once");
+        assert_eq!(wrapper.held_permits(), 0);
     }
 }

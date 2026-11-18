@@ -726,7 +726,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           list = list.concat(page.data || []);
           more = page.next;
         }
-        albTracks = list.filter((t) => t.attributes);
+        albTracks = list.filter((t) => t.attributes && t.type === 'songs' && t.attributes.playParams);
       } catch (err) {
         console.warn(`[Disco] 读取专辑《${albTitle}》曲目失败:`, err.message);
         continue;
@@ -735,9 +735,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       if (!albTracks.length) continue;
 
       const batchSessionId = `disco_${alb.id}_${Date.now()}`;
-      const zipFilename = `${albArtist} - ${albTitle} [${quality}].zip`;
+      const zipFilename = `${normalizeArtistName(albArtist)} - ${toSimplified(albTitle)} [${quality}].zip`;
       const BATCH_CONCURRENCY = 3;
       let albFinished = 0;
+      let albSuccess = 0;
+      const failedTracks = [];
       let nextTIdx = 0;
 
       const processTrack = async (t, tIndex) => {
@@ -788,9 +790,27 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           if (resJson.status === 'ok' && resJson.data) {
             if (resJson.data.folderId && !parentFolder) parentFolder = resJson.data.folderId;
             if (resJson.data.guestToken && !guestToken) guestToken = resJson.data.guestToken;
+            albSuccess++;
+          } else {
+            failedTracks.push({
+              title: tAttr.name || '未知曲目',
+              artist: tAttr.artistName || albArtist,
+              album: albTitle,
+              error: resJson.error || `HTTP ${resp.status}`,
+              adamId: t.id
+            });
           }
         } catch (err) {
-          if (!sig.aborted) console.warn(`[Disco] 曲目《${tAttr.name}》转存异常:`, err.message);
+          if (!sig.aborted) {
+            failedTracks.push({
+              title: tAttr.name || '未知曲目',
+              artist: tAttr.artistName || albArtist,
+              album: albTitle,
+              error: err.message,
+              adamId: t.id
+            });
+            console.warn(`[Disco] 曲目《${tAttr.name}》转存异常:`, err.message);
+          }
         } finally {
           albFinished++;
           if (discoStatusDetail) {
@@ -811,7 +831,22 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       for (let w = 0; w < workerCount; w++) workerPromises.push(worker());
       await Promise.all(workerPromises);
 
-      if (sig.aborted) break;
+      if (sig.aborted) {
+        try {
+          await fetch('/api/batch/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ batchId: batchSessionId }),
+            signal: AbortSignal.timeout(5000)
+          });
+        } catch {}
+        break;
+      }
+
+      if (albSuccess === 0) {
+        console.warn(`[Disco] 专辑《${albTitle}》全部曲目失败，跳过打包`);
+        continue;
+      }
 
       // 3. 当前专辑完成：一键打包为 ZIP 并上传 Gofile
       if (discoStatusDetail) {
@@ -830,6 +865,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             token: guestToken,
             discography: true,
             lang: AmI18n.lang || 'zh',
+            failedTracks: failedTracks.length ? failedTracks : undefined,
             meta: { album: albTitle, artist: albArtist }
           }),
           signal: sig
@@ -849,9 +885,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
 
     if (discoProgressFill) discoProgressFill.style.width = '100%';
-    setTimeout(() => { if (discoCard) discoCard.hidden = true; }, 3000);
 
     if (sig.aborted) {
+      setTimeout(() => { if (discoCard) discoCard.hidden = true; }, 1500);
       toast('已取消全作品转存任务');
       return;
     }
@@ -859,7 +895,21 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     const shareUrl = parentFolder ? `https://gofile.io/d/${parentFolder}` : '';
     toast(`🎉 《${artistName}》全量作品转存完成！共 ${successAlbumCount}/${allAlbums.length} 张专辑`);
     if (shareUrl) {
-      prompt('🎉 全部专辑已转存至同一 Gofile 文件夹，请复制下载直链：', shareUrl);
+      try { await navigator.clipboard.writeText(shareUrl); } catch {}
+      if (discoStatusDetail) {
+        discoStatusDetail.innerHTML = '';
+        const span = document.createElement('span');
+        span.textContent = '🎉 全部专辑已归集至同一 Gofile 文件夹（链接已尝试复制）：';
+        const a = document.createElement('a');
+        a.href = shareUrl;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = shareUrl;
+        a.style.cssText = 'color: var(--accent, #0071E3); text-decoration: underline; word-break: break-all;';
+        discoStatusDetail.append(span, a);
+      }
+    } else {
+      setTimeout(() => { if (discoCard) discoCard.hidden = true; }, 3000);
     }
   }
 

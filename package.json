@@ -2,9 +2,11 @@
   "name": "am-hook",
   "version": "0.3.0",
   "description": "Customized Apple Music Web Player and Downloader with High-Security Auth, Gofile Cloud Delivery and Pure Metadata/Lyrics",
-  "main": "server.js",
+  "main": "cloud-service.mjs",
   "scripts": {
-    "start": "node server.js",
+    "start": "node cloud-service.mjs",
+    "start:legacy": "node server.js",
+    "check:cloud": "node --check cloud-service.mjs",
     "test:auth": "node test-auth.js",
     "test:gofile": "node test-gofile.js",
     "test": "node test-auth.js && node test-gofile.js"

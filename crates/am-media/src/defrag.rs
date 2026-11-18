@@ -443,8 +443,11 @@ fn build_progressive_moov(moov: &mut Atom, tracks: &[Track]) -> Result<()> {
     for trak in moov.children_mut().iter_mut().filter(|c| &c.kind == b"trak") {
         let id = tkhd_track_id(trak)?;
         let td = *by_id.get(&id).ok_or_else(|| Error::msg(format!("track {id} is missing collected data")))?;
-        let entries = trak.req(&[b"mdia", b"minf", b"stbl", b"stsd"])?.children().len() as u32;
-        let descriptions = normalize_descriptions(td, entries)?;
+        if trak.path(&[b"mdia", b"hdlr"]).is_some_and(|h| h.bytes().get(8..12) == Some(b"soun")) {
+            strip_entry_padding(trak.req_mut(&[b"mdia", b"minf", b"stbl", b"stsd"])?);
+        }
+        let remap = merge_duplicate_entries(trak.req_mut(&[b"mdia", b"minf", b"stbl", b"stsd"])?);
+        let descriptions = normalize_descriptions(td, &remap)?;
         rebuild_sample_table(trak.req_mut(&[b"mdia", b"minf", b"stbl"])?, td, &descriptions)?;
         // mdhd duration is in the media timescale.
         set_versioned(trak.req_mut(&[b"mdia", b"mdhd"])?, 16, 24, td.duration);
@@ -542,10 +545,68 @@ fn scale_duration(value: u64, from: u64, to: u64) -> Result<u64> {
     Ok(result)
 }
 
-/// Sample description index of every chunk. Some sources carry a stale index
-/// although stsd has a single entry; strict demuxers such as VLC then recreate
-/// the decoder and may stop, so the only existing entry is used.
-fn normalize_descriptions(td: &Track, entries: u32) -> Result<Vec<u32>> {
+/// Removes `free`/`skip` boxes from audio sample entries. Decryption keeps the
+/// former `sinf` of an entry as a zeroed `free` box of the same size (see
+/// am-mp4's `patch_init_segment`). Strict demuxers (Salt Player / Android
+/// ExoPlayer, Windows ALAC parser) reject a `free` inside an audio sample entry.
+fn strip_entry_padding(stsd: &mut Atom) {
+    const PADDING: [&FourCC; 2] = [b"free", b"skip"];
+    for entry in stsd.children_mut() {
+        let Body::Data(payload) = &mut entry.body else { continue };
+        // SampleEntry(8) + AudioSampleEntry(20); QuickTime sound versions 1 and 2 add 16 and 36 bytes.
+        let head = match payload.get(8..10) {
+            Some([0, 1]) => 44,
+            Some([0, 2]) => 64,
+            _ => 28,
+        };
+        if payload.len() < head {
+            continue;
+        }
+        let Ok(boxes) = bmff::spans(payload, head, payload.len()) else { continue };
+        if !boxes.iter().any(|b| PADDING.contains(&&b.kind)) {
+            continue;
+        }
+        let mut kept = payload[..head].to_vec();
+        for b in boxes.iter().filter(|b| !PADDING.contains(&&b.kind)) {
+            kept.extend_from_slice(&payload[b.start..b.end]);
+        }
+        *payload = kept;
+    }
+}
+
+/// Drops stsd entries that are byte-identical to an earlier one and returns the
+/// new 1-based index of every original entry. Apple Music songs carry one entry
+/// per key (prefetch for the first chunk, then the real key); once decrypted
+/// they are identical, but switching index mid-stream makes VLC recreate the
+/// decoder and flush the audio already queued (about 2 s before the switch).
+fn merge_duplicate_entries(stsd: &mut Atom) -> Vec<u32> {
+    let mut kept: Vec<Atom> = Vec::new();
+    let mut remap = Vec::new();
+    for entry in stsd.children_mut().drain(..) {
+        match kept.iter().position(|k| *k == entry) {
+            Some(i) => remap.push(i as u32 + 1),
+            None => {
+                kept.push(entry);
+                remap.push(kept.len() as u32);
+            }
+        }
+    }
+    let count = kept.len() as u32;
+    *stsd.children_mut() = kept;
+    if let Body::Tree { head, .. } = &mut stsd.body {
+        if head.len() >= 8 {
+            put32(head, 4, count);
+        }
+    }
+    remap
+}
+
+/// Sample description index of every chunk, after `remap` from
+/// [`merge_duplicate_entries`]. Some sources carry a stale index although stsd
+/// has a single entry; strict demuxers such as VLC then recreate the decoder
+/// and may stop, so the only existing entry is used.
+fn normalize_descriptions(td: &Track, remap: &[u32]) -> Result<Vec<u32>> {
+    let entries = remap.len() as u32;
     if entries == 0 {
         bail!("track {} has empty stsd", td.id);
     }
@@ -554,7 +615,7 @@ fn normalize_descriptions(td: &Track, entries: u32) -> Result<Vec<u32>> {
         .enumerate()
         .map(|(i, c)| match c.description {
             0 => bail!("track {} chunk {i} has sample description index 0", td.id),
-            d if d <= entries => Ok(d),
+            d if d <= entries => Ok(remap[d as usize - 1]),
             _ if entries == 1 => Ok(1),
             d => bail!("track {} chunk {i} references sample description {d}, but stsd has {entries} entries", td.id),
         })
@@ -565,88 +626,6 @@ fn full(kind: &FourCC, version: u8, body: Vec<u8>) -> Atom {
     let mut b = version_flags(version, 0).to_vec();
     b.extend(body);
     Atom::data(kind, b)
-}
-
-/// Offset, inside a sample entry's full box bytes, where its child boxes
-/// start. Audio entries have 28 bytes of fixed fields after the box header;
-/// video entries have 78.
-fn sample_entry_fields(kind: &FourCC) -> Option<usize> {
-    match kind {
-        b"mp4a" | b"alac" | b"ec-3" | b"ac-3" | b"fLaC" | b"Opus" | b"enca" => Some(8 + 28),
-        b"mp4v" | b"avc1" | b"hvc1" | b"hev1" | b"encv" => Some(8 + 78),
-        _ => None,
-    }
-}
-
-/// Progressive sample tables must look like the output of an ffmpeg `-c copy`
-/// remux. The decryption pass keeps every protected sample entry's `sinf` in
-/// place as an equal-length `free` box with a wiped body, and Apple HLS init
-/// segments often declare two identical sample entries. Strict demuxers
-/// (Android ExoPlayer `Mp4Extractor`, hence Salt Player) reject a `free` where
-/// `sinf`/codec configuration belongs and report a parse error, shown as
-/// "encoding error" (PROJECT_MEMORY.md §3.30). ffmpeg drops such placeholders
-/// and duplicates; mirror that and rewrite stsd's entry count.
-///
-/// Returns the original entry index of every kept entry, so chunk indices can
-/// be renumbered to match.
-fn normalize_sample_entries(stsd: &mut Atom) -> Vec<u32> {
-    let Body::Tree { head, children } = &stsd.body else { return Vec::new() };
-    if !children.iter().any(|e| sample_entry_fields(&e.kind).is_some()) {
-        return Vec::new();
-    }
-    let mut kept: Vec<Atom> = Vec::with_capacity(children.len());
-    let mut original = Vec::with_capacity(children.len());
-    let mut changed = false;
-    for (i, entry) in children.iter().enumerate() {
-        let mut entry = entry.clone();
-        if let Some(fields) = sample_entry_fields(&entry.kind) {
-            let raw = entry.to_bytes();
-            if let Some(cleaned) = strip_entry_placeholders(&raw, fields) {
-                entry = cleaned;
-                changed = true;
-            }
-        }
-        if kept.iter().any(|k| k.kind == entry.kind && k.body == entry.body) {
-            changed = true;
-            continue;
-        }
-        kept.push(entry);
-        original.push(i as u32 + 1);
-    }
-    // Nothing to drop: keep the box byte-for-byte, including its entry order.
-    if !changed {
-        return (1..=children.len() as u32).collect();
-    }
-    let mut new_head = head.clone();
-    put32(&mut new_head, 4, kept.len() as u32);
-    *stsd = Atom::tree(b"stsd", new_head, kept);
-    original
-}
-
-/// Drops `free`/`skip` placeholders from a sample entry and returns the entry
-/// with the remaining payload boxes. The decryption pass renames `sinf` to an
-/// empty `free`, which strict demuxers then try to parse as a codec child.
-/// Returns `None` when nothing needed dropping, so untouched entries keep their
-/// exact bytes.
-fn strip_entry_placeholders(raw: &[u8], fields: usize) -> Option<Atom> {
-    let mut body = raw.get(fields..)?.to_vec();
-    let mut dirty = false;
-    loop {
-        let spans = bmff::spans(&body, 0, body.len()).ok()?;
-        let drop: Vec<bool> = spans.iter().map(|s| &s.kind == b"free" || &s.kind == b"skip").collect();
-        if !drop.contains(&true) {
-            break;
-        }
-        dirty = true;
-        body = spans.iter().zip(&drop).filter(|(_, d)| !**d).flat_map(|(s, _)| body[s.start..s.end].to_vec()).collect();
-    }
-    if !dirty {
-        return None;
-    }
-    Atom::with_encoded_children(&fourcc_of(raw), raw[8..fields].to_vec(), &body).ok()
-}
-fn fourcc_of(raw: &[u8]) -> FourCC {
-    raw[4..8].try_into().unwrap_or(*b"    ")
 }
 
 fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Result<()> {
@@ -663,10 +642,7 @@ fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Re
             k => bail!("track {} has unsupported stbl child {:?}; refusing to silently change its semantics", td.id, bmff::fourcc(k)),
         }
     }
-    let mut stsd = stsd.ok_or_else(|| Error::msg(format!("track {} has no stsd", td.id)))?;
-    // Drop decryptor placeholder boxes and duplicate entries; `distinct[i]` is
-    // the original stsd index (1-based) of kept entry `i`.
-    let distinct = normalize_sample_entries(&mut stsd);
+    let stsd = stsd.ok_or_else(|| Error::msg(format!("track {} has no stsd", td.id)))?;
     let mut children = vec![stsd];
     // stts
     let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -704,13 +680,6 @@ fn rebuild_sample_table(stbl: &mut Atom, td: &Track, descriptions: &[u32]) -> Re
     let mut entries: Vec<[u32; 3]> = Vec::new();
     for (i, c) in td.chunks.iter().enumerate() {
         let d = descriptions[i];
-        // Stale indices are already folded to the first entry by
-        // `normalize_descriptions`; renumber the rest after merging duplicates.
-        let d = if distinct.is_empty() {
-            d
-        } else {
-            distinct.iter().position(|&o| o == d).map(|p| p as u32 + 1).unwrap_or(1)
-        };
         match entries.last() {
             Some(&[_, n, desc]) if n == c.samples && desc == d => {}
             _ => entries.push([i as u32 + 1, c.samples, d]),
@@ -1202,7 +1171,8 @@ mod tests {
         let span = bmff::Span { kind: *b"stsd", start: 0, header: 8, end: stsd_bytes.len() };
         let mut atom = Atom::from_span(&stsd_bytes, &span).unwrap();
         // Both entries are identical once the placeholder is gone: one survives.
-        assert_eq!(normalize_sample_entries(&mut atom), vec![1]);
+        strip_entry_padding(&mut atom);
+        assert_eq!(merge_duplicate_entries(&mut atom), vec![1, 1]);
         let mut encoded = Vec::new();
         atom.encode(&mut encoded);
         let parsed = bmff::parse(&encoded).unwrap();
@@ -1229,5 +1199,43 @@ mod tests {
         let (offset, first, count) = chunks(trak)[0];
         assert_eq!((first, count), (0, 1));
         assert_eq!(&out[offset as usize..offset as usize + 24], &[7u8; 24][..]);
+    }
+
+    #[test]
+    fn identical_sample_entries_are_merged_with_full_remap() {
+        let mp4a = |b: u8| Atom::data(b"mp4a", vec![b; 28]);
+        let mut stsd = Atom::tree(b"stsd", vec![0, 0, 0, 0, 0, 0, 0, 3], vec![mp4a(0), mp4a(1), mp4a(1)]);
+        let remap = merge_duplicate_entries(&mut stsd);
+        assert_eq!(remap, [1, 2, 2]);
+        assert_eq!(stsd.children(), [mp4a(0), mp4a(1)]);
+        assert_eq!(be32(stsd.head(), 4), 2);
+
+        let chunk = |description| Chunk { mdat: 0, offset: 0, size: 0, samples: 1, description, time: 0 };
+        let td = Track { id: 1, samples: Vec::new(), chunks: vec![chunk(1), chunk(2), chunk(3)], groups: Vec::new(), duration: 0, timescale: 44100 };
+        assert_eq!(normalize_descriptions(&td, &remap).unwrap(), [1, 2, 2]);
+        let td = Track { chunks: vec![chunk(4)], ..td };
+        assert!(normalize_descriptions(&td, &remap).is_err());
+        assert_eq!(normalize_descriptions(&td, &[1]).unwrap(), [1]);
+    }
+
+    #[test]
+    fn audio_entry_drops_free_for_sound_versions_0_1_2() {
+        let config = crate::testutil::leaf(b"alac", &[0x11; 24]);
+        let freed = crate::testutil::leaf(b"free", &[0; 89]);
+        let skipped = crate::testutil::leaf(b"skip", &[0; 12]);
+        for (version, head_len) in [(0u8, 28usize), (1, 44), (2, 64)] {
+            let mut fixed = vec![0u8; head_len];
+            fixed[9] = version;
+            let padded = crate::testutil::leaf(b"alac", &[fixed.clone(), config.clone(), freed.clone(), skipped.clone()].concat());
+            let mut src = init(&[TrackSpec { id: 1, timescale: 44100, entry: padded }]);
+            let samples = (0..4).map(|i| (4096, 0, sample_data(1, i))).collect();
+            src.extend(fragment(1, &[Run { track: 1, start_time: 0, samples }], &|_| Vec::new()));
+            let mut out = Vec::new();
+            defragment(&src[..], &mut out, &Options::song()).unwrap();
+            let atoms = bmff::parse(&out).unwrap();
+            let stsd = atoms[1].path(&[b"trak", b"mdia", b"minf", b"stbl", b"stsd"]).unwrap();
+            assert_eq!(stsd.children().len(), 1);
+            assert_eq!(stsd.children()[0].bytes(), [fixed, config.clone()].concat());
+        }
     }
 }

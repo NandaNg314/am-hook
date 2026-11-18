@@ -1,30 +1,11 @@
-use serde::Deserialize;
-use std::env;
-use std::fs;
-use std::time::Duration;
-use tracing::{info, warn};
+use tracing::warn;
 
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_REPO: &str = "itouakirai/am-hook";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const API_TIMEOUT: Duration = Duration::from_secs(15);
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug, Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-}
-
-fn client() -> Result<reqwest::Client, Error> {
-    Ok(reqwest::Client::builder()
-        .user_agent("am-hook-updater")
-        .connect_timeout(CONNECT_TIMEOUT)
-        .build()?)
-}
-
 /// 解析 "v1.2.3" / "1.2.3-beta" 为 (1, 2, 3)；缺省的段按 0 处理，预发布后缀忽略
+#[cfg(test)]
 fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let core = s.trim_start_matches('v').split(['-', '+']).next()?;
     let mut parts = core.split('.').map(|p| p.parse::<u64>());
@@ -37,6 +18,7 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+#[cfg(test)]
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
         (Some(l), Some(c)) => l > c,
@@ -44,126 +26,34 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// 有新版本时返回其 tag
+/// 本仓库为自定义魔改分支（部署于自建 VPS），禁用向 upstream (`itouakirai/am-hook`) 的
+/// 自动覆盖更新，避免误触发 `--auto-update` 破坏现有二进制或导致 aarch64 不兼容。
 pub async fn check_update() -> Result<Option<String>, Error> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    let release: GithubRelease = client()?
-        .get(&url)
-        .timeout(API_TIMEOUT)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-
-    if is_newer(&release.tag_name, CURRENT_VERSION) {
-        Ok(Some(release.tag_name))
-    } else {
-        Ok(None)
-    }
+    Err("Self-update against upstream is disabled on this custom fork".into())
 }
 
-pub async fn download_and_update(tag: &str) -> Result<(), Error> {
-    let asset_name = platform_asset_name()?;
-    let url = format!(
-        "https://github.com/{}/releases/download/{}/{}",
-        GITHUB_REPO, tag, asset_name
-    );
-
-    info!("Downloading update from: {}", url);
-
-    let bytes = client()?
-        .get(&url)
-        .timeout(DOWNLOAD_TIMEOUT)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-
-    // 获取当前可执行文件路径
-    let current_exe = env::current_exe()?;
-    let current_dir = current_exe.parent().ok_or("Cannot get exe directory")?;
-    let temp_path = current_dir.join(format!("am-hook-new{}", env::consts::EXE_SUFFIX));
-
-    // 写入临时文件
-    fs::write(&temp_path, &bytes)?;
-
-    // Windows 和 Unix 的替换策略不同
-    #[cfg(windows)]
-    {
-        // Windows 无法替换正在运行的 exe，需要使用 self-replace crate 或提示重启
-        warn!("Update downloaded to: {:?}", temp_path);
-        warn!("Please restart am-hook to complete the update");
-        warn!("Manual steps:");
-        warn!("  1. Stop am-hook");
-        warn!("  2. Rename {:?} to a backup name", current_exe.file_name().unwrap_or_default());
-        warn!("  3. Rename {:?} to {:?}", temp_path.file_name().unwrap_or_default(), current_exe.file_name().unwrap_or_default());
-        warn!("  4. Restart am-hook");
-    }
-
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let backup_path = current_dir.join("am-hook-backup");
-        let replace = || -> std::io::Result<()> {
-            fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755))?;
-            // 先复制备份，再用 rename 原子覆盖；任一步失败时当前可执行文件保持不变
-            fs::copy(&current_exe, &backup_path)?;
-            fs::rename(&temp_path, &current_exe)
-        };
-        if let Err(e) = replace() {
-            let _ = fs::remove_file(&temp_path);
-            return Err(e.into());
-        }
-        info!("Update complete! Please restart am-hook");
-        info!("Backup saved to: {:?}", backup_path);
-    }
-
-    Ok(())
+pub async fn download_and_update(_tag: &str) -> Result<(), Error> {
+    Err("Self-update against upstream is disabled on this custom fork; rebuild from git source instead".into())
 }
 
-fn platform_asset_name() -> Result<&'static str, Error> {
-    let os = env::consts::OS;
-    let arch = env::consts::ARCH;
-
-    match (os, arch) {
-        ("windows", "x86_64") => Ok("am-hook-windows-x86_64.exe"),
-        ("linux", "x86_64") => Ok("am-hook-linux-x86_64"),
-        ("macos", "x86_64") => Ok("am-hook-macos-x86_64"),
-        ("macos", "aarch64") => Ok("am-hook-macos-aarch64"),
-        _ => Err(format!("No prebuilt release for platform: {}-{}", os, arch).into()),
-    }
-}
-
-/// 启动时在后台运行，GitHub 不可达时不影响服务启动
+/// 启动时提示自更新已禁用，不向 GitHub 发起覆盖请求
 pub async fn startup_check(auto_update: bool) {
-    let tag = match check_update().await {
-        Ok(Some(tag)) => tag,
-        Ok(None) => {
-            info!("Already running the latest version: {}", CURRENT_VERSION);
-            return;
-        }
-        Err(e) => {
-            warn!("Failed to check for updates: {}", e);
-            return;
-        }
-    };
-    info!("New version available: {} (current: {})", tag, CURRENT_VERSION);
-    if !auto_update {
-        info!("Run with --auto-update to automatically install updates");
-        return;
-    }
-    info!("Attempting to download and install update: {}", tag);
-    if let Err(e) = download_and_update(&tag).await {
-        warn!("Failed to update: {}", e);
-    }
+    warn!(
+        auto_update,
+        "Update check / auto-update against upstream ({GITHUB_REPO}) is disabled on this custom fork; update via git + cargo build"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_update_returns_err() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        assert!(rt.block_on(check_update()).is_err());
+        assert!(rt.block_on(download_and_update("v9.9.9")).is_err());
+    }
 
     #[test]
     fn version_compare_is_numeric() {

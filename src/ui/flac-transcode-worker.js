@@ -80,6 +80,9 @@ async function wasm() {
     wasmPromise = fetch(FLAC_WASM_URL).then(async (response) => {
       if (!response.ok) throw new Error(`FLAC WASM HTTP ${response.status}`);
       return (await WebAssembly.instantiate(await response.arrayBuffer())).instance.exports;
+    }).catch((err) => {
+      wasmPromise = null;
+      throw err;
     });
   }
   return wasmPromise;
@@ -90,6 +93,9 @@ async function initTemplate() {
     templatePromise = fetch(FLAC_INIT_URL).then(async (response) => {
       if (!response.ok) throw new Error(`FLAC init HTTP ${response.status}`);
       return new Uint8Array(await response.arrayBuffer());
+    }).catch((err) => {
+      templatePromise = null;
+      throw err;
     });
   }
   return templatePromise;

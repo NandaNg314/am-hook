@@ -486,7 +486,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
     if (batchLyricsFormat) {
       const lyrTitle = batchLyricsFormat.previousElementSibling?.querySelector('span');
-      if (lyrTitle) lyrTitle.textContent = isEn ? '📝 Embedded Lyrics Format' : '📝 外挂歌词格式';
+      if (lyrTitle) lyrTitle.textContent = isEn ? '📝 Embedded Lyrics Format' : '📝 内嵌歌词格式';
       const tipDiv = batchLyricsFormat.parentElement?.nextElementSibling;
       if (tipDiv) {
         tipDiv.textContent = isEn
@@ -639,7 +639,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   });
 
   async function runBatchGofile(quality, embedLyrics, saveFormats, lyricsFormat, isZip = true, translateLyrics = false, ruby = false, rubyMode = 'roman') {
-    if (!tracks.length) return;
+    const dlTracks = songs();
+    if (!dlTracks.length) return;
     const isEn = AmI18n.lang === 'en';
 
     // 前置配额预检查：剩余配额不足以覆盖整单曲目时直接拦截，避免逐首打到撞墙浪费服务器资源
@@ -648,11 +649,11 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       const quotaJson = await quotaRes.json();
       if (quotaJson.status === 'ok' && quotaJson.data && !quotaJson.data.unlimited) {
         const remaining = quotaJson.data.remaining;
-        if (remaining < tracks.length) {
+        if (remaining < dlTracks.length) {
           toast(isEn
-            ? `⚠️ Daily quota insufficient: this playlist has ${tracks.length} tracks, only ${remaining} left today (resets at 00:00 UTC+8)`
-            : `⚠️ 今日转存配额不足：本歌单共 ${tracks.length} 首，今日仅剩 ${remaining} 首。请明日北京时间 00:00 后重试或缩小范围`);
-          console.warn(`[Batch] 前置配额拦截: 歌单 ${tracks.length} 首 > 剩余 ${remaining} 首`);
+            ? `⚠️ Daily quota insufficient: this playlist has ${dlTracks.length} tracks, only ${remaining} left today (resets at 00:00 UTC+8)`
+            : `⚠️ 今日转存配额不足：本歌单共 ${dlTracks.length} 首，今日仅剩 ${remaining} 首。请明日北京时间 00:00 后重试或缩小范围`);
+          console.warn(`[Batch] 前置配额拦截: 歌单 ${dlTracks.length} 首 > 剩余 ${remaining} 首`);
           return;
         }
       }
@@ -669,14 +670,14 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
       ? (isEn ? `📦 Packaging playlist "${plName}" into .zip archive...` : `📦 正在极速打包压缩歌单《${plName}》为 .zip...`)
       : (isEn ? `☁️ Transferring "${plName}" to Gofile via VPS...` : `☁️ 正在通过 VPS 极速转存《${plName}》至 Gofile...`);
     if (batchProgressFill) batchProgressFill.style.width = '0%';
-    if (batchStatusDetail) batchStatusDetail.textContent = isEn ? `Preparing (${tracks.length} tracks)...` : `准备开始 (共 ${tracks.length} 首歌曲)...`;
+    if (batchStatusDetail) batchStatusDetail.textContent = isEn ? `Preparing (${dlTracks.length} tracks)...` : `准备开始 (共 ${dlTracks.length} 首歌曲)...`;
 
     const batchSessionId = isZip ? `playlist_${playlistId || Date.now()}_${Date.now()}` : null;
     const zipFilename = `${toSimplified(plName)} [${quality}].zip`;
     const BATCH_CONCURRENCY = 3;
     // 整单额度只在下单时由服务端一次性预留；这里标记首个请求带上整单曲目数，
     // 避免逐首扣费导致「跑了一半才被告知额度不足」。
-    let quotaTracksPending = tracks.length;
+    let quotaTracksPending = dlTracks.length;
     let parentFolder = null;
     let guestToken = null;
     let finalDownloadPage = null;
@@ -721,7 +722,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
               composer: attr.composerName || '',
               copyright: '',
               trackNumber: index + 1,
-              totalTracks: tracks.length,
+              totalTracks: dlTracks.length,
               discNumber: 1,
               totalDiscs: 1,
               coverUrl
@@ -765,42 +766,68 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           console.warn(`[Batch] 歌单曲目《${songTitle}》转存失败:`, resJson.error);
         }
       } catch (err) {
-        if (!batchSig.aborted) console.warn(`[Batch] 歌单曲目《${songTitle}》转存异常:`, err.message);
+        if (!batchSig.aborted) {
+          failedCount++;
+          lastTrackError = err.message || 'Unknown error';
+          failedTracks.push({
+            title: songTitle,
+            artist: attr.artistName || '',
+            album: attr.albumName || plName,
+            error: lastTrackError,
+            adamId: t.id
+          });
+          console.warn(`[Batch] 歌单曲目《${songTitle}》转存异常:`, err.message);
+        }
       } finally {
         finishedCount++;
-        const pct = Math.floor((finishedCount / tracks.length) * (isZip ? 90 : 100));
+        const pct = Math.floor((finishedCount / dlTracks.length) * (isZip ? 90 : 100));
         if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
         if (batchStatusDetail) {
           batchStatusDetail.textContent = isEn
-            ? `⚡ [3-thread parallel] Ready (${finishedCount}/${tracks.length}) tracks...`
-            : `⚡ [3 线程并行加速] 已就绪 (${finishedCount}/${tracks.length}) 首曲目...`;
+            ? `⚡ [3-thread parallel] Ready (${finishedCount}/${dlTracks.length}) tracks...`
+            : `⚡ [3 线程并行加速] 已就绪 (${finishedCount}/${dlTracks.length}) 首曲目...`;
         }
       }
     };
 
-    // 1. 若非单 ZIP 模式，首曲先单发以获取 folderId，以便后续并发曲目归集至同一网盘目录
+    // 1. 若非单 ZIP 模式，顺序初始化网盘目录直到成功拿到 folderId，防首曲失败时并发建出多个目录
     let startIndex = 0;
-    if (!isZip && tracks.length > 0) {
-      if (batchStatusDetail) batchStatusDetail.textContent = isEn ? `(1/${tracks.length}) Initializing cloud folder...` : `(1/${tracks.length}) 正在初始化网盘文件夹...`;
-      await processSingleTrack(tracks[0], 0);
-      startIndex = 1;
+    if (!isZip && dlTracks.length > 0) {
+      while (startIndex < dlTracks.length && !parentFolder && !batchSig.aborted) {
+        if (batchStatusDetail) batchStatusDetail.textContent = isEn
+          ? `(${startIndex + 1}/${dlTracks.length}) Initializing cloud folder...`
+          : `(${startIndex + 1}/${dlTracks.length}) 正在初始化网盘文件夹...`;
+        await processSingleTrack(dlTracks[startIndex], startIndex);
+        startIndex++;
+      }
     }
 
     // 2. 启动 3 线程并发工作池并行拉取转存
     let nextTrackIdx = startIndex;
     const worker = async () => {
-      while (nextTrackIdx < tracks.length && !batchSig.aborted) {
+      while (nextTrackIdx < dlTracks.length && !batchSig.aborted) {
         const cur = nextTrackIdx++;
-        await processSingleTrack(tracks[cur], cur);
+        await processSingleTrack(dlTracks[cur], cur);
       }
     };
 
-    const workerCount = Math.min(BATCH_CONCURRENCY, tracks.length - startIndex);
+    const workerCount = Math.min(BATCH_CONCURRENCY, Math.max(0, dlTracks.length - startIndex));
     const workerPromises = [];
     for (let w = 0; w < workerCount; w++) {
       workerPromises.push(worker());
     }
     await Promise.all(workerPromises);
+
+    if (batchSig.aborted && isZip && batchSessionId) {
+      try {
+        await fetch('/api/batch/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchId: batchSessionId }),
+          signal: AbortSignal.timeout(5000)
+        });
+      } catch {}
+    }
 
     // 3. 若为 ZIP 模式且全部曲目已就绪，触发最终一键极速打包与直传
     if (isZip && !batchSig.aborted && successCount > 0) {
@@ -888,7 +915,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         : '';
       toast(isZip
         ? (isEn ? `🎉 Playlist transferred to Gofile${zipPartCount > 1 ? ` (${zipPartCount} parts)` : ''}!` : `🎉 歌单已成功转存至 Gofile${zipPartCount > 1 ? `（${zipPartCount} 卷）` : ''}！`)
-        : (isEn ? `🎉 Playlist transfer complete! ${successCount}/${tracks.length} tracks` : `🎉 歌单转存完成！共 ${successCount}/${tracks.length} 首曲目`));
+        : (isEn ? `🎉 Playlist transfer complete! ${successCount}/${dlTracks.length} tracks` : `🎉 歌单转存完成！共 ${successCount}/${dlTracks.length} 首曲目`));
       renderCustomPlaylistI18n();
       if (gofileLinkInput) gofileLinkInput.value = shareUrl;
       if (gofileOpenLink) gofileOpenLink.href = shareUrl;
@@ -923,15 +950,17 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
   }
 
   async function runBatchLocal(quality, embedLyrics, saveFormats, lyricsFormat, translateLyrics = false, ruby = false, rubyMode = 'roman') {
-    if (!tracks.length) return;
+    const dlTracks = songs();
+    if (!dlTracks.length) return;
     const isEn = AmI18n.lang === 'en';
 
-    // 本机批量下载同样消耗 VPS 出站带宽，预先扣除整批配额；不足直接拦截
+    // 本机批量下载同样消耗 VPS 出站带宽，预先扣除整批配额；失败或取消时按 reservationId 退回未下载曲目额度
+    let quotaReservationId = null;
     try {
       const consumeRes = await fetch('/api/quota/consume', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tracks: tracks.length, lang: AmI18n.lang || 'zh' }),
+        body: JSON.stringify({ tracks: dlTracks.length, lang: AmI18n.lang || 'zh' }),
         signal: AbortSignal.timeout(8000)
       });
       if (consumeRes.status === 429) {
@@ -940,6 +969,8 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         return;
       }
       if (!consumeRes.ok) throw new Error(isEn ? `Quota check failed: HTTP ${consumeRes.status}` : `配额预扣失败: HTTP ${consumeRes.status}`);
+      const consumeJson = await consumeRes.json().catch(() => null);
+      quotaReservationId = consumeJson?.data?.reservationId || null;
     } catch (err) {
       toast(isEn ? `⚠️ Quota check failed: ${err.message}` : `⚠️ 配额预扣失败: ${err.message}`);
       return;
@@ -957,16 +988,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     let okCount = 0;
     let failCount = 0;
     const failReasons = [];
-    for (let i = 0; i < tracks.length; i++) {
+    for (let i = 0; i < dlTracks.length; i++) {
       if (batchSig.aborted) break;
-      const t = tracks[i];
+      const t = dlTracks[i];
       const attr = t.attributes || {};
       const songTitle = attr.name || (isEn ? 'Unknown Track' : '未知曲目');
-      const pct = Math.floor((i / tracks.length) * 100);
+      const pct = Math.floor((i / dlTracks.length) * 100);
       if (batchProgressFill) batchProgressFill.style.width = `${pct}%`;
       if (batchStatusDetail) batchStatusDetail.textContent = isEn
-        ? `(${i + 1}/${tracks.length}) Decrypting & downloading "${songTitle}"...`
-        : `(${i + 1}/${tracks.length}) 正在解密下载《${songTitle}》...`;
+        ? `(${i + 1}/${dlTracks.length}) Decrypting & downloading "${songTitle}"...`
+        : `(${i + 1}/${dlTracks.length}) 正在解密下载《${songTitle}》...`;
 
       try {
         const parseRes = await fetch(`/parse/song/${t.id}`, { signal: batchSig });
@@ -1005,7 +1036,7 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
             album: toSimplified(attr.albumName || ''),
             albumArtist: normalizeArtistName(attr.artistName || ''),
             trackNumber: attr.trackNumber,
-            totalTracks: tracks.length,
+            totalTracks: dlTracks.length,
             discNumber: attr.discNumber || 1,
             totalDiscs: 1,
             artwork: attr.artwork?.url
@@ -1053,6 +1084,18 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
         failReasons.push({ title: songTitle, artist: attr.artistName || '', reason: err.message || '未知错误' });
         console.warn(`[Batch DL] 下载《${songTitle}》失败:`, err.message);
       }
+    }
+
+    if (quotaReservationId && okCount < dlTracks.length) {
+      const refundCount = dlTracks.length - okCount;
+      try {
+        await fetch('/api/quota/refund', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reservationId: quotaReservationId, tracks: refundCount }),
+          signal: AbortSignal.timeout(5000)
+        });
+      } catch {}
     }
 
     if (batchProgressFill) batchProgressFill.style.width = '100%';

@@ -1,12 +1,42 @@
 {
-  "latestVersion": "2.10",
-  "date": "2026-11-06",
-  "oneLinerVersion": "2.10",
+  "latestVersion": "2.11",
+  "date": "2026-11-18",
+  "oneLinerVersion": "2.11",
   "oneLiner": {
-    "zh": "TG Bot：文件名完全自定义，歌曲、歌词、压缩包都能按自己的规则命名",
-    "en": "TG Bot: fully customisable filenames — name tracks, lyrics and album archives however you like"
+    "zh": "Web 与云端下载全面加固：超大专辑完整分页、配额失败/取消自动退还、杜比/无损音质精准匹配与稳定性提升",
+    "en": "Web & cloud download hardening: full pagination on large albums, automatic quota refunds on failure/cancel, accurate Dolby/Lossless matching and better reliability"
   },
   "releases": [
+    {
+      "version": "2.11",
+      "date": "2026-11-18",
+      "oneLiner": {
+        "zh": "Web 与云端下载全面加固：超大专辑完整分页、配额失败/取消自动退还、杜比/无损音质精准匹配与稳定性提升",
+        "en": "Web & cloud download hardening: full pagination on large albums, automatic quota refunds on failure/cancel, accurate Dolby/Lossless matching and better reliability"
+      },
+      "title": {
+        "zh": "下载可靠性、歌词对照与配额体验全面升级",
+        "en": "Download Reliability, Lyrics & Quota Improvements"
+      },
+      "items": {
+        "zh": [
+          "📀 超大专辑分页修复：超过 100 首的日区/华语/英文切换专辑现在会完整加载所有分页曲目，不再截断丢歌",
+          "🔄 配额精准结算与退款：本机下载或批量转存中如遇单曲失败或主动取消，未实际下载的每日配额会自动退回",
+          "🎵 音质精准选择：标准 Lossless 优先匹配 16/24-bit 44.1/48kHz 版本；艺人页全辑转存现已正确支持 Hi-Res 与杜比全景声选项",
+          "🇭🇰 粤语与繁中歌词修复：本机下载开启中文翻译时，粤语/繁中原词不再被跳过，且会自动整理多余的汉字间距",
+          "📝 清晰直观的提示与命名：修复专辑/歌单弹窗“内嵌歌词格式”文字标错；长歌名和 Emoji 截断时完整保留文件扩展名",
+          "☁️ 云端上传更稳健：Gofile 节点波动或返回异常时自动重选节点重试，大包分卷传输更加稳定"
+        ],
+        "en": [
+          "📀 Complete large-album pagination: albums with over 100 tracks now load every page cleanly when localized for Japanese, Chinese or English",
+          "🔄 Automatic quota refunds: failed tracks or cancelled local/batch downloads now automatically refund unused daily quota",
+          "🎵 Accurate quality selection: standard Lossless prefers 16/24-bit 44.1/48kHz ALAC, and artist discography transfers now match Hi-Res and Dolby Atmos properly",
+          "🇭🇰 Cantonese & Traditional Chinese lyrics: local bilingual downloads now translate zh-Hant tracks to Simplified Chinese and remove extra spaces between CJK characters",
+          "📝 Clearer UI labels & safer filenames: fixed the mislabeled embedded-lyrics selector in album/playlist modals, and long filenames/emoji now truncate cleanly without stripping file extensions",
+          "☁️ More resilient cloud uploads: Gofile transfers automatically switch nodes and retry on transient errors"
+        ]
+      }
+    },
     {
       "version": "2.10",
       "date": "2026-11-06",

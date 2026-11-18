@@ -16,6 +16,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import dns from 'node:dns';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -91,14 +92,74 @@ const EXTRA_T2S = {
 };
 Object.assign(t2sMap, EXTRA_T2S);
 
-// 内存级高清封面缓存 (防止整辑下载时频繁向 Apple CDN 请求相同封面触发超时或单曲封面丢失)
+// 内存级高清封面缓存 (LRU 上限 200 条，防止整辑下载高频请求超时且避免长跑 OOM)
+const COVER_CACHE_MAX = 200;
 const coverCache = new Map(); // url -> { buf: Uint8Array, expiresAt: number }
+function getCachedCover(url, now = Date.now()) {
+  const item = coverCache.get(url);
+  if (!item) return null;
+  if (now > item.expiresAt) {
+    coverCache.delete(url);
+    return null;
+  }
+  coverCache.delete(url);
+  coverCache.set(url, item);
+  return item.buf;
+}
+function setCachedCover(url, buf, now = Date.now()) {
+  if (coverCache.has(url)) coverCache.delete(url);
+  while (coverCache.size >= COVER_CACHE_MAX) {
+    const oldestKey = coverCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    coverCache.delete(oldestKey);
+  }
+  coverCache.set(url, { buf, expiresAt: now + 3600000 });
+}
 setInterval(() => {
   const now = Date.now();
   for (const [url, item] of coverCache.entries()) {
     if (now > item.expiresAt) coverCache.delete(url);
   }
 }, 30 * 60 * 1000).unref();
+
+const BATCH_ID_RE = /^[A-Za-z0-9_.-]{4,120}$/;
+const SESSIONS_ROOT = '/tmp/am_sessions';
+
+/** 校验 batchId 并解析为严格位于 /tmp/am_sessions/ 内的目录路径，阻断路径穿越 */
+function resolveSafeSessionDir(batchId) {
+  if (typeof batchId !== 'string' || !BATCH_ID_RE.test(batchId) || batchId.startsWith('.') || batchId.includes('..')) {
+    throw new Error('Invalid batchId');
+  }
+  const root = path.resolve(SESSIONS_ROOT);
+  const resolved = path.resolve(root, batchId);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error('Invalid batchId path');
+  }
+  return resolved;
+}
+
+/** 解析必须严格位于 /tmp/ 下的文件或目录路径，阻断任意路径读写 */
+function resolveSafeTmpPath(targetPath, { isFileName = false } = {}) {
+  const tmpRoot = path.resolve('/tmp');
+  const resolved = isFileName ? path.resolve(tmpRoot, path.basename(String(targetPath || ''))) : path.resolve(String(targetPath || ''));
+  if (!resolved.startsWith(tmpRoot + path.sep)) {
+    throw new Error('Invalid output path: must stay inside /tmp');
+  }
+  return resolved;
+}
+
+/** 校验封面 URL，仅允许 Apple CDN HTTPS 地址以防 SSRF */
+function isAllowedCoverUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    if (parsed.protocol !== 'https:') return false;
+    if (parsed.port && parsed.port !== '443') return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === 'mzstatic.com' || host.endsWith('.mzstatic.com') || host === 'apple.com' || host.endsWith('.apple.com');
+  } catch {
+    return false;
+  }
+}
 
 
 /**
@@ -464,31 +525,50 @@ const GOFILE_MAX_PART_BYTES = 3.8 * 1024 * 1024 * 1024;
  * 注意：Gofile 无「预先建空文件夹」的公开端点；游客首次上传时服务端会自动建好文件夹，
  * 后续文件把该 folderId/token 传回来即可全部归集到同一分享页。
  */
-async function uploadFileToGofile(filePath, fileName, { folderId, token, timeoutMs = 300000 } = {}) {
-  const srv = await getGofileServer();
-  const form = new FormData();
-  // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
-  const blob = await fs.openAsBlob(filePath, { type: 'application/zip' });
-  form.append('file', blob, fileName);
-  if (folderId) form.append('folderId', folderId);
-  if (token) form.append('token', token);
+async function uploadFileToGofile(filePath, fileName, { folderId, token, timeoutMs = 300000, mimeType = 'application/zip' } = {}) {
+  let statSize = 0;
+  try { statSize = fs.statSync(filePath).size; } catch {}
+  // 按文件体积动态放宽超时（最低保底 timeoutMs，按 512KB/s 保守估算，上限 30 分钟）
+  const adaptiveTimeout = Math.min(1800000, Math.max(timeoutMs, 120000 + Math.ceil(statSize / (512 * 1024)) * 1000));
 
-  const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-    method: 'POST',
-    body: form,
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  const raw = await upRes.text();
-  let upData;
-  try {
-    upData = JSON.parse(raw);
-  } catch {
-    throw new Error(`Gofile 返回非 JSON 响应 (HTTP ${upRes.status}): ${raw.slice(0, 160)}`);
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const srv = await getGofileServer();
+    try {
+      const form = new FormData();
+      // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
+      const blob = await fs.openAsBlob(filePath, { type: mimeType });
+      form.append('file', blob, fileName);
+      if (folderId) form.append('folderId', folderId);
+      if (token) form.append('token', token);
+
+      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(adaptiveTimeout)
+      });
+      const raw = await upRes.text();
+      let upData;
+      try {
+        upData = JSON.parse(raw);
+      } catch {
+        throw new Error(`Gofile 返回非 JSON 响应 (HTTP ${upRes.status}): ${raw.slice(0, 160)}`);
+      }
+      if (!upRes.ok || upData.status !== 'ok') {
+        throw new Error(`Gofile 上传失败: ${upData.status || `HTTP ${upRes.status}`}`);
+      }
+      return upData.data || {};
+    } catch (err) {
+      lastErr = err;
+      // 节点失效时清空缓存，重试前重选新节点
+      cachedServer = null;
+      serverExpiresAt = 0;
+      if (attempt === 1) {
+        console.warn(`[Gofile] 节点 ${srv} 上传失败(${err.message})，正在重选节点重试...`);
+      }
+    }
   }
-  if (upData.status !== 'ok') {
-    throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
-  }
-  return upData.data || {};
+  throw lastErr;
 }
 
 /**
@@ -565,12 +645,12 @@ function writeFileExclusive(dir, baseName, data, trackPrefix = '') {
   const ext = path.extname(baseName);
   const stem = baseName.slice(0, baseName.length - ext.length);
 
-  // 候选名生成器：0 = 原名；1 = 曲目号前缀；2+ = 编号后缀
+  // 候选名生成器：0 = 原名；1 = 曲目号前缀；2+ = 曲目号前缀 + 编号后缀（避免多盘同曲号退化丢失前缀）
   const candidates = function* () {
     yield { name: baseName, prefix: '' };
     if (trackPrefix) yield { name: `${trackPrefix}${baseName}`, prefix: trackPrefix };
     for (let n = 2; n <= 999; n++) {
-      yield { name: `${stem} (${n})${ext}`, prefix: trackPrefix };
+      yield { name: `${trackPrefix}${stem} (${n})${ext}`, prefix: trackPrefix };
     }
   };
 
@@ -1056,19 +1136,38 @@ function createDiscAtom(discNum, totalDiscs = 0) {
 }
 
 function createCoverAtom(imageBuf) {
-  if (!imageBuf || !imageBuf.length) return new Uint8Array(0);
+  if (!imageBuf || imageBuf.length < 4) return new Uint8Array(0);
   const isPng = imageBuf[0] === 0x89 && imageBuf[1] === 0x50 && imageBuf[2] === 0x4e && imageBuf[3] === 0x47;
+  const isJpg = imageBuf[0] === 0xff && imageBuf[1] === 0xd8 && imageBuf[2] === 0xff;
+  if (!isPng && !isJpg) return new Uint8Array(0);
   const flag = isPng ? 14 : 13;
   return createDataAtom('covr', flag, imageBuf);
 }
 
+function readBoxInfo(bytes, dv, offset, end) {
+  if (offset + 8 > end) return null;
+  let size = dv.getUint32(offset, false);
+  const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+  let hdr = 8;
+  if (size === 1) {
+    if (offset + 16 > end) return null;
+    size = Number(dv.getBigUint64(offset + 8, false));
+    hdr = 16;
+  } else if (size === 0) {
+    size = end - offset;
+  }
+  if (!Number.isFinite(size) || size < hdr || offset + size > end) return null;
+  return { size, type, hdr };
+}
+
 function tagMp4(mp4Bytes, tags) {
   const atoms = [];
+  const rawDate = tags.date || tags.releaseDate || tags.year;
   if (tags.title) atoms.push(createTextAtom('\xa9nam', tags.title));
   if (tags.artist) atoms.push(createTextAtom('\xa9ART', tags.artist));
   if (tags.album) atoms.push(createTextAtom('\xa9alb', tags.album));
   if (tags.albumArtist) atoms.push(createTextAtom('aART', tags.albumArtist));
-  if (tags.date) atoms.push(createTextAtom('\xa9day', String(tags.date)));
+  if (rawDate) atoms.push(createTextAtom('\xa9day', String(rawDate)));
   if (tags.genre) atoms.push(createTextAtom('\xa9gen', tags.genre));
   if (tags.composer) atoms.push(createTextAtom('\xa9wrt', tags.composer));
   if (tags.copyright) atoms.push(createTextAtom('cprt', tags.copyright));
@@ -1093,40 +1192,40 @@ function tagMp4(mp4Bytes, tags) {
   const dv = new DataView(mp4Bytes.buffer, mp4Bytes.byteOffset, mp4Bytes.byteLength);
   let moovOffset = -1;
   let moovSize = 0;
+  let moovHdr = 8;
   let mdatOffset = -1;
   let offset = 0;
   while (offset + 8 <= mp4Bytes.length) {
-    const size = dv.getUint32(offset, false);
-    const type = String.fromCharCode(...mp4Bytes.subarray(offset + 4, offset + 8));
-    if (type === 'moov') {
+    const info = readBoxInfo(mp4Bytes, dv, offset, mp4Bytes.length);
+    if (!info) break;
+    if (info.type === 'moov') {
       moovOffset = offset;
-      moovSize = size;
+      moovSize = info.size;
+      moovHdr = info.hdr;
       if (mdatOffset !== -1) break;
     }
-    if (type === 'mdat') {
+    if (info.type === 'mdat') {
       mdatOffset = offset;
       if (moovOffset !== -1) break;
     }
-    if (size === 0) break;
-    offset += size;
+    offset += info.size;
   }
   if (moovOffset === -1) return mp4Bytes;
 
   const moovBytes = mp4Bytes.subarray(moovOffset, moovOffset + moovSize);
   let udtaOffset = -1;
   let udtaSize = 0;
-  let uOffset = 8;
+  let uOffset = moovHdr;
   const mdv = new DataView(moovBytes.buffer, moovBytes.byteOffset, moovBytes.byteLength);
   while (uOffset + 8 <= moovBytes.length) {
-    const size = mdv.getUint32(uOffset, false);
-    const type = String.fromCharCode(...moovBytes.subarray(uOffset + 4, uOffset + 8));
-    if (type === 'udta') {
+    const info = readBoxInfo(moovBytes, mdv, uOffset, moovBytes.length);
+    if (!info) break;
+    if (info.type === 'udta') {
       udtaOffset = uOffset;
-      udtaSize = size;
+      udtaSize = info.size;
       break;
     }
-    if (size === 0) break;
-    uOffset += size;
+    uOffset += info.size;
   }
 
   // 标准 iTunes Metadata Handler (33 字节，所有播放器与系统属性读取器均强制要求)
@@ -1178,13 +1277,13 @@ function tagMp4(mp4Bytes, tags) {
     const fdv = new DataView(finalMp4.buffer, finalMp4.byteOffset, finalMp4.byteLength);
     const patchStco = (q, end) => {
       while (q + 8 <= end) {
-        const size = fdv.getUint32(q, false);
-        const type = String.fromCharCode(...finalMp4.subarray(q + 4, q + 8));
-        if (type === 'stco' || type === 'co64') {
-          const entryCount = fdv.getUint32(q + 12, false);
-          const entrySize = type === 'co64' ? 8 : 4;
-          const base = q + 16;
-          for (let i = 0; i < entryCount; i++) {
+        const info = readBoxInfo(finalMp4, fdv, q, end);
+        if (!info) break;
+        if (info.type === 'stco' || info.type === 'co64') {
+          const entryCount = fdv.getUint32(q + info.hdr + 4, false);
+          const entrySize = info.type === 'co64' ? 8 : 4;
+          const base = q + info.hdr + 8;
+          for (let i = 0; i < entryCount && base + (i + 1) * entrySize <= q + info.size; i++) {
             const at = base + i * entrySize;
             if (entrySize === 4) {
               fdv.setUint32(at, fdv.getUint32(at, false) + moovDelta, false);
@@ -1193,22 +1292,20 @@ function tagMp4(mp4Bytes, tags) {
             }
           }
         }
-        if (size === 0) break;
-        q += size;
+        q += info.size;
       }
     };
     // 递归遍历 moov 子树，修补所有 stbl 下的 stco/co64
     const walk = (q, end) => {
       while (q + 8 <= end) {
-        const size = fdv.getUint32(q, false);
-        const type = String.fromCharCode(...finalMp4.subarray(q + 4, q + 8));
-        if (type === 'stbl') patchStco(q + 8, q + size);
-        else if (type === 'moov' || type === 'trak' || type === 'mdia' || type === 'minf') walk(q + 8, q + size);
-        if (size === 0) break;
-        q += size;
+        const info = readBoxInfo(finalMp4, fdv, q, end);
+        if (!info) break;
+        if (info.type === 'stbl') patchStco(q + info.hdr, q + info.size);
+        else if (info.type === 'moov' || info.type === 'trak' || info.type === 'mdia' || info.type === 'minf') walk(q + info.hdr, q + info.size);
+        q += info.size;
       }
     };
-    walk(moovOffset + 8, moovOffset + newMoovSize);
+    walk(moovOffset + moovHdr, moovOffset + newMoovSize);
   }
 
   return finalMp4;
@@ -1466,120 +1563,114 @@ function restoreAtmosDec3(dst, srcDec3) {
  * 剥除后同步修正 `ec-3` 条目及全部祖先 box（`stsd`→`stbl`→`minf`→`mdia`→`trak`→`moov`）
  * 的尺寸，并按 `mdat` 负载起点平移 `stco`/`co64` 绝对偏移。
  */
-function stripBitrateBox(dst) {
+function stripBitrateBox(input) {
+  const dst = Buffer.isBuffer(input)
+    ? input
+    : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   const sampleEntryKinds = new Set(['ec-3', 'ac-3', 'mp4a', 'alac', 'samr', 'sawb', 'lpcm']);
-
-  // 只处理 moov 内部的音频轨样本条目：stsd 的条目子 box 里若含 btrt 就摘掉
-  const moovEl = dst.indexOf(Buffer.from('moov', 'latin1'));
-  if (moovEl < 4) return dst;
-  const stsdEl = dst.indexOf(Buffer.from('stsd', 'latin1'), moovEl);
-  if (stsdEl < 4) return dst;
-  const stsdPos = stsdEl - 4;
-  const stsdSize = dst.readUInt32BE(stsdPos);
-  if (stsdSize < 16 || stsdPos + stsdSize > dst.length) return dst;
-
-  // stsd: 8B 头 + 4B version/flags + 4B entry_count + N 个样本条目
-  const entryCount = dst.readUInt32BE(stsdPos + 12);
-  if (entryCount < 1) return dst;
-
-  let hit = null;
-  let q = stsdPos + 16;
-  for (let e = 0; e < entryCount && q + 8 <= stsdPos + stsdSize; e++) {
-    const esize = dst.readUInt32BE(q);
-    const ekind = dst.toString('latin1', q + 4, q + 8);
-    if (esize < 8 || q + esize > stsdPos + stsdSize) break;
-    if (sampleEntryKinds.has(ekind)) {
-      // 音频样本条目：8B 头 + 28B 固定字段，之后才是子 box（dec3 / btrt / esds ...）
-      let r = q + 8 + 28;
-      while (r + 8 <= q + esize) {
-        const csize = dst.readUInt32BE(r);
-        const ckind = dst.toString('latin1', r + 4, r + 8);
-        if (csize < 8 || r + csize > q + esize) break;
-        if (ckind === 'btrt') { hit = r; break; }
-        r += csize;
-      }
-      if (hit !== null) break;
+  const readBox = (buf, p, end) => {
+    if (p + 8 > end) return null;
+    let size = buf.readUInt32BE(p);
+    const kind = buf.toString('latin1', p + 4, p + 8);
+    let hdr = 8;
+    if (size === 1) {
+      if (p + 16 > end) return null;
+      size = Number(buf.readBigUInt64BE(p + 8));
+      hdr = 16;
+    } else if (size === 0) {
+      size = end - p;
     }
-    q += esize;
+    if (!Number.isFinite(size) || size < hdr || p + size > end) return null;
+    return { pos: p, hdr, size, kind };
+  };
+
+  // 按顶层 box 边界精确查找 moov（杜绝在 ftyp/free/mdat 内误命中原始字节串）
+  let moovBox = null;
+  for (let p = 0; p + 8 <= dst.length;) {
+    const b = readBox(dst, p, dst.length);
+    if (!b) break;
+    if (b.kind === 'moov') { moovBox = b; break; }
+    p += b.size;
   }
-  if (hit === null) return dst;
+  if (!moovBox) return dst;
 
-  const btrtSize = dst.readUInt32BE(hit);
-  if (btrtSize < 8 || hit + btrtSize > dst.length) return dst;
-  const delta = -btrtSize;
-
-  // 祖先链：命中位置必须落在该 box 的 [pos, pos+size) 区间内。
-  // 只在 moov 范围内向上找，避免把 mdat 等大块误判。
-  const chain = [];
-  (function walk(start, end) {
-    let p = start;
-    while (p + 8 <= end) {
-      let size = dst.readUInt32BE(p);
-      const kind = dst.toString('latin1', p + 4, p + 8);
-      let hdr = 8;
-      if (size === 1) { size = Number(dst.readBigUInt64BE(p + 8)); hdr = 16; }
-      else if (size === 0) { size = end - p; }
-      if (size < hdr) return;
-      if (hit >= p && hit < p + size) {
-        chain.push({ pos: p, hdr, size, kind });
-        const moovPos = dst.indexOf(Buffer.from('moov', 'latin1')) - 4;
-        if (kind === 'moov' || kind === 'trak' || kind === 'mdia' || kind === 'minf' || kind === 'stbl') {
-          walk(p + hdr, p + size);
-        } else if (kind === 'stsd') {
-          walk(p + hdr + 8, p + size);
-        } else if (sampleEntryKinds.has(kind)) {
-          walk(p + hdr + 28, p + size);
-        }
+  // 在 moov -> trak -> mdia -> minf -> stbl -> stsd -> sampleEntry -> btrt 结构树中精确定位
+  let hit = null;
+  let hitChain = [];
+  const walkForBtrt = (start, end, ancestors) => {
+    for (let p = start; p + 8 <= end && hit === null;) {
+      const b = readBox(dst, p, end);
+      if (!b) break;
+      const nextChain = [...ancestors, b];
+      if (b.kind === 'btrt') {
+        hit = b;
+        hitChain = nextChain;
         return;
       }
-      p += size;
+      if (b.kind === 'moov' || b.kind === 'trak' || b.kind === 'mdia' || b.kind === 'minf' || b.kind === 'stbl') {
+        walkForBtrt(b.pos + b.hdr, b.pos + b.size, nextChain);
+      } else if (b.kind === 'stsd') {
+        walkForBtrt(b.pos + b.hdr + 8, b.pos + b.size, nextChain);
+      } else if (sampleEntryKinds.has(b.kind)) {
+        walkForBtrt(b.pos + b.hdr + 28, b.pos + b.size, nextChain);
+      }
+      p += b.size;
     }
-  })(moovEl - 4, dst.length);
+  };
+  walkForBtrt(moovBox.pos + moovBox.hdr, moovBox.pos + moovBox.size, [moovBox]);
+  if (!hit) return dst;
+
+  const btrtPos = hit.pos;
+  const btrtSize = hit.size;
+  const delta = -btrtSize;
 
   const out = Buffer.allocUnsafe(dst.length + delta);
-  dst.copy(out, 0, 0, hit);
-  dst.copy(out, hit, hit + btrtSize, dst.length);
-  for (const c of chain) {
+  dst.copy(out, 0, 0, btrtPos);
+  dst.copy(out, btrtPos, btrtPos + btrtSize, dst.length);
+  for (const c of hitChain) {
     // 跳过被删除的 btrt 自身：它的头部位置已被尾部数据覆盖，
     // 再写一次 size 会把搬过来的下一个 box（stts）的 size 字段清零。
-    if (c.pos >= hit && c.pos < hit + btrtSize) continue;
-    if (c.size === 0) continue;
+    if (c.pos >= btrtPos && c.pos < btrtPos + btrtSize) continue;
     if (c.hdr === 16) out.writeBigUInt64BE(BigInt(c.size + delta), c.pos + 8);
     else out.writeUInt32BE(c.size + delta, c.pos);
   }
 
-  // mdat 若在 btrt 之后，其内所有 stco/co64 绝对偏移都要同步前移
-  const mdatEl = out.indexOf(Buffer.from('mdat', 'latin1'));
-  if (mdatEl > hit) {
-    const mdatPos = mdatEl - 4;
-    (function shift(start, end) {
-      let p = start;
-      while (p + 8 <= end) {
-        let size = out.readUInt32BE(p);
-        const kind = out.toString('latin1', p + 4, p + 8);
-        let hdr = 8;
-        if (size === 1) { size = Number(out.readBigUInt64BE(p + 8)); hdr = 16; }
-        else if (size === 0) { size = end - p; }
-        if (size < hdr) return;
-        if (kind === 'stco') {
-          const n = out.readUInt32BE(p + 12);
-          for (let k = 0; k < n && p + 16 + k * 4 + 4 <= p + size; k++) {
-            const at = p + 16 + k * 4;
+  // 按顶层 box 边界查找 mdat：若 mdat 在 btrt 之后，其内所有 stco/co64 绝对偏移同步前移
+  let mdatPos = -1;
+  let newMoovBox = null;
+  for (let p = 0; p + 8 <= out.length;) {
+    const b = readBox(out, p, out.length);
+    if (!b) break;
+    if (b.kind === 'moov') newMoovBox = b;
+    if (b.kind === 'mdat' && mdatPos === -1) mdatPos = b.pos;
+    p += b.size;
+  }
+  if (newMoovBox && mdatPos > btrtPos) {
+    const shift = (start, end) => {
+      for (let p = start; p + 8 <= end;) {
+        const b = readBox(out, p, end);
+        if (!b) break;
+        if (b.kind === 'stco') {
+          const n = out.readUInt32BE(b.pos + b.hdr + 4);
+          for (let k = 0; k < n && b.pos + b.hdr + 8 + k * 4 + 4 <= b.pos + b.size; k++) {
+            const at = b.pos + b.hdr + 8 + k * 4;
             const v = out.readUInt32BE(at);
             if (v >= mdatPos) out.writeUInt32BE(v + delta, at);
           }
-        } else if (kind === 'co64') {
-          const n = out.readUInt32BE(p + 12);
-          for (let k = 0; k < n && p + 16 + k * 8 + 8 <= p + size; k++) {
-            const at = p + 16 + k * 8;
+        } else if (b.kind === 'co64') {
+          const n = out.readUInt32BE(b.pos + b.hdr + 4);
+          for (let k = 0; k < n && b.pos + b.hdr + 8 + k * 8 + 8 <= b.pos + b.size; k++) {
+            const at = b.pos + b.hdr + 8 + k * 8;
             const v = Number(out.readBigUInt64BE(at));
             if (v >= mdatPos) out.writeBigUInt64BE(BigInt(v + delta), at);
           }
+        } else if (b.kind === 'moov' || b.kind === 'trak' || b.kind === 'mdia' || b.kind === 'minf' || b.kind === 'stbl') {
+          shift(b.pos + b.hdr, b.pos + b.size);
         }
-        if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(kind)) shift(p + hdr, p + size);
-        p += size;
+        p += b.size;
       }
-    })(moovEl - 4, out.length);
+    };
+    shift(newMoovBox.pos + newMoovBox.hdr, newMoovBox.pos + newMoovBox.size);
   }
   return out;
 }
@@ -1730,11 +1821,20 @@ async function defragMp4Buffer(inputBuf, codecHint = null) {
 
 function sanitizeFilename(name, maxBytes = 120) {
   if (!name) return 'track';
-  let cleaned = name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim();
-  while (Buffer.byteLength(cleaned, 'utf8') > maxBytes) {
-    cleaned = cleaned.slice(0, -1);
+  let cleaned = String(name).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'track';
+  const rawExt = path.extname(cleaned);
+  const hasKnownExt = /^\.[A-Za-z0-9]{1,8}$/.test(rawExt);
+  const ext = hasKnownExt ? rawExt : '';
+  let stemChars = Array.from(hasKnownExt ? cleaned.slice(0, cleaned.length - ext.length) : cleaned);
+  const extBytes = Buffer.byteLength(ext, 'utf8');
+  const maxStemBytes = Math.max(8, maxBytes - extBytes);
+  while (stemChars.length > 0 && Buffer.byteLength(stemChars.join(''), 'utf8') > maxStemBytes) {
+    stemChars.pop();
   }
-  return cleaned || 'track';
+  let stem = stemChars.join('').trim();
+  if (!stem || stem === '.' || stem === '..') stem = 'track';
+  return `${stem}${ext}`;
 }
 
 /* ==================== 文件名模板 ==================== */
@@ -1775,7 +1875,7 @@ function renderNameTemplate(template, meta = {}, quality = '') {
     trackno: pad(trackNo),
     total: total ? String(total) : '',
     disc: disc,
-    year: (meta.releaseDate || meta.year || '').toString().slice(0, 4),
+    year: (meta.releaseDate || meta.date || meta.year || '').toString().slice(0, 4),
     genre: meta.genre || '',
     composer: meta.composer || '',
     quality: quality || '',
@@ -1836,17 +1936,28 @@ async function fetchCencFmp4(m3u8Url, encOut) {
 
   let initUri = null, initRange = null;
   let pendingRange = null;
+  let lastByteEnd = 0;
   const segments = [];
   for (const rawLine of playlist.split('\n')) {
     const line = rawLine.trim();
     if (line.startsWith('#EXT-X-MAP:')) {
       const uriM = line.match(/URI="([^"]+)"/);
       if (uriM) initUri = uriM[1];
-      const rM = line.match(/BYTERANGE="(\d+)@(\d+)"/);
-      if (rM) initRange = { offset: Number(rM[2]), length: Number(rM[1]) };
+      const rM = line.match(/BYTERANGE="(\d+)(?:@(\d+))?"/);
+      if (rM) {
+        const len = Number(rM[1]);
+        const off = rM[2] !== undefined ? Number(rM[2]) : 0;
+        initRange = { offset: off, length: len };
+        lastByteEnd = off + len;
+      }
     } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
-      const rM = line.match(/#EXT-X-BYTERANGE:(\d+)@(\d+)/);
-      if (rM) pendingRange = { offset: Number(rM[2]), length: Number(rM[1]) };
+      const rM = line.match(/#EXT-X-BYTERANGE:(\d+)(?:@(\d+))?/);
+      if (rM) {
+        const len = Number(rM[1]);
+        const off = rM[2] !== undefined ? Number(rM[2]) : lastByteEnd;
+        pendingRange = { offset: off, length: len };
+        lastByteEnd = off + len;
+      }
     } else if (line && !line.startsWith('#')) {
       segments.push({ uri: line, range: pendingRange });
       pendingRange = null;
@@ -1861,9 +1972,17 @@ async function fetchCencFmp4(m3u8Url, encOut) {
     const res = await fetch(full, { headers, signal: AbortSignal.timeout(60000) });
     if (!res.ok && res.status !== 206) throw new Error(`拉取分片失败: HTTP ${res.status}`);
     const buf = Buffer.from(await res.arrayBuffer());
-    // 服务端忽略 Range 时会返回整个文件，按需截取
-    if (range && buf.length > range.length) {
-      return buf.subarray(range.offset, range.offset + range.length);
+    // 服务端忽略 Range 时会返回整个文件，按需截取；若发生截断则报错触发重试
+    if (range) {
+      if (res.status === 200 && buf.length >= range.offset + range.length) {
+        return buf.subarray(range.offset, range.offset + range.length);
+      }
+      if (buf.length < range.length) {
+        throw new Error(`分片长度不足: got ${buf.length}, expected ${range.length}`);
+      }
+      if (buf.length > range.length) {
+        return buf.subarray(0, range.length);
+      }
     }
     return buf;
   };
@@ -1897,7 +2016,179 @@ async function fetchCencFmp4(m3u8Url, encOut) {
 
 /* ==================== 核心转存处理 ==================== */
 
-async function processTransfer(body) {
+async function finalizeBatchSession({
+  batchId,
+  sessionDir,
+  zipFilename,
+  zipTemplate,
+  meta = {},
+  quality = 'Lossless',
+  totalFilesHint = 0,
+  failedTracks,
+  noUpload = false,
+  splitMaxMB = 0,
+  folderId,
+  token,
+  chosenFormatName = quality,
+  qualityFallback = '',
+  isEn = false,
+  t0 = performance.now()
+}) {
+  // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」
+  const rawZipName = (zipFilename && String(zipFilename).trim())
+    || (zipTemplate || meta.album
+      ? `${renderZipTemplate(zipTemplate, meta, quality, totalFilesHint)} [${quality}].zip`
+      : 'Album.zip');
+  const finalZipName = sanitizeFilename(isEn ? rawZipName : toSimplifiedChinese(rawZipName));
+  const zipFilePath = resolveSafeTmpPath(`${batchId}.zip`, { isFileName: true });
+  // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
+  const errorLogName = writeBatchErrorLog(sessionDir, failedTracks, meta.album || meta.title || finalZipName);
+  const files = fs.readdirSync(sessionDir).filter((n) => n !== errorLogName);
+  console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
+
+  const sessionFileSizes = files
+    .map((name) => ({ name, size: fs.statSync(path.join(sessionDir, name)).size }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const sessionTotalBytes = sessionFileSizes.reduce((s, f) => s + f.size, 0);
+
+  // 大专辑分卷 (noUpload / Telegram 场景)：按累计大小贪心切卷，每卷均为完整独立 ZIP，规避 TG 单文件 2000MB 硬上限
+  if (noUpload && splitMaxMB > 0) {
+    const limitBytes = splitMaxMB * 1024 * 1024;
+    if (sessionTotalBytes > limitBytes) {
+      const groups = groupFilesByLimit(sessionFileSizes, limitBytes);
+      const baseName = finalZipName.replace(/\.zip$/i, '');
+      const zipParts = [];
+      for (let i = 0; i < groups.length; i++) {
+        const partPath = resolveSafeTmpPath(`${batchId}.part${i + 1}.zip`, { isFileName: true });
+        const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
+        const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
+        await packZipFolder(sessionDir, partPath, partFiles);
+        const partStat = fs.statSync(partPath);
+        const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
+        zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: partFiles.length, trackFiles });
+        console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
+      }
+      const tEnd = performance.now();
+      return {
+        local: true,
+        isZip: true,
+        sessionDir,
+        zipParts,
+        zipFilePath: zipParts[0].filePath,
+        zipFileName: finalZipName,
+        fileSize: sessionTotalBytes,
+        totalFiles: files.length,
+        album: meta.album || '',
+        qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    }
+  }
+
+  // Gofile 直传：整包一旦超过 Gofile 单次上传硬上限（实测 >4GB 必断连），先切卷再逐卷上传
+  if (!noUpload && sessionTotalBytes > GOFILE_MAX_PART_BYTES) {
+    const groups = groupFilesByLimit(sessionFileSizes, GOFILE_MAX_PART_BYTES);
+    const baseName = finalZipName.replace(/\.zip$/i, '');
+    console.log(`[Cloud-Transfer] 全辑 ${(sessionTotalBytes / (1024 * 1024)).toFixed(1)}MB 超过 Gofile 单次上传上限，自动切分为 ${groups.length} 卷...`);
+
+    const partPaths = [];
+    try {
+      let currentFolderId = folderId || null;
+      let currentToken = token || null;
+      let downloadPage = null;
+      const uploadedParts = [];
+
+      for (let i = 0; i < groups.length; i++) {
+        const partPath = resolveSafeTmpPath(`${batchId}.part${i + 1}.zip`, { isFileName: true });
+        partPaths.push(partPath);
+        const partName = `${baseName} [part ${i + 1}].zip`;
+        const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
+        await packZipFolder(sessionDir, partPath, partFiles);
+        const partStat = fs.statSync(partPath);
+        console.log(`[Cloud-Transfer] 📦 分卷 ${i + 1}/${groups.length} 打包完成: ${partName} (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)，正在上传...`);
+        const upData = await uploadFileToGofile(partPath, partName, { folderId: currentFolderId, token: currentToken });
+        currentFolderId = upData.parentFolder || currentFolderId;
+        currentToken = upData.guestToken || currentToken;
+        if (upData.downloadPage) downloadPage = upData.downloadPage;
+        uploadedParts.push({ fileName: partName, fileSize: partStat.size, fileId: upData.id || upData.fileId });
+        console.log(`[Cloud-Transfer] ✔ 分卷 ${i + 1}/${groups.length} 上传完成 (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)`);
+        try { fs.rmSync(partPath, { force: true }); } catch {}
+      }
+
+      downloadPage = downloadPage || (currentFolderId ? `https://gofile.io/d/${currentFolderId}` : null);
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 分卷转存完成 (${uploadedParts.length} 卷)! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${downloadPage}`);
+      return {
+        downloadPage,
+        folderId: currentFolderId,
+        guestToken: currentToken,
+        fileId: uploadedParts[0]?.fileId,
+        fileName: finalZipName,
+        isZip: true,
+        isSplit: true,
+        parts: uploadedParts,
+        partCount: uploadedParts.length,
+        totalFiles: files.length,
+        qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    } finally {
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+      for (const p of partPaths) { try { fs.rmSync(p, { force: true }); } catch {} }
+    }
+  }
+
+  await packZipFolder(sessionDir, zipFilePath);
+
+  if (noUpload) {
+    const zipStat = fs.statSync(zipFilePath);
+    const tEnd = performance.now();
+    console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+    return {
+      local: true,
+      isZip: true,
+      sessionDir,
+      zipFilePath,
+      zipFileName: finalZipName,
+      fileSize: zipStat.size,
+      totalFiles: files.length,
+      album: meta.album || '',
+      qualityName: chosenFormatName,
+      qualityFallback: qualityFallback || undefined,
+      elapsedMs: Math.round(tEnd - t0)
+    };
+  }
+
+  try {
+    const zipStat = fs.statSync(zipFilePath);
+    console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
+
+    const upData = await uploadFileToGofile(zipFilePath, finalZipName, { folderId, token, timeoutMs: 300000 });
+
+    const tEnd = performance.now();
+    console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.downloadPage}`);
+    return {
+      downloadPage: upData.downloadPage,
+      folderId: upData.parentFolder || folderId,
+      guestToken: upData.guestToken || token,
+      fileId: upData.fileId,
+      fileName: finalZipName,
+      isZip: true,
+      fileSize: zipStat.size,
+      totalFiles: files.length,
+      qualityName: chosenFormatName,
+      qualityFallback: qualityFallback || undefined,
+      elapsedMs: Math.round(tEnd - t0)
+    };
+  } finally {
+    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+  }
+}
+
+async function processTransfer(body, { signal } = {}) {
   const t0 = performance.now();
   const {
     adamId,
@@ -1927,179 +2218,34 @@ async function processTransfer(body) {
     zipTemplate = ''
   } = body;
   const isEn = String(lang || 'zh').toLowerCase().startsWith('en');
+  const safeSessionDir = batchId ? resolveSafeSessionDir(batchId) : null;
+  const safeOutputDir = outputDir ? resolveSafeTmpPath(outputDir) : null;
+  const withAbortSignal = (timeoutMs) => {
+    const tSig = AbortSignal.timeout(timeoutMs);
+    return signal ? AbortSignal.any([signal, tSig]) : tSig;
+  };
 
   // 0. 如果是批处理全辑最终打包请求 (3 线程并发转存全部就绪后统一打包上传)
   if (finalizeBatch && batchId) {
-    const sessionDir = `/tmp/am_sessions/${batchId}`;
-    if (!fs.existsSync(sessionDir)) {
+    if (!fs.existsSync(safeSessionDir)) {
       throw new Error(isEn ? `Batch session not found or expired: ${batchId}` : `批处理会话不存在或已过期: ${batchId}`);
     }
-    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」
-    const rawZipName = (zipFilename && String(zipFilename).trim())
-      || (zipTemplate || meta.album
-        ? `${renderZipTemplate(zipTemplate, meta, quality, body.totalFiles || 0)} [${quality}].zip`
-        : 'Album.zip');
-    const finalZipName = sanitizeFilename(isEn ? rawZipName : toSimplifiedChinese(rawZipName));
-    const zipFilePath = `/tmp/${batchId}.zip`;
-    // 仅在存在失败曲目时写入 error.log，全部成功则完全不生成该文件
-    const errorLogName = writeBatchErrorLog(sessionDir, failedTracks, meta.album || meta.title || finalZipName);
-    const files = fs.readdirSync(sessionDir).filter((n) => n !== errorLogName);
-    const splitMaxMB = Number(body.splitMaxMB || 0);
-    console.log(`[Cloud-Transfer] 收到全辑并发转存打包请求，正在将会话 ${batchId} (${files.length} 个文件) 打包为 .zip...`);
-
-    // 大专辑分卷 (noUpload / Telegram 场景)：按累计大小贪心切卷，每卷均为完整独立 ZIP，规避 TG 单文件 2000MB 硬上限
-    if (noUpload && splitMaxMB > 0) {
-      const fileSizes = files
-        .map((name) => ({ name, size: fs.statSync(path.join(sessionDir, name)).size }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const totalBytes = fileSizes.reduce((s, f) => s + f.size, 0);
-      // 按 splitMaxMB 切卷，多文件卷贪心保证 <=limit；仅单文件超限（实际不存在的极端曲目）才可能超出，
-      // 由 unifiedSendMedia 的 2000MB 检查兜底。1900 已留 100MB 余量在硬限内。
-      const limitBytes = splitMaxMB * 1024 * 1024;
-      if (totalBytes > limitBytes) {
-        // 贪心切卷：累计大小达到 limit 即开新卷。若某单文件本身超过 limit（极端超长曲目），
-        // 则单独成卷并继续，避免后续所有曲目被它连带卡死；该卷可能>limit，但 unifiedSendMedia 的 2000MB 检查仍为最终兜底。
-        const groups = groupFilesByLimit(fileSizes, limitBytes);
-
-        const baseName = finalZipName.replace(/\.zip$/i, '');
-        const zipParts = [];
-        for (let i = 0; i < groups.length; i++) {
-          const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
-          const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
-          // 每一卷都附带错误清单，用户拿到任意一卷都能看到完整失败原因
-          const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
-          await packZipFolder(sessionDir, partPath, partFiles);
-          const partStat = fs.statSync(partPath);
-          const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
-          zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: partFiles.length, trackFiles });
-          console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
-        }
-        const tEnd = performance.now();
-        return {
-          local: true,
-          isZip: true,
-          sessionDir,
-          zipParts,
-          zipFilePath: zipParts[0].filePath,
-          zipFileName: finalZipName,
-          fileSize: totalBytes,
-          totalFiles: files.length,
-          album: meta.album || '',
-          qualityName: quality,
-          elapsedMs: Math.round(tEnd - t0)
-        };
-      }
-    }
-
-    // Gofile 直传：整包一旦超过 Gofile 单次上传硬上限（实测 >4GB 必断连），
-    // 必须先切卷再逐卷上传，否则 5GB+ 歌单 100% 失败。切卷后所有卷上传到同一个新建文件夹，
-    // 前端只展示一个 share 链接。
-    const sessionFileSizes = files
-      .map((name) => ({ name, size: fs.statSync(path.join(sessionDir, name)).size }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const sessionTotalBytes = sessionFileSizes.reduce((s, f) => s + f.size, 0);
-    const needGofileSplit = !noUpload && sessionTotalBytes > GOFILE_MAX_PART_BYTES;
-
-    if (needGofileSplit) {
-      const groups = groupFilesByLimit(sessionFileSizes, GOFILE_MAX_PART_BYTES);
-      const baseName = finalZipName.replace(/\.zip$/i, '');
-      console.log(`[Cloud-Transfer] 全辑 ${(sessionTotalBytes / (1024 * 1024)).toFixed(1)}MB 超过 Gofile 单次上传上限，自动切分为 ${groups.length} 卷...`);
-
-      const partPaths = [];
-      try {
-        let currentFolderId = folderId || null;
-        let currentToken = token || null;
-        let downloadPage = null;
-        const uploadedParts = [];
-
-        // 逐卷串行打包 + 上传（串行可避免多卷同时抢占上行带宽）。
-        // 第一卷由 Gofile 自动创建文件夹，拿到 folderId 后其余卷都传进去，最终只给一个分享链接。
-        for (let i = 0; i < groups.length; i++) {
-          const partPath = `/tmp/${batchId}.part${i + 1}.zip`;
-          partPaths.push(partPath);
-          const partName = `${baseName} [part ${i + 1}].zip`;
-          // 每一卷都附带错误清单，用户下载任意一卷都能看到完整失败原因
-          const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
-          await packZipFolder(sessionDir, partPath, partFiles);
-          const partStat = fs.statSync(partPath);
-          console.log(`[Cloud-Transfer] 📦 分卷 ${i + 1}/${groups.length} 打包完成: ${partName} (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)，正在上传...`);
-          const upData = await uploadFileToGofile(partPath, partName, { folderId: currentFolderId, token: currentToken });
-          currentFolderId = upData.parentFolder || currentFolderId;
-          currentToken = upData.guestToken || currentToken;
-          if (upData.downloadPage) downloadPage = upData.downloadPage;
-          uploadedParts.push({ fileName: partName, fileSize: partStat.size, fileId: upData.id || upData.fileId });
-          console.log(`[Cloud-Transfer] ✔ 分卷 ${i + 1}/${groups.length} 上传完成 (${(partStat.size / (1024 * 1024)).toFixed(1)}MB)`);
-          // 立刻删掉分卷 ZIP，避免多卷叠加占满磁盘
-          try { fs.rmSync(partPath, { force: true }); } catch {}
-        }
-
-        downloadPage = downloadPage || (currentFolderId ? `https://gofile.io/d/${currentFolderId}` : null);
-        const tEnd = performance.now();
-        console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 分卷转存完成 (${uploadedParts.length} 卷)! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${downloadPage}`);
-        return {
-          downloadPage,
-          folderId: currentFolderId,
-          guestToken: currentToken,
-          fileId: uploadedParts[0]?.fileId,
-          fileName: finalZipName,
-          isZip: true,
-          isSplit: true,
-          parts: uploadedParts,
-          partCount: uploadedParts.length,
-          totalFiles: files.length,
-          qualityName: quality,
-          elapsedMs: Math.round(tEnd - t0)
-        };
-      } finally {
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
-        for (const p of partPaths) { try { fs.rmSync(p, { force: true }); } catch {} }
-      }
-    }
-
-    await packZipFolder(sessionDir, zipFilePath);
-
-    if (noUpload) {
-      const zipStat = fs.statSync(zipFilePath);
-      const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
-      return {
-        local: true,
-        isZip: true,
-        sessionDir,
-        zipFilePath,
-        zipFileName: finalZipName,
-        fileSize: zipStat.size,
-        totalFiles: files.length,
-        album: meta.album || '',
-        qualityName: quality,
-        elapsedMs: Math.round(tEnd - t0)
-      };
-    }
-
-    try {
-      const zipStat = fs.statSync(zipFilePath);
-      console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
-
-      const upData = await uploadFileToGofile(zipFilePath, finalZipName, { folderId, token, timeoutMs: 300000 });
-
-      const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 并发转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.downloadPage}`);
-      return {
-        downloadPage: upData.downloadPage,
-        folderId: upData.parentFolder || folderId,
-        guestToken: upData.guestToken || token,
-        fileId: upData.fileId,
-        fileName: finalZipName,
-        isZip: true,
-        totalFiles: files.length,
-        qualityName: quality,
-        elapsedMs: Math.round(tEnd - t0)
-      };
-    } finally {
-      // 无论上传成功还是失败，均立刻销毁会话与临时 ZIP，杜绝磁盘爆满残留
-      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
-      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
-    }
+    return finalizeBatchSession({
+      batchId,
+      sessionDir: safeSessionDir,
+      zipFilename,
+      zipTemplate,
+      meta,
+      quality,
+      totalFilesHint: body.totalFiles || 0,
+      failedTracks,
+      noUpload,
+      splitMaxMB: Number(body.splitMaxMB || 0),
+      folderId,
+      token,
+      isEn,
+      t0
+    });
   }
 
   const shouldSaveLyricsFile = saveLyricsFile !== undefined 
@@ -2127,14 +2273,14 @@ async function processTransfer(body) {
   let webplaybackM3u8 = null; // 当 master 为 M4P 单文件时，回退 /webplayback 标准 HLS
   if (!audioHookUrl) {
     if (!adamId) throw new Error('缺少 adamId 或 hookFileUrl');
-    const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: AbortSignal.timeout(30000) });
+    const parseRes = await fetch(`${HOOK_BASE}/parse/song/${adamId}`, { signal: withAbortSignal(30000) });
     if (!parseRes.ok) {
       const parseErr = await parseRes.json().catch(() => ({}));
       // master m3u8 解析不出变体（wrapper 返回 M4P 单文件 + accessKey）：改用 /webplayback 拿标准 HLS
       // 注意：`failed to get m3u8` 已被 src/ui.rs 改写成中文提示，此处只按实际可命中的 msg 判断
       if (parseErr.msg?.includes('No variants')) {
         try {
-          const wpRes = await fetch(`${WRAPPER_BASE}/webplayback?adamId=${adamId}`, { signal: AbortSignal.timeout(15000) });
+          const wpRes = await fetch(`${WRAPPER_BASE}/webplayback?adamId=${adamId}`, { signal: withAbortSignal(15000) });
           if (wpRes.ok) {
             const wpData = await wpRes.json();
             const wpUrl = wpData?.data?.m3u8;
@@ -2158,9 +2304,16 @@ async function processTransfer(body) {
         }
       }
       if (!webplaybackM3u8) {
-        // `failed to get m3u8` 在 ui.rs 会被改写成中文提示，故一并匹配中文关键词
         const rawMsg = parseErr.msg || '';
-        if (rawMsg === 'failed to get m3u8' || rawMsg.includes('无资源') || rawMsg.includes('无版权') || rawMsg.includes('无资源或未上架') || parseRes.status === 404 || parseRes.status === 500) {
+        if (parseRes.status === 429) {
+          throw new Error(isEn ? 'Rate limited by upstream service (HTTP 429), please retry later' : '上游解析接口请求过于频繁 (HTTP 429)，请稍后重试');
+        }
+        // 仅在明确无资源/404/未上架信息时归因地区版权，避免将 5xx/超时误报为无版权
+        const isRegionMissing = parseRes.status === 404
+          || rawMsg === 'failed to get m3u8'
+          || rawMsg.includes('No variants')
+          || /无资源|无版权|未上架/.test(rawMsg);
+        if (isRegionMissing) {
           throw new Error(isEn
             ? 'This track is unavailable in the resolving account region (Turkey storefront; may be a JP/US regional exclusive)'
             : '此歌曲在解析账号所属地区（土耳其区）无资源或未上架（可能为日区/美区独占版权），无法转存');
@@ -2191,10 +2344,17 @@ async function processTransfer(body) {
       } else if (qLower.includes('aac')) {
         selected = variants.find(v => (v.codecs && v.codecs.includes('mp4a')) || (v.group_id && v.group_id.includes('256'))) || variants[0];
       } else {
-        // 默认 Lossless
-        selected = variants.find(v => v.codecs === 'alac' || (v.group_id && v.group_id.includes('alac'))) || variants[0];
+        // 默认 Lossless：优先选标准 16/24-bit <=48kHz ALAC，无标准档再回退任意 ALAC
+        selected = variants.find(v => (v.codecs === 'alac' || (v.group_id && v.group_id.includes('alac'))) && !(v.sample_rate > 48000 || v.bit_depth > 16))
+          || variants.find(v => v.codecs === 'alac' || (v.group_id && v.group_id.includes('alac')))
+          || variants[0];
       }
       if (!selected) selected = variants[0];
+      if (!qualityFallback && !qLower.includes('aac') && selected && selected.codecs && selected.codecs.includes('mp4a')) {
+        qualityFallback = isEn
+          ? 'No Lossless/Atmos variant available for this track, fell back to AAC 256kbps'
+          : '该曲目暂无无损/杜比版本，已自动回退为 AAC 256kbps';
+      }
 
       audioHookUrl = `${HOOK_BASE}/${base}${selected.file_uri}`;
       chosenFormatName = selected.group_id || selected.codecs || 'Lossless';
@@ -2268,7 +2428,7 @@ async function processTransfer(body) {
         try { await fs.promises.unlink(decOut); } catch {}
       }
     }
-    const aRes = await fetch(targetAudioUrl, { signal: AbortSignal.timeout(300000) });
+    const aRes = await fetch(targetAudioUrl, { signal: withAbortSignal(300000) });
     if (!aRes.ok) throw new Error(`获取音频流失败: HTTP ${aRes.status}`);
     return new Uint8Array(await aRes.arrayBuffer());
   };
@@ -2278,21 +2438,25 @@ async function processTransfer(body) {
   }
   tasks.push(fetchAudio());
 
-  // 封面图抓取 (优先命中内存缓存，杜绝 Apple CDN 批量请求抖动导致封面丢失)
+  // 封面图抓取 (仅允许 Apple CDN HTTPS，校验魔数并命中 LRU 缓存)
   const fetchCover = async () => {
     if (lyricsOnly) return null;
-    if (!meta.coverUrl) return null;
+    if (!meta.coverUrl || !isAllowedCoverUrl(meta.coverUrl)) return null;
     const now = Date.now();
-    const cached = coverCache.get(meta.coverUrl);
-    if (cached && cached.expiresAt > now) {
-      return cached.buf;
-    }
+    const cached = getCachedCover(meta.coverUrl, now);
+    if (cached) return cached;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const cRes = await fetch(meta.coverUrl, { signal: AbortSignal.timeout(8000) });
+        const cRes = await fetch(meta.coverUrl, { redirect: 'error', signal: withAbortSignal(8000) });
         if (cRes.ok) {
+          const contentLen = Number(cRes.headers.get('content-length') || 0);
+          if (contentLen > 25 * 1024 * 1024) return null;
           const buf = new Uint8Array(await cRes.arrayBuffer());
-          coverCache.set(meta.coverUrl, { buf, expiresAt: now + 3600000 });
+          if (buf.length > 25 * 1024 * 1024) return null;
+          const isPng = buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+          const isJpg = buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+          if (!isPng && !isJpg) return null;
+          setCachedCover(meta.coverUrl, buf, now);
           return buf;
         }
       } catch (e) {
@@ -2338,7 +2502,7 @@ async function processTransfer(body) {
     try {
       const needsMeta = shouldTranslateLyrics || shouldRuby;
       const lyricsUrl = `${HOOK_BASE}/lyrics/${adamId}${needsMeta ? '?language=zh-Hans-CN' : ''}`;
-      const lRes = await fetch(lyricsUrl, { signal: AbortSignal.timeout(5000) });
+      const lRes = await fetch(lyricsUrl, { signal: withAbortSignal(16000) });
       if (!lRes.ok) {
         console.log(`[Cloud-Transfer] 歌词接口返回 ${lRes.status} (adamId=${adamId})`);
       }
@@ -2601,7 +2765,7 @@ async function processTransfer(body) {
     artist: meta.artist || '',
     album: meta.album || '',
     albumArtist: meta.albumArtist || meta.artist || '',
-    date: meta.date || '',
+    date: meta.releaseDate || meta.date || meta.year || '',
     genre: meta.genre || '',
     composer: meta.composer || '',
     copyright: meta.copyright || '',
@@ -2628,7 +2792,7 @@ async function processTransfer(body) {
   // 4. 上传模式判定 (ZIP 打包上传 或 直接文件流上传)
   // 4.1 批处理会话模式 (支持全辑归集为单 .zip 压缩包)
   if (batchId) {
-    const sessionDir = `/tmp/am_sessions/${batchId}`;
+    const sessionDir = safeSessionDir;
     fs.mkdirSync(sessionDir, { recursive: true });
 
     // 音频落盘：必须用排他创建 (wx)，不能用「先 existsSync 再 writeFileSync」。
@@ -2659,23 +2823,26 @@ async function processTransfer(body) {
       console.log(`[Cloud-Transfer] ⚠️ 检测到同名曲目，已自动重命名避免覆盖: ${finalM4aName}`);
     }
 
-    if (finalLyricsName && lyricsContent) {
-      try {
-        const fd = fs.openSync(path.join(sessionDir, finalLyricsName), 'wx');
-        try { fs.writeFileSync(fd, lyricsContent, 'utf8'); } finally { fs.closeSync(fd); }
-        console.log(`[Cloud-Transfer] 缓存歌词: ${finalLyricsName} 到 session: ${batchId}`);
-      } catch (lyrErr) {
-        if (lyrErr.code === 'EEXIST') {
-          // 并发下歌词撞名：换个唯一名写入，绝不覆盖别人的歌词
-          const alt = uniqueNameInDir(sessionDir, finalLyricsName, trackPrefix);
-          try {
-            fs.writeFileSync(path.join(sessionDir, alt), lyricsContent, 'utf8');
-            console.log(`[Cloud-Transfer] 缓存歌词(重命名): ${alt} 到 session: ${batchId}`);
-          } catch {}
-        } else {
-          throw lyrErr;
+    const writeTextExclusive = (baseName, content, label) => {
+      const firstCand = fs.existsSync(path.join(sessionDir, baseName))
+        ? uniqueNameInDir(sessionDir, baseName, '')
+        : baseName;
+      for (let trySeq = 0; trySeq < 5; trySeq++) {
+        const cand = trySeq === 0 ? firstCand : uniqueNameInDir(sessionDir, baseName, trackPrefix);
+        try {
+          const fd = fs.openSync(path.join(sessionDir, cand), 'wx');
+          try { fs.writeFileSync(fd, content, 'utf8'); } finally { fs.closeSync(fd); }
+          console.log(`[Cloud-Transfer] ${label}: ${cand} 到 session: ${batchId}`);
+          return;
+        } catch (err) {
+          if (err.code === 'EEXIST') continue;
+          throw err;
         }
       }
+    };
+
+    if (finalLyricsName && lyricsContent) {
+      writeTextExclusive(finalLyricsName, lyricsContent, '缓存歌词');
     }
     for (const extra of extraLyrics) {
       // 附加格式（如同时要 .lrc + .ttml）与音频同名，仅扩展名不同，
@@ -2688,11 +2855,7 @@ async function processTransfer(body) {
       } else {
         extraName = `${trackPrefix}${extra.filename}`;
       }
-      if (fs.existsSync(path.join(sessionDir, extraName))) {
-        extraName = uniqueNameInDir(sessionDir, extraName, '');
-      }
-      fs.writeFileSync(path.join(sessionDir, extraName), extra.content, 'utf8');
-      console.log(`[Cloud-Transfer] 缓存歌词(附加): ${extraName} 到 session: ${batchId}`);
+      writeTextExclusive(extraName, extra.content, '缓存歌词(附加)');
     }
 
     // 若非最后一首曲目，缓存后快速返回，不浪费上传时间
@@ -2708,80 +2871,26 @@ async function processTransfer(body) {
       };
     }
 
-    // 最后一首曲目：打包为单个 .zip 压缩包并极速直传 Gofile
+    // 最后一首曲目：复用同一收尾打包与自动分卷上传函数
     console.log(`[Cloud-Transfer] 最后一首曲目已就绪，正在将全辑打包为 .zip 压缩包...`);
-    const zipFilePath = `/tmp/${batchId}.zip`;
-    const files = fs.readdirSync(sessionDir);
-    // 压缩包名：调用方显式指定 > 用户模板 > 默认「专辑名 [音质]」。
-    // 必须在 files 之后计算，{count} 需要用到曲目数。
-    const finalZipName = sanitizeFilename(
-      (zipFilename && String(zipFilename).trim())
-        || `${renderZipTemplate(zipTemplate, meta, quality, files.length)} [${quality}].zip`
-    );
-    await packZipFolder(sessionDir, zipFilePath);
-
-    if (noUpload) {
-      const zipStat = fs.statSync(zipFilePath);
-      const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
-      return {
-        local: true,
-        isZip: true,
-        sessionDir,
-        zipFilePath,
-        zipFileName: finalZipName,
-        fileSize: zipStat.size,
-        totalFiles: files.length,
-        album: meta.album || '',
-        qualityName: chosenFormatName,
-        qualityFallback: qualityFallback || undefined,
-        elapsedMs: Math.round(tEnd - t0)
-      };
-    }
-
-    try {
-      const zipStat = fs.statSync(zipFilePath);
-      console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
-
-      const srv = await getGofileServer();
-      const form = new FormData();
-      // 使用 fs.openAsBlob 流式传输，不占用任何 Node.js 堆内存，彻底杜绝大包 OOM
-      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
-      form.append('file', zipBlob, finalZipName);
-      if (folderId) form.append('folderId', folderId);
-      if (token) form.append('token', token);
-
-      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-        method: 'POST',
-        body: form,
-        signal: AbortSignal.timeout(300000)
-      });
-      const upData = await upRes.json();
-      if (upData.status !== 'ok') {
-        throw new Error(`Gofile 上传 ZIP 失败: ${upData.status || '未知错误'}`);
-      }
-
-      const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 🎉 全辑 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
-      return {
-        downloadPage: upData.data?.downloadPage,
-        folderId: upData.data?.parentFolder || folderId,
-        guestToken: upData.data?.guestToken || token,
-        fileId: upData.data?.fileId,
-        fileName: finalZipName,
-        isZip: true,
-        // 前端需要体积做展示，必须带上（此前缺失导致显示 0 MB）
-        fileSize: zipStat.size,
-        totalFiles: files.length,
-        qualityName: chosenFormatName,
-        qualityFallback: qualityFallback || undefined,
-        elapsedMs: Math.round(tEnd - t0)
-      };
-    } finally {
-      // 无论上传成功还是失败，均立刻销毁会话与临时 ZIP，杜绝磁盘爆满残留
-      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
-      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
-    }
+    return finalizeBatchSession({
+      batchId,
+      sessionDir,
+      zipFilename,
+      zipTemplate,
+      meta,
+      quality,
+      totalFilesHint: fs.readdirSync(sessionDir).length,
+      failedTracks,
+      noUpload,
+      splitMaxMB: Number(body.splitMaxMB || 0),
+      folderId,
+      token,
+      chosenFormatName,
+      qualityFallback,
+      isEn,
+      t0
+    });
   }
 
   // 4.2 单曲压缩模式 (可选将单曲与对应歌词打包为单个 .zip 上传)
@@ -2798,9 +2907,9 @@ async function processTransfer(body) {
       fs.writeFileSync(path.join(singleDir, extra.filename), extra.content, 'utf8');
     }
 
-    const finalZipName = `${renderZipTemplate(zipTemplate, meta, quality, 1)}.zip`;
+    const rawSingleZip = `${renderZipTemplate(zipTemplate, meta, quality, 1)}.zip`;
+    const finalZipName = sanitizeFilename(isEn ? rawSingleZip : toSimplifiedChinese(rawSingleZip));
     const zipFilePath = `${singleDir}.zip`;
-    const files = fs.readdirSync(singleDir);
     await packZipFolder(singleDir, zipFilePath);
 
     if (noUpload) {
@@ -2825,30 +2934,14 @@ async function processTransfer(body) {
       };
     }
     try {
-      const srv = await getGofileServer();
-      const form = new FormData();
-      const zipBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
-      form.append('file', zipBlob, finalZipName);
-      if (folderId) form.append('folderId', folderId);
-      if (token) form.append('token', token);
-
-      const upRes = await fetch(`https://${srv}.gofile.io/contents/uploadfile`, {
-        method: 'POST',
-        body: form,
-        signal: AbortSignal.timeout(180000)
-      });
-      const upData = await upRes.json();
-      if (upData.status !== 'ok') {
-        throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
-      }
-
+      const upData = await uploadFileToGofile(zipFilePath, finalZipName, { folderId, token, timeoutMs: 180000 });
       const tEnd = performance.now();
-      console.log(`[Cloud-Transfer] 🎉 单曲 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.data?.downloadPage}`);
+      console.log(`[Cloud-Transfer] 🎉 单曲 ZIP 转存完成! 总耗时: ${((tEnd - t0) / 1000).toFixed(2)}s, 链接: ${upData.downloadPage}`);
       return {
-        downloadPage: upData.data?.downloadPage,
-        folderId: upData.data?.parentFolder || folderId,
-        guestToken: upData.data?.guestToken || token,
-        fileId: upData.data?.fileId,
+        downloadPage: upData.downloadPage,
+        folderId: upData.parentFolder || folderId,
+        guestToken: upData.guestToken || token,
+        fileId: upData.fileId,
         fileName: finalZipName,
         isZip: true,
         qualityName: chosenFormatName,
@@ -2863,7 +2956,7 @@ async function processTransfer(body) {
 
   // 4.2.5 本地处理模式 (免上传至 Gofile，供 Telegram Bot 或内网其他服务直接取用)
   if (noUpload) {
-    const targetDir = outputDir || path.join('/tmp', `am_tg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+    const targetDir = safeOutputDir || path.join('/tmp', `am_tg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
     fs.mkdirSync(targetDir, { recursive: true });
     const audioFilePath = path.join(targetDir, standardM4aName);
     fs.writeFileSync(audioFilePath, finalAudioBuf);
@@ -2925,56 +3018,58 @@ async function processTransfer(body) {
     };
   }
 
-  // 4.3 常规单文件上传至 Gofile (支持同一 folderId 归集)
-  const srv = await getGofileServer();
-  const upUrl = `https://${srv}.gofile.io/contents/uploadfile`;
+  // 4.3 常规单文件上传至 Gofile (统一经 uploadFileToGofile 享受节点失效自动重选与非 JSON 防护)
+  const tmpUploadDir = `/tmp/am_up_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  fs.mkdirSync(tmpUploadDir, { recursive: true });
+  let resultData = {};
+  let currentParentFolder = folderId;
+  let currentGuestToken = token;
+  try {
+    const audioPath = path.join(tmpUploadDir, standardM4aName);
+    fs.writeFileSync(audioPath, finalAudioBuf);
+    resultData = await uploadFileToGofile(audioPath, standardM4aName, {
+      folderId,
+      token,
+      timeoutMs: 120000,
+      mimeType: 'audio/mp4'
+    });
+    currentParentFolder = resultData.parentFolder || folderId;
+    currentGuestToken = resultData.guestToken || token;
 
-  // 上传音频
-  const form = new FormData();
-  form.append('file', new Blob([finalAudioBuf], { type: 'audio/mp4' }), standardM4aName);
-  if (folderId) form.append('folderId', folderId);
-  if (token) form.append('token', token);
-
-  const upRes = await fetch(upUrl, {
-    method: 'POST',
-    body: form,
-    signal: AbortSignal.timeout(120000)
-  });
-  const upData = await upRes.json();
-  if (upData.status !== 'ok') {
-    throw new Error(`Gofile 上传失败: ${upData.status || '未知错误'}`);
-  }
-
-  const resultData = upData.data || {};
-  const currentParentFolder = resultData.parentFolder || folderId;
-  const currentGuestToken = resultData.guestToken || token;
-
-  // 5. 可选: 上传独立歌词文件到同一文件夹（主文件 + 附加格式）
-  if (lyricsFilename && lyricsContent) {
-    try {
-      const lrcForm = new FormData();
-      lrcForm.append('file', new Blob([lyricsContent], { type: lyricsMime }), lyricsFilename);
-      if (currentParentFolder) lrcForm.append('folderId', currentParentFolder);
-      if (currentGuestToken) lrcForm.append('token', currentGuestToken);
-
-      await fetch(upUrl, { method: 'POST', body: lrcForm, signal: AbortSignal.timeout(10000) });
-      console.log(`[Cloud-Transfer] 同步上传独立歌词: ${lyricsFilename}`);
-    } catch (e) {
-      console.warn('[Cloud-Transfer] 歌词上传异常:', e.message);
+    // 5. 可选: 上传独立歌词文件到同一文件夹（主文件 + 附加格式）
+    if (lyricsFilename && lyricsContent) {
+      try {
+        const lrcPath = path.join(tmpUploadDir, lyricsFilename);
+        fs.writeFileSync(lrcPath, lyricsContent, 'utf8');
+        await uploadFileToGofile(lrcPath, lyricsFilename, {
+          folderId: currentParentFolder,
+          token: currentGuestToken,
+          timeoutMs: 15000,
+          mimeType: lyricsMime
+        });
+        console.log(`[Cloud-Transfer] 同步上传独立歌词: ${lyricsFilename}`);
+      } catch (e) {
+        console.warn('[Cloud-Transfer] 歌词上传异常:', e.message);
+      }
     }
-  }
-  for (const extra of extraLyrics) {
-    if (extra.filename === lyricsFilename) continue;
-    try {
-      const extraForm = new FormData();
-      extraForm.append('file', new Blob([extra.content], { type: extra.mime }), extra.filename);
-      if (currentParentFolder) extraForm.append('folderId', currentParentFolder);
-      if (currentGuestToken) extraForm.append('token', currentGuestToken);
-      await fetch(upUrl, { method: 'POST', body: extraForm, signal: AbortSignal.timeout(10000) });
-      console.log(`[Cloud-Transfer] 同步上传独立歌词(附加): ${extra.filename}`);
-    } catch (e) {
-      console.warn('[Cloud-Transfer] 附加歌词上传异常:', e.message);
+    for (const extra of extraLyrics) {
+      if (extra.filename === lyricsFilename) continue;
+      try {
+        const extraPath = path.join(tmpUploadDir, extra.filename);
+        fs.writeFileSync(extraPath, extra.content, 'utf8');
+        await uploadFileToGofile(extraPath, extra.filename, {
+          folderId: currentParentFolder,
+          token: currentGuestToken,
+          timeoutMs: 15000,
+          mimeType: extra.mime
+        });
+        console.log(`[Cloud-Transfer] 同步上传独立歌词(附加): ${extra.filename}`);
+      } catch (e) {
+        console.warn('[Cloud-Transfer] 附加歌词上传异常:', e.message);
+      }
     }
+  } finally {
+    try { fs.rmSync(tmpUploadDir, { recursive: true, force: true }); } catch {}
   }
 
   const tEnd = performance.now();
@@ -3019,14 +3114,30 @@ class GlobalTransferQueue {
   }
 
   enqueue(taskFn, meta = {}) {
+    const signal = meta.signal;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason || new Error('Task aborted before queueing'));
+    }
     return new Promise((resolve, reject) => {
       const taskItem = {
         taskFn,
         meta,
         resolve,
         reject,
-        enqueuedAt: Date.now()
+        enqueuedAt: Date.now(),
+        abortCleanup: null
       };
+      if (signal) {
+        const onAbort = () => {
+          const idx = this.queue.indexOf(taskItem);
+          if (idx !== -1) {
+            this.queue.splice(idx, 1);
+            reject(signal.reason || new Error('Client disconnected while queued'));
+          }
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        taskItem.abortCleanup = () => signal.removeEventListener('abort', onAbort);
+      }
       this.queue.push(taskItem);
       console.log(`[Queue] 任务入队: ${meta.name || '未知任务'} (等待排队中: ${this.queue.length}, 正在执行: ${this.activeCount})`);
       this._processNext();
@@ -3039,6 +3150,12 @@ class GlobalTransferQueue {
     }
 
     const item = this.queue.shift();
+    if (item.abortCleanup) item.abortCleanup();
+    if (item.meta.signal?.aborted) {
+      item.reject(item.meta.signal.reason || new Error('Task aborted while queued'));
+      setImmediate(() => this._processNext());
+      return;
+    }
     this.activeCount++;
     const waitTime = ((Date.now() - item.enqueuedAt) / 1000).toFixed(1);
     console.log(`[Queue] ▶ 调度出队执行: ${item.meta.name || '任务'} (排队耗时: ${waitTime}s, 队列剩余: ${this.queue.length})`);
@@ -3060,38 +3177,47 @@ const CLOUD_CONCURRENCY = parseInt(process.env.CLOUD_CONCURRENCY || '2', 10);
 const globalQueue = new GlobalTransferQueue(CLOUD_CONCURRENCY);
 
 // ==================== Web 访问防刷限流器 (支持环境变量白名单配置) ====================
-const OWNER_IPS = new Set([
-  '127.0.0.1', '::1', 'localhost',
-  ...(process.env.OWNER_IPS ? process.env.OWNER_IPS.split(',').map(s => s.trim()) : [])
-]);
+function normalizeIp(ip) {
+  const s = String(ip || '').trim();
+  return s.startsWith('::ffff:') ? s.slice(7) : s;
+}
+
+const REMOTE_OWNER_IPS = new Set(
+  (process.env.OWNER_IPS ? process.env.OWNER_IPS.split(',').map(s => normalizeIp(s)) : [])
+    .filter(ip => ip && ip !== '127.0.0.1' && ip !== '::1' && ip !== 'localhost')
+);
 const webIpLimitMap = new Map(); // ip -> { count, resetAt, dailyCount, dailyResetAt }
-// 整单额度预留台账：`${clientIp}|${batchId}` -> { reserved, consumed }
-// 网页批量 ZIP 是一次下单 + N 次逐首请求 + 1 次收尾，必须整单只扣一次。
+// 整单额度预留台账：`${clientIp}|${batchId}` -> { reserved, consumed, inflight, createdAt }
 const webBatchQuotaLedger = new Map();
+// /api/quota/consume 预留凭据：reservationId -> { ip, tracks, refunded, createdAt }
+const quotaReservations = new Map();
 
 // 批量转存结果缓存：`${clientIp}|${batchId}` -> { downloadPage, folderId, guestToken, partCount, ... }
-// finalize 一次要打包+上传数 GB，耗时可达数分钟。浏览器标签页被切到后台或休眠时可能直接掐断
-// 连接，前端 fetch 永远拿不到结果，用户会看到「转存失败」而服务端其实已经成功。
-// 这里把成品结果留档，前端超时/断线后可用 batchId 补查，链接不会再丢。
 const webBatchResultCache = new Map();
 const BATCH_RESULT_TTL_MS = 2 * 60 * 60 * 1000; // 2 小时
 
-// 定期清理过期的 IP 限流记录与孤儿配额台账，防止长期运行内存累积
+// 定期清理过期的 IP 限流记录、预留凭据与孤儿配额台账，防止长期运行内存累积
 setInterval(() => {
   const now = Date.now();
   for (const [ip, rec] of webIpLimitMap.entries()) {
-    // 超过配额重置点再给 1 小时宽限即回收（此前只比 dailyResetAt，跨天后若该 IP 不再访问会永久滞留）
     if (now > rec.dailyResetAt + 60 * 60 * 1000) {
       webIpLimitMap.delete(ip);
     }
   }
-  // 孤儿台账：收尾请求丢失（客户端关闭页面/崩溃）留下的条目，2 小时后回收
   for (const [key, led] of webBatchQuotaLedger.entries()) {
     if (!led.createdAt || now - led.createdAt > 2 * 60 * 60 * 1000) {
+      const ip = key.split('|')[0];
+      if (ip && led.reserved > led.consumed) {
+        try { refundWebQuota(ip, led.reserved - led.consumed); } catch {}
+      }
       webBatchQuotaLedger.delete(key);
     }
   }
-  // 过期的成品结果缓存
+  for (const [rid, rec] of quotaReservations.entries()) {
+    if (!rec.createdAt || now - rec.createdAt > 24 * 60 * 60 * 1000) {
+      quotaReservations.delete(rid);
+    }
+  }
   for (const [key, rec] of webBatchResultCache.entries()) {
     if (!rec.createdAt || now - rec.createdAt > 2 * 60 * 60 * 1000) {
       webBatchResultCache.delete(key);
@@ -3104,34 +3230,63 @@ function nextBeijingMidnight() {
   const now = Date.now();
   const bjOffsetMs = 8 * 3600 * 1000;
   const bjNow = new Date(now + bjOffsetMs);
-  // 北京时间的日期部分
   const y = bjNow.getUTCFullYear();
   const m = bjNow.getUTCMonth();
   const d = bjNow.getUTCDate();
-  // 北京时间下一个 00:00 => 以 UTC 表示就是 (y,m,d+1) 的 00:00 UTC 再减 8h
   const nextBjMidnightUtc = Date.UTC(y, m, d + 1) - bjOffsetMs;
-  return nextBjMidnightUtc > now ? nextBjMidnightUtc : now + 86400000; // 兜底防负值
+  return nextBjMidnightUtc > now ? nextBjMidnightUtc : now + 86400000;
 }
 
 // 网页端每日总配额（单位：曲目数）。单曲 / 专辑 / 歌单全部合并计入同一个池子。
 const WEB_DAILY_TRACK_QUOTA = parseInt(process.env.WEB_DAILY_TRACK_QUOTA || '200', 10);
 
+/** 判断是否为本机直连（无任何反向代理转发头），供 tg-bot 与本地运维调用独占 */
+function isDirectLoopback(req) {
+  const remote = normalizeIp(req?.socket?.remoteAddress);
+  if (remote !== '127.0.0.1' && remote !== '::1') return false;
+  if (req?.headers?.['x-forwarded-for'] || req?.headers?.['x-real-ip']) return false;
+  return true;
+}
+
 function getClientIp(req) {
-  let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-  if (clientIp.startsWith('::ffff:')) clientIp = clientIp.slice(7);
-  return clientIp;
+  const remote = normalizeIp(req?.socket?.remoteAddress || '127.0.0.1');
+  const isLoopbackProxy = remote === '127.0.0.1' || remote === '::1';
+  if (isLoopbackProxy) {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+      // 取最右侧非空节点（由可信本地反代追加的真实客户端地址），防止客户端伪造最左侧头
+      const parts = xff.split(',').map(s => normalizeIp(s)).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+    }
+    const xri = req.headers['x-real-ip'];
+    if (typeof xri === 'string' && xri.trim()) {
+      return normalizeIp(xri);
+    }
+  }
+  return remote || '127.0.0.1';
+}
+
+function isValidAdminKey(adminKeyHeader) {
+  const secret = (process.env.ADMIN_KEY || '').trim();
+  const provided = String(adminKeyHeader || '').trim();
+  if (!secret || !provided) return false;
+  const a = Buffer.from(secret, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 /**
- * 特权判定：站长静态 IP 白名单 或 管理员 Key。特权用户额度无限、且独占「歌手全辑」等高成本入口。
+ * 特权判定：本机直连（无转发头） / 站长静态 IP 精确匹配 / 非空 ADMIN_KEY 常量时间校验。
  */
-function isPrivilegedClient(clientIp, adminKeyHeader) {
-  if (!clientIp || OWNER_IPS.has(clientIp) || clientIp.includes('127.0.0.1')) return true;
-  for (const ip of OWNER_IPS) {
-    if (ip && clientIp.includes(ip)) return true;
+function isPrivilegedClient(clientIp, adminKeyHeader, req = null) {
+  if (req ? isDirectLoopback(req) : (clientIp === '127.0.0.1' || clientIp === '::1')) {
+    return true;
   }
-  const ADMIN_SECRET = process.env.ADMIN_KEY || 'am_admin_secret_key';
-  return Boolean(adminKeyHeader && adminKeyHeader === ADMIN_SECRET);
+  if (REMOTE_OWNER_IPS.has(normalizeIp(clientIp))) {
+    return true;
+  }
+  return isValidAdminKey(adminKeyHeader);
 }
 
 /** 取（并按需重置）每日额度记录 */
@@ -3195,9 +3350,9 @@ function refundWebQuota(clientIp, tracks) {
   rec.dailyCount = Math.max(0, rec.dailyCount - refund);
 }
 
-function checkWebRateLimit(clientIp, adminKeyHeader, isEn = false) {
-  // 1. 特权（站长 IP / 管理员 Key）-> 100% 豁免放行
-  if (isPrivilegedClient(clientIp, adminKeyHeader)) {
+function checkWebRateLimit(clientIp, adminKeyHeader, isEn = false, req = null) {
+  // 1. 特权（本机直连 / 站长 IP / 管理员 Key）-> 100% 豁免放行
+  if (isPrivilegedClient(clientIp, adminKeyHeader, req)) {
     return { ok: true, isOwner: true };
   }
 
@@ -3219,11 +3374,71 @@ function checkWebRateLimit(clientIp, adminKeyHeader, isEn = false) {
 
 /* ==================== HTTP 服务 ==================== */
 
-const server = http.createServer(async (req, res) => {
-  // CORS 响应头
-  res.setHeader('Access-Control-Allow-Origin', '*');
+const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024; // 2MB 上限，防内存打满
+const ALLOWED_ORIGINS = new Set(
+  (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean) : [])
+);
+
+function setSafeCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+  if (origin) {
+    let allow = ALLOWED_ORIGINS.has(origin);
+    if (!allow) {
+      try {
+        const ou = new URL(origin);
+        if (req.headers.host && ou.host === req.headers.host) allow = true;
+      } catch {}
+    }
+    if (allow) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
+}
+
+function readJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    req.on('data', (chunk) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        settled = true;
+        const err = new Error('Payload too large');
+        err.statusCode = 413;
+        req.destroy();
+        reject(err);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      err.statusCode = err.statusCode || 400;
+      reject(err);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (jsonErr) {
+        const err = new Error(`Invalid JSON body: ${jsonErr.message}`);
+        err.statusCode = 400;
+        reject(err);
+      }
+    });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  setSafeCorsHeaders(req, res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -3249,6 +3464,13 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && u.pathname === '/api/cloud-transfer-result') {
     const clientIp = getClientIp(req);
     const batchId = u.searchParams.get('batchId') || '';
+    try {
+      resolveSafeSessionDir(batchId);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: 'Invalid batchId' }));
+      return;
+    }
     const rec = webBatchResultCache.get(`${clientIp}|${batchId}`);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     if (rec && Date.now() - rec.createdAt < BATCH_RESULT_TTL_MS) {
@@ -3302,8 +3524,8 @@ const server = http.createServer(async (req, res) => {
   // 只读配额查询：供批量转存前置预检查，不消耗任何配额（绝不调用 checkWebRateLimit，其内部会 rec.count++）
   if (req.method === 'GET' && u.pathname === '/api/quota') {
     const clientIp = getClientIp(req);
-    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
-    if (isPrivilegedClient(clientIp, adminKey)) {
+    const adminKey = req.headers['x-admin-key'] || '';
+    if (isPrivilegedClient(clientIp, adminKey, req)) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', data: { unlimited: true, privileged: true } }));
       return;
@@ -3315,45 +3537,128 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 整单额度预留（原子）：本机下载 / 本机打包同样消耗 VPS 出站带宽，纳入每日配额；特权用户豁免。
-  // 额度不足直接 429 拒绝，调用方必须在收到 429 时不开始任何下载。
+  // 返回 reservationId 凭据，后续本机下载失败或取消时可凭此退回未实际下载的额度。
   if (req.method === 'POST' && u.pathname === '/api/quota/consume') {
     const clientIp = getClientIp(req);
-    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
-    if (isPrivilegedClient(clientIp, adminKey)) {
+    const adminKey = req.headers['x-admin-key'] || '';
+    if (isPrivilegedClient(clientIp, adminKey, req)) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'ok', data: { unlimited: true } }));
       return;
     }
-    const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => {
-      let tracks = 1;
-      let isEn = false;
-      try {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-        tracks = Math.max(1, parseInt(body.tracks, 10) || 1);
-        isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
-      } catch {}
-      const reserved = reserveWebQuota(clientIp, tracks, isEn);
-      if (!reserved.ok) {
-        res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', error: reserved.error }));
-        return;
-      }
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: err.message }));
+      return;
+    }
+    const tracks = Math.max(1, parseInt(body.tracks, 10) || 1);
+    const isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
+    const reserved = reserveWebQuota(clientIp, tracks, isEn);
+    if (!reserved.ok) {
+      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: reserved.error }));
+      return;
+    }
+    const reservationId = crypto.randomUUID();
+    quotaReservations.set(reservationId, { ip: clientIp, tracks, refunded: 0, createdAt: Date.now() });
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'ok', data: { reserved: tracks, remaining: reserved.remaining, reservationId } }));
+    return;
+  }
+
+  // 本机下载失败/取消时凭 reservationId 退回未使用配额（严格校验归属 IP 与上限防刷）
+  if (req.method === 'POST' && u.pathname === '/api/quota/refund') {
+    const clientIp = getClientIp(req);
+    const adminKey = req.headers['x-admin-key'] || '';
+    if (isPrivilegedClient(clientIp, adminKey, req)) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ status: 'ok', data: { reserved: tracks, remaining: reserved.remaining } }));
-    });
+      res.end(JSON.stringify({ status: 'ok', data: { refunded: 0, unlimited: true } }));
+      return;
+    }
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: err.message }));
+      return;
+    }
+    const rid = String(body.reservationId || '').trim();
+    const rec = quotaReservations.get(rid);
+    if (!rec || rec.ip !== clientIp) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: 'Invalid or unknown reservationId' }));
+      return;
+    }
+    const maxRefundable = Math.max(0, rec.tracks - rec.refunded);
+    const reqRefund = body.tracks !== undefined ? Math.max(0, Math.floor(Number(body.tracks) || 0)) : maxRefundable;
+    const actualRefund = Math.min(maxRefundable, reqRefund);
+    if (actualRefund > 0) {
+      refundWebQuota(clientIp, actualRefund);
+      rec.refunded += actualRefund;
+    }
+    if (rec.refunded >= rec.tracks) {
+      quotaReservations.delete(rid);
+    }
+    const quota = getWebQuota(clientIp);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'ok', data: { refunded: actualRefund, remaining: quota.remaining } }));
+    return;
+  }
+
+  // 批量任务取消收尾：清理临时会话目录并退回未实际成功的批量配额
+  if (req.method === 'POST' && u.pathname === '/api/batch/cancel') {
+    const clientIp = getClientIp(req);
+    const adminKey = req.headers['x-admin-key'] || '';
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: err.message }));
+      return;
+    }
+    let safeDir;
+    let safeZip;
+    try {
+      safeDir = resolveSafeSessionDir(body.batchId);
+      safeZip = resolveSafeTmpPath(`${body.batchId}.zip`, { isFileName: true });
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: 'Invalid batchId' }));
+      return;
+    }
+    const batchKey = `${clientIp}|${body.batchId}`;
+    const led = webBatchQuotaLedger.get(batchKey);
+    const privileged = isPrivilegedClient(clientIp, adminKey, req);
+    if (!led && !privileged) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: 'Batch session not found for client' }));
+      return;
+    }
+    let refunded = 0;
+    if (led) {
+      if (led.reserved > led.consumed) {
+        refunded = led.reserved - led.consumed;
+        try { refundWebQuota(clientIp, refunded); } catch {}
+      }
+      webBatchQuotaLedger.delete(batchKey);
+    }
+    try { fs.rmSync(safeDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(safeZip, { force: true }); } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'ok', data: { cancelled: true, refunded } }));
     return;
   }
 
   if (req.method === 'POST' && (u.pathname === '/transfer' || u.pathname === '/api/cloud-transfer')) {
-    let clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '127.0.0.1';
-    if (clientIp.startsWith('::ffff:')) {
-      clientIp = clientIp.slice(7);
-    }
-    const adminKey = req.headers['x-admin-key'] || u.searchParams.get('admin_key') || '';
+    const clientIp = getClientIp(req);
+    const adminKey = req.headers['x-admin-key'] || '';
     const reqIsEn = String(u.searchParams.get('lang') || req.headers['accept-language'] || '').toLowerCase().startsWith('en');
-    const rateCheck = checkWebRateLimit(clientIp, adminKey, reqIsEn);
+    const rateCheck = checkWebRateLimit(clientIp, adminKey, reqIsEn, req);
     if (!rateCheck.ok) {
       console.warn(`[WebRateLimit] ⚠️ 拦截请求来源 IP: ${clientIp}, 原因: ${rateCheck.error}`);
       res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3361,59 +3666,101 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('error', err => {
-      console.warn('[Cloud-Transfer] 客户端传输中断:', err.message);
-    });
-    req.on('end', async () => {
-      let body;
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (jsonErr) {
+      res.writeHead(jsonErr.statusCode || 400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: jsonErr.message }));
+      return;
+    }
+    const isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
+    const privileged = isPrivilegedClient(clientIp, adminKey, req);
+    const allowLocalOutput = isDirectLoopback(req) || isValidAdminKey(adminKey);
+
+    // 1. 强校验 batchId 与 outputDir / noUpload 权限边界
+    if (body.batchId !== undefined && body.batchId !== null && body.batchId !== '') {
       try {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        body = JSON.parse(raw);
-      } catch (jsonErr) {
+        resolveSafeSessionDir(body.batchId);
+      } catch {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'error', error: `Invalid JSON body: ${jsonErr.message}` }));
+        res.end(JSON.stringify({ status: 'error', error: 'Invalid batchId' }));
         return;
       }
-      const isEn = String(body.lang || u.searchParams.get('lang') || '').toLowerCase().startsWith('en');
-
-      // ---------- 整单额度：开跑前一次性预留，不足则直接拒绝，不触发任何下载 ----------
-      // 网页批量 ZIP 模式是一次「整单请求」+ N 次逐首请求 + 1 次 finalize，逐首扣费既不准也会
-      // 跑到一半才喊停。因此整单在 quotaTracks 里一次性预留，后续逐首请求只认 batchId 放行。
-      let quotaReserved = 0;
+    }
+    if ((body.noUpload || body.outputDir) && !allowLocalOutput) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ status: 'error', error: isEn ? 'noUpload/outputDir requires direct loopback or admin auth' : '本地直出参数仅限本机内网或管理员调用' }));
+      return;
+    }
+    if (body.outputDir) {
       try {
-        const privileged = isPrivilegedClient(clientIp, adminKey);
-        // 歌手全辑（Discography）为站长专属：普通访客直接拒绝，不进入队列、不消耗任何资源
-        if (body.discography === true && !privileged) {
-          console.warn(`[WebQuota] 🔒 拒绝非特权用户下载歌手全辑: ${clientIp}`);
-          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({
-            status: 'error',
-            error: isEn
-              ? '🔒 Artist discography batch transfer is admin-only. You can still transfer individual albums, playlists, or single tracks.'
-              : '🔒 歌手全辑批量转存为站长专属功能。您仍可单独转存该歌手的单张专辑、歌单或单曲。'
-          }));
+        resolveSafeTmpPath(body.outputDir);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'error', error: 'Invalid outputDir: must stay inside /tmp' }));
+        return;
+      }
+    }
+
+    // 歌手全辑（Discography）为站长专属：普通访客直接拒绝，不进入队列、不消耗任何资源
+    if (body.discography === true && !privileged) {
+      console.warn(`[WebQuota] 🔒 拒绝非特权用户下载歌手全辑: ${clientIp}`);
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        status: 'error',
+        error: isEn
+          ? '🔒 Artist discography batch transfer is admin-only. You can still transfer individual albums, playlists, or single tracks.'
+          : '🔒 歌手全辑批量转存为站长专属功能。您仍可单独转存该歌手的单张专辑、歌单或单曲。'
+      }));
+      return;
+    }
+
+    // ---------- 磁盘水位保护（置于额度预留之前，避免空间不足误扣配额） ----------
+    try {
+      const needBytes = Math.max(0, parseInt(body.fileSize, 10) || 0);
+      const diskCheck = ensureDiskSpace(needBytes);
+      if (!diskCheck.ok) {
+        console.warn(`[DiskGuard] ⚠️ 拒绝 ${clientIp}: 剩余 ${diskCheck.free.toFixed(1)}GB`);
+        res.writeHead(507, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'error', error: diskCheck.error }));
+        return;
+      }
+    } catch (diskErr) {
+      console.warn('[DiskGuard] 检查异常(继续):', diskErr.message);
+    }
+
+    // ---------- 整单额度预留与台账严格校验 ----------
+    let singleTrackReserved = 0;
+    let ledgerTrackClaimed = false;
+    const batchKey = body.batchId ? `${clientIp}|${body.batchId}` : null;
+    if (!privileged) {
+      if (body.finalizeBatch && batchKey) {
+        if (!webBatchQuotaLedger.has(batchKey)) {
+          const tracks = Math.max(0, parseInt(body.quotaTracks, 10) || 0);
+          if (tracks > 0) {
+            const r = reserveWebQuota(clientIp, tracks, isEn);
+            if (!r.ok) {
+              res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ status: 'error', error: r.error }));
+              return;
+            }
+            singleTrackReserved = tracks;
+          }
+        }
+      } else if (!batchKey) {
+        const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
+        const r = reserveWebQuota(clientIp, tracks, isEn);
+        if (!r.ok) {
+          console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
+          res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ status: 'error', error: r.error }));
           return;
         }
-        const batchKey = body.batchId ? `${clientIp}|${body.batchId}` : null;
-
-        if (body.finalizeBatch && batchKey) {
-          // 收尾请求：额度已在下单时预留过，这里只确认台账存在；不存在则按整单曲目数兜底预留
-          if (!webBatchQuotaLedger.has(batchKey) && !privileged) {
-            const tracks = Math.max(0, parseInt(body.quotaTracks, 10) || 0);
-            if (tracks > 0) {
-              const r = reserveWebQuota(clientIp, tracks, isEn);
-              if (!r.ok) {
-                res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify({ status: 'error', error: r.error }));
-                return;
-              }
-              quotaReserved = tracks;
-            }
-          }
-        } else if (!privileged && !batchKey) {
-          // 非批量路径（单曲直转）：按本请求曲目数预留
+        singleTrackReserved = tracks;
+      } else {
+        let led = webBatchQuotaLedger.get(batchKey);
+        if (!led) {
           const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
           const r = reserveWebQuota(clientIp, tracks, isEn);
           if (!r.ok) {
@@ -3422,80 +3769,108 @@ const server = http.createServer(async (req, res) => {
             res.end(JSON.stringify({ status: 'error', error: r.error }));
             return;
           }
-          quotaReserved = tracks;
-        } else if (!privileged && batchKey) {
-          // 批量首请求一次性预留整单额度；后续同 batchId 请求不再重复扣。
-          // 若台账不存在（首请求失败/服务重启），退化为按单首计费，杜绝整单免费跑。
-          if (!webBatchQuotaLedger.has(batchKey)) {
-            const tracks = Math.max(1, parseInt(body.quotaTracks, 10) || 1);
-            const r = reserveWebQuota(clientIp, tracks, isEn);
+          if (tracks > 1) {
+            led = { reserved: tracks, consumed: 0, inflight: 1, createdAt: Date.now() };
+            webBatchQuotaLedger.set(batchKey, led);
+            ledgerTrackClaimed = true;
+          } else {
+            singleTrackReserved = 1;
+          }
+        } else {
+          // 防超额搭便车：仅在已消费+并发中 < 总预留时放行当前曲目
+          if (led.consumed + led.inflight >= led.reserved) {
+            const r = reserveWebQuota(clientIp, 1, isEn);
             if (!r.ok) {
-              console.warn(`[WebQuota] ⚠️ 拒绝 ${clientIp}: 需要 ${tracks} 首，仅剩 ${r.remaining} 首`);
               res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
               res.end(JSON.stringify({ status: 'error', error: r.error }));
               return;
             }
-            quotaReserved = tracks;
-            webBatchQuotaLedger.set(batchKey, { reserved: tracks, consumed: 0, createdAt: Date.now() });
+            singleTrackReserved = 1;
+          } else {
+            led.inflight++;
+            ledgerTrackClaimed = true;
           }
         }
-      } catch (quotaErr) {
-        console.warn('[WebQuota] 预留异常(继续):', quotaErr.message);
       }
+    }
 
-      // ---------- 磁盘水位保护：空间不足直接拒绝，避免跑到一半 No space left on device ----------
-      try {
-        const needBytes = Math.max(0, parseInt(body.fileSize, 10) || 0);
-        const diskCheck = ensureDiskSpace(needBytes);
-        if (!diskCheck.ok) {
-          console.warn(`[DiskGuard] ⚠️ 拒绝 ${clientIp}: 剩余 ${diskCheck.free.toFixed(1)}GB`);
-          res.writeHead(507, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ status: 'error', error: diskCheck.error }));
-          return;
-        }
-      } catch (diskErr) {
-        console.warn('[DiskGuard] 检查异常(继续):', diskErr.message);
+    // 连接中断取消传播（仅非 finalizeBatch：finalize 打包上传允许切后台继续并用 batchId 补查）
+    const reqAbortCtl = new AbortController();
+    const onReqClose = () => {
+      if (!res.writableEnded && !body.finalizeBatch) {
+        reqAbortCtl.abort(new Error('Client disconnected'));
       }
+    };
+    req.on('close', onReqClose);
 
-      try {
-        const taskName = body.meta?.title ? `${body.meta.artist || ''} - ${body.meta.title} (${body.quality || 'Lossless'})` : (body.adamId || 'Transfer');
-        const result = await globalQueue.enqueue(() => processTransfer(body), {
+    try {
+      const taskName = body.meta?.title ? `${body.meta.artist || ''} - ${body.meta.title} (${body.quality || 'Lossless'})` : (body.adamId || 'Transfer');
+      const result = await globalQueue.enqueue(
+        () => processTransfer(body, { signal: reqAbortCtl.signal }),
+        {
           name: taskName,
-          source: body.noUpload ? 'Telegram' : 'WebUI'
-        });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ status: 'ok', data: result }));
-        // 批量收尾成功后清理台账，避免常驻进程内存无限累积
-        if (body.finalizeBatch && body.batchId) {
-          webBatchQuotaLedger.delete(`${clientIp}|${body.batchId}`);
-          // 留档成品结果：浏览器断线/超时后可凭 batchId 补查，避免「服务端成功但前端报失败」
-          if (result) {
-            webBatchResultCache.set(`${clientIp}|${body.batchId}`, {
-              data: result,
-              createdAt: Date.now()
-            });
-          }
+          source: body.noUpload ? 'Telegram' : 'WebUI',
+          signal: reqAbortCtl.signal
         }
-      } catch (err) {
-        // 本请求失败：把该请求涉及的预留额度退回，不让用户为失败任务付费
-        if (quotaReserved > 0) {
-          try { refundWebQuota(clientIp, quotaReserved); } catch {}
+      );
+      req.off('close', onReqClose);
+
+      if (ledgerTrackClaimed && batchKey) {
+        const led = webBatchQuotaLedger.get(batchKey);
+        if (led) {
+          led.inflight = Math.max(0, led.inflight - 1);
+          led.consumed++;
         }
-        if (body.batchId) {
-          // 批量会话中任一请求失败即撤销整单台账，避免「首请求失败退款、后续请求免费跑」
-          const batchKey = `${clientIp}|${body.batchId}`;
+      }
+
+      if (body.finalizeBatch && body.batchId) {
+        if (batchKey) {
           const led = webBatchQuotaLedger.get(batchKey);
-          if (led && led.reserved > led.consumed && led.reserved !== quotaReserved) {
+          if (led && led.reserved > led.consumed) {
             try { refundWebQuota(clientIp, led.reserved - led.consumed); } catch {}
           }
           webBatchQuotaLedger.delete(batchKey);
         }
-        // wrapper-lite 卡死特征：terminated / internal error / Fairplay -42786 等。
-        // 后台 wrapper-watchdog 已会自动重启 wrapper-lite，这里把原生态错误翻译成友好提示，
-        // 让用户/日志能明确看到"wrapper 卡死已自愈，请重试"，而非晦涩的 terminated。
-        const rawMsg = err.message || String(err);
-        const wrapperStuck = /terminated|internal error|Fairplay|KDCanProcessCKC|-42786/i.test(rawMsg);
-        console.error(wrapperStuck ? '[Cloud-Transfer] 错误(wrapper卡死):' : '[Cloud-Transfer] 错误:', rawMsg);
+        if (result) {
+          webBatchResultCache.set(`${clientIp}|${body.batchId}`, {
+            data: result,
+            createdAt: Date.now()
+          });
+        }
+      }
+
+      if (!res.writableEnded) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ status: 'ok', data: result }));
+      }
+    } catch (err) {
+      req.off('close', onReqClose);
+      // 失败曲目退回 1 首预留，绝不误删整批台账让后续曲目异常计费
+      if (singleTrackReserved > 0) {
+        try { refundWebQuota(clientIp, singleTrackReserved); } catch {}
+      }
+      if (ledgerTrackClaimed && batchKey) {
+        const led = webBatchQuotaLedger.get(batchKey);
+        if (led) {
+          led.inflight = Math.max(0, led.inflight - 1);
+          if (led.reserved > led.consumed) {
+            led.reserved--;
+            try { refundWebQuota(clientIp, 1); } catch {}
+          }
+        }
+      }
+      if (body.finalizeBatch && batchKey) {
+        const led = webBatchQuotaLedger.get(batchKey);
+        if (led && led.reserved > led.consumed) {
+          try { refundWebQuota(clientIp, led.reserved - led.consumed); } catch {}
+        }
+        webBatchQuotaLedger.delete(batchKey);
+      }
+
+      const rawMsg = err.message || String(err);
+      const wrapperStuck = /terminated|internal error|Fairplay|KDCanProcessCKC|-42786/i.test(rawMsg);
+      console.error(wrapperStuck ? '[Cloud-Transfer] 错误(wrapper卡死):' : '[Cloud-Transfer] 错误:', rawMsg);
+      if (!res.writableEnded) {
         const userErr = wrapperStuck
           ? (isEn
               ? `Decryption service (wrapper) temporarily stalled and was automatically restarted. Please retry in a moment. (${rawMsg.slice(0, 80)})`
@@ -3504,7 +3879,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ status: 'error', error: userErr }));
       }
-    });
+    }
     return;
   }
 
@@ -3617,18 +3992,39 @@ server.requestTimeout = 600000; // 10 分钟队列等待防护
 server.headersTimeout = 610000;
 server.keepAliveTimeout = 60000;
 
-server.listen(PORT, HOST, () => {
-  console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
-  cleanupStaleSessions();
-  // 收紧到 10 分钟：Hi-Res 大专辑连续转存时临时文件堆积很快，30 分钟一次容易堆满磁盘
-  setInterval(cleanupStaleSessions, 10 * 60 * 1000);
-});
+export {
+  server,
+  tagMp4,
+  defragMp4Buffer,
+  stripBitrateBox,
+  sanitizeFilename,
+  renderNameTemplate,
+  renderZipTemplate,
+  resolveSafeSessionDir,
+  resolveSafeTmpPath,
+  isAllowedCoverUrl,
+  isDirectLoopback,
+  getClientIp,
+  isPrivilegedClient,
+  reserveWebQuota,
+  refundWebQuota,
+  getWebQuota
+};
 
-// 全局异常与未处理 Promise 拒绝守护，确保服务 7x24 小时稳定在线，永不崩溃闪退
-process.on('uncaughtException', err => {
-  console.error('[am-cloud] 全局未捕获异常 (已拦截，服务维持稳定运行):', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[am-cloud] 全局未捕获 Promise 拒绝 (已拦截):', reason);
-});
+if (process.env.AM_CLOUD_NO_LISTEN !== '1') {
+  server.listen(PORT, HOST, () => {
+    console.log(`[am-cloud] VPS 2000M 云端极速转存服务已就绪: http://${HOST}:${PORT}`);
+    cleanupStaleSessions();
+    // 收紧到 10 分钟：Hi-Res 大专辑连续转存时临时文件堆积很快，30 分钟一次容易堆满磁盘
+    setInterval(cleanupStaleSessions, 10 * 60 * 1000).unref();
+  });
+
+  // 全局异常与未处理 Promise 拒绝守护，确保服务 7x24 小时稳定在线，永不崩溃闪退
+  process.on('uncaughtException', err => {
+    console.error('[am-cloud] 全局未捕获异常 (已拦截，服务维持稳定运行):', err);
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[am-cloud] 全局未捕获 Promise 拒绝 (已拦截):', reason);
+  });
+}
 

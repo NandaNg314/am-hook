@@ -16,8 +16,8 @@ use crate::m3u8::{
 };
 use crate::log;
 use crate::monitor::ensure_template;
-use crate::source::{self, SourceKind, WHITELIST};
-use crate::state::{AppState, Track};
+use crate::source::{self, SourceKind};
+use crate::state::{is_allowed_cdn_url, AppState, Track};
 use crate::ui::app_handler;
 
 const M3U8_TYPE: &str = "application/vnd.apple.mpegurl; charset=utf-8";
@@ -69,8 +69,8 @@ pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, ur
         target.push_str(&query.join("&"));
     }
 
-    if !target.contains(WHITELIST) {
-        return text(StatusCode::FORBIDDEN, format!("Only requests containing '{WHITELIST}' are supported.\n"));
+    if !is_allowed_cdn_url(&target) {
+        return text(StatusCode::FORBIDDEN, "Only Apple Music audio CDN URLs are supported.\n".into());
     }
 
     let kind = source::classify(source::filename(&target));
@@ -94,11 +94,14 @@ async fn forward(
     range: Option<&HeaderValue>,
     content_type: Option<&'static str>,
 ) -> Response<Body> {
-    let mut req = state.http_client.request(method, target);
+    let mut req = state.cdn_client.request(method, target);
     if let Some(r) = range {
         req = req.header(RANGE, r);
     }
     let resp = match req.send().await {
+        Ok(r) if r.status().is_redirection() => {
+            return text(StatusCode::BAD_GATEWAY, "Upstream CDN redirected outside allowed domains\n".into());
+        }
         Ok(r) => r,
         Err(e) => return text(StatusCode::BAD_GATEWAY, format!("Upstream request failed: {e}\n")),
     };
@@ -112,12 +115,15 @@ async fn forward(
     if let Some(ct) = content_type {
         builder = builder.header(CONTENT_TYPE, ct);
     }
-    builder.body(Body::from_stream(resp.bytes_stream())).unwrap()
+    finish_response(builder, Body::from_stream(resp.bytes_stream()))
 }
 
 async fn fetch_text(state: &AppState, url: &str) -> Result<String, String> {
-    let resp = state.http_client.get(url).send().await.map_err(|e| format!("Failed to fetch {url}: {e}"))?;
+    let resp = state.cdn_client.get(url).send().await.map_err(|e| format!("Failed to fetch {url}: {e}"))?;
     let status = resp.status();
+    if status.is_redirection() {
+        return Err(format!("Upstream CDN redirected outside allowed domains for {url}"));
+    }
     if !status.is_success() {
         return Err(format!("Upstream returned HTTP {status} for {url}"));
     }
@@ -153,7 +159,7 @@ async fn handle_media_m3u8(state: &Arc<AppState>, target: &str, byterange: bool)
     register_track(state, track).await;
 
     let body = if byterange { cleaned } else { to_compat_playlist(&cleaned) };
-    Response::builder().header(CONTENT_TYPE, M3U8_TYPE).body(Body::from(body)).unwrap()
+    finish_response(Response::builder().header(CONTENT_TYPE, M3U8_TYPE), Body::from(body))
 }
 
 /// 取得 media file 对应的轨道：优先内存，其次拉取对应 m3u8 补齐（并发请求只拉一次）
@@ -182,11 +188,12 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
     let (start, end, partial) = match parse_range(headers.get(RANGE), total) {
         Some(r) => r,
         None => {
-            return Response::builder()
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(CONTENT_RANGE, format!("bytes */{total}"))
-                .body(Body::empty())
-                .unwrap();
+            return finish_response(
+                Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(CONTENT_RANGE, format!("bytes */{total}")),
+                Body::empty(),
+            );
         }
     };
 
@@ -200,7 +207,7 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
         builder.status(StatusCode::OK)
     };
     if method == Method::HEAD {
-        return builder.body(Body::empty()).unwrap();
+        return finish_response(builder, Body::empty());
     }
 
     let segs = track.segments_overlapping(start, end);
@@ -224,8 +231,11 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
             async move {
                 let data = load_segment(&state, &track, &target, idx).await?;
                 let seg = track.segments[idx];
-                let lo = start.saturating_sub(seg.offset) as usize;
-                let hi = ((end + 1).min(seg.end()) - seg.offset) as usize;
+                let lo = usize::try_from(start.saturating_sub(seg.offset)).unwrap_or(usize::MAX).min(data.len());
+                let hi = usize::try_from(end.saturating_add(1).min(seg.end()).saturating_sub(seg.offset))
+                    .unwrap_or(data.len())
+                    .min(data.len())
+                    .max(lo);
                 Ok::<_, String>(data.slice(lo..hi))
             }
         })
@@ -234,7 +244,7 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
         .inspect_err(|e| warn!(error = %e, "Aborting media file stream"))
         .map_err(std::io::Error::other);
 
-    builder.body(Body::from_stream(body)).unwrap()
+    finish_response(builder, Body::from_stream(body))
 }
 
 /// 通用 m3u8 的独立分片：init 段 + 第 idx 个 frag 拼接返回，播放器可逐段单独解码
@@ -251,13 +261,14 @@ async fn handle_media_segment(state: Arc<AppState>, method: Method, target: &str
     }
 
     // box 替换保持字节长度不变，无需解密即可得知总长
-    let total = track.segments[0].length + track.segments[idx].length;
+    let total = track.segments[0].length.saturating_add(track.segments[idx].length);
     let Some((start, end, partial)) = parse_range(headers.get(RANGE), total) else {
-        return Response::builder()
-            .status(StatusCode::RANGE_NOT_SATISFIABLE)
-            .header(CONTENT_RANGE, format!("bytes */{total}"))
-            .body(Body::empty())
-            .unwrap();
+        return finish_response(
+            Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(CONTENT_RANGE, format!("bytes */{total}")),
+            Body::empty(),
+        );
     };
 
     let mut builder = Response::builder()
@@ -270,7 +281,7 @@ async fn handle_media_segment(state: Arc<AppState>, method: Method, target: &str
         builder.status(StatusCode::OK)
     };
     if method == Method::HEAD {
-        return builder.body(Body::empty()).unwrap();
+        return finish_response(builder, Body::empty());
     }
 
     spawn_readahead(&state, &track, &file_target, idx + 1);
@@ -282,11 +293,20 @@ async fn handle_media_segment(state: Arc<AppState>, method: Method, target: &str
         Ok(v) => v,
         Err(e) => return text(StatusCode::BAD_GATEWAY, format!("Failed to load segment {idx}: {e}\n")),
     };
-    let mut data = Vec::with_capacity(total as usize);
+    let mut data = Vec::with_capacity(init.len().saturating_add(frag.len()));
     data.extend_from_slice(&init);
     data.extend_from_slice(&frag);
-    let data = Bytes::from(data).slice(start as usize..=end as usize);
-    builder.body(Body::from(data)).unwrap()
+    let Ok(lo) = usize::try_from(start) else {
+        return text(StatusCode::BAD_GATEWAY, "Segment offset out of range\n".into());
+    };
+    let Some(hi) = usize::try_from(end).ok().and_then(|e| e.checked_add(1)) else {
+        return text(StatusCode::BAD_GATEWAY, "Segment range overflow\n".into());
+    };
+    if lo > hi || hi > data.len() {
+        return text(StatusCode::BAD_GATEWAY, "Segment length mismatch\n".into());
+    }
+    let data = Bytes::from(data).slice(lo..hi);
+    finish_response(builder, Body::from(data))
 }
 
 fn spawn_readahead(state: &Arc<AppState>, track: &Arc<Track>, target: &str, idx: usize) {
@@ -344,21 +364,41 @@ async fn load_init(state: &AppState, track: &Track, target: &str) -> Result<Byte
 }
 
 async fn download(state: &AppState, url: &str, offset: u64, length: u64) -> Result<Bytes, String> {
+    if length == 0 {
+        return Err(format!("Invalid zero-length segment @{offset}"));
+    }
+    let range_end = offset
+        .checked_add(length - 1)
+        .ok_or_else(|| format!("Segment @{offset} range overflow"))?;
     let resp = state
-        .http_client
+        .cdn_client
         .get(url)
-        .header(RANGE, format!("bytes={}-{}", offset, offset + length - 1))
+        .header(RANGE, format!("bytes={offset}-{range_end}"))
         .send()
         .await
         .map_err(|e| format!("Failed to download segment: {e}"))?;
     let status = resp.status();
+    if status.is_redirection() {
+        return Err(format!("Upstream CDN redirected outside allowed domains for segment @{offset}"));
+    }
     if !status.is_success() {
         return Err(format!("Upstream returned HTTP {status} for segment @{offset}"));
     }
     let mut body = resp.bytes().await.map_err(|e| format!("Failed to read segment: {e}"))?;
     if status == StatusCode::OK && body.len() as u64 > length {
-        // 上游忽略了 Range，自行截取
-        body = body.slice(offset as usize..(offset + length) as usize);
+        // 上游忽略了 Range，自行截取前需校验 offset + length 不越界
+        let start = usize::try_from(offset).map_err(|_| format!("Segment @{offset} offset out of range"))?;
+        let len = usize::try_from(length).map_err(|_| format!("Segment @{offset} length out of range"))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| format!("Segment @{offset} range overflow"))?;
+        if end > body.len() {
+            return Err(format!(
+                "Segment @{offset} truncated 200 OK body: got {} expected at least {end}",
+                body.len()
+            ));
+        }
+        body = body.slice(start..end);
     }
     if body.len() as u64 != length {
         return Err(format!("Segment @{offset} size mismatch: got {} expected {length}", body.len()));
@@ -395,13 +435,21 @@ fn parse_range(header: Option<&HeaderValue>, total: u64) -> Option<(u64, u64, bo
     (start <= end && start < total).then_some((start, end, true))
 }
 
+fn finish_response(builder: axum::http::response::Builder, body: Body) -> Response<Body> {
+    builder.body(body).unwrap_or_else(|e| {
+        warn!(error = %e, "Failed to build HTTP response");
+        Response::new(Body::empty())
+    })
+}
+
 fn text(status: StatusCode, body: String) -> Response<Body> {
     let note = body.trim_end().to_owned();
-    let response = Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Body::from(body))
-        .unwrap();
+    let response = finish_response(
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "text/plain; charset=utf-8"),
+        Body::from(body),
+    );
     log::note(response, note)
 }
 
@@ -420,5 +468,34 @@ mod tests {
         assert_eq!(parse_range(Some(&h("bytes=1000-")), 1000), None);
         assert_eq!(parse_range(Some(&h("bytes=5-2")), 1000), None);
         assert_eq!(parse_range(None, 1000), Some((0, 999, false)));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_ssrf_whitelist_rejects_bypass() {
+        let state = Arc::new(AppState::new("http://127.0.0.1:12340".into(), 60, 1));
+        for bad in [
+            "/http://127.0.0.1:12340/status?aod.itunes.apple.com/itunes-assets/",
+            "/https://evil.com/aod.itunes.apple.com/itunes-assets/x.m3u8",
+            "/http://aod.itunes.apple.com/itunes-assets/x.m3u8",
+            "/https://aod.itunes.apple.com:8443/itunes-assets/x.m3u8",
+            "/https://user@aod.itunes.apple.com/itunes-assets/x.m3u8",
+        ] {
+            let uri: Uri = bad.parse().unwrap();
+            let resp = handle_proxy(State(state.clone()), Method::GET, uri, HeaderMap::new()).await;
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "expected 403 for {bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_rejects_short_200_ok_without_panic() {
+        let app = axum::Router::new().route("/seg", axum::routing::get(|| async { "0123456789" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state = AppState::new("http://127.0.0.1:12340".into(), 60, 1);
+        let err = download(&state, &format!("http://{addr}/seg"), 8, 5).await.unwrap_err();
+        assert!(err.contains("truncated 200 OK body"), "got {err}");
+        server.abort();
     }
 }
