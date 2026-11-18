@@ -26,7 +26,7 @@
           "🇭🇰 粤语与繁中歌词修复：本机下载开启中文翻译时，粤语/繁中原词不再被跳过，且会自动整理多余的汉字间距",
           "📝 清晰直观的提示与命名：修复专辑/歌单弹窗“内嵌歌词格式”文字标错；长歌名和 Emoji 截断时完整保留文件扩展名",
           "☁️ 云端上传更稳健：Gofile 节点波动或返回异常时自动重选节点重试，大包分卷传输更加稳定",
-          "🎬 网页端 MV 播放与下载修复：解决部分带签名 MV 分片请求返回 403 的问题，并加入分片预取提升下载速度"
+          "🎬 网页端 MV 播放与下载修复：解决部分带签名 MV 分片请求返回 403 的问题，并加入分片预取提升下载速度；同时规范 MV 下载文件名为「歌手 - 歌名 [清晰度].mp4」，修复外区华语 MV 繁简与艺人名显示及部分浏览器落盘为临时 UUID 文件名的问题"
         ],
         "en": [
           "📀 Complete large-album pagination: albums with over 100 tracks now load every page cleanly when localized for Japanese, Chinese or English",
@@ -35,7 +35,7 @@
           "🇭🇰 Cantonese & Traditional Chinese lyrics: local bilingual downloads now translate zh-Hant tracks to Simplified Chinese and remove extra spaces between CJK characters",
           "📝 Clearer UI labels & safer filenames: fixed the mislabeled embedded-lyrics selector in album/playlist modals, and long filenames/emoji now truncate cleanly without stripping file extensions",
           "☁️ More resilient cloud uploads: Gofile transfers automatically switch nodes and retry on transient errors",
-          "🎬 Web MV playback & download fix: fixed HTTP 403 errors on signed MV segments and added segment prefetching for faster downloads"
+          "🎬 Web MV playback, download & naming fix: fixed HTTP 403 errors on signed MV segments with segment prefetching, normalized MV filenames to \"Artist - Title [Spec].mp4\" (preventing temporary UUID filenames), and improved Chinese/English metadata localization across storefronts"
         ]
       }
     },

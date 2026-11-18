@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 (async () => {
   const source = fs.readFileSync('src/ui/mv-hls.mjs', 'utf8');
-  const { attributes, mvLink, parseMaster, recommendedAudio, parseMedia } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  const { attributes, mvLink, parseMaster, recommendedAudio, parseMedia, sanitizeFileName, decodeMvSlug, mvTrackSpec, buildMvFileName } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   assert.equal(mvLink('https://music.apple.com/cn/music-video/title/1794822079').id, '1794822079');
   assert.equal(mvLink('https://music.apple.com.evil.test/cn/music-video/title/123'), null);
   assert.equal(mvLink('https://music.apple.com/cn/song/title/123'), null);
@@ -77,5 +77,41 @@ clear-2.m4s
   // Encrypted without a PlayReady key cannot be decrypted.
   assert.throws(() => parseMedia(playlist.replace(/KEYFORMAT="com\.microsoft\.playready"/g, 'KEYFORMAT="other"'), base), /No PlayReady key/);
   assert.equal(parseMedia(playlist.replace('#EXTINF:4,', '#EXT-X-KEY:METHOD=NONE\n#EXTINF:4,'), base).segments[2].key, null);
-  console.log('MV HLS: link validation, variants, defaults, key rotation, byte ranges and malformed input passed.');
+
+  // File naming sanitization, slug decoding, spec formatting, and UTF-8 safe truncation.
+  assert.equal(decodeMvSlug('%E7%8E%AB%E7%91%B0%E8%89%B2%E7%9A%84%E4%BD%A0'), '玫瑰色的你');
+  assert.equal(decodeMvSlug('_'), '');
+  assert.equal(decodeMvSlug('100%'), '');
+  assert.equal(sanitizeFileName('A COMPLETE ~ALL SINGLES~'), 'A COMPLETE ~ALL SINGLES～');
+  assert.equal(sanitizeFileName('..hidden\u200b name.'), 'hidden name');
+  assert.equal(sanitizeFileName('e\u0301/a:b*c?d"e<f>g|h'), 'é_a_b_c_d_e_f_g_h');
+  assert.equal(sanitizeFileName('x\u0085y\ufffe\ud800z'), 'x_yz');
+  assert.equal(sanitizeFileName('CON'), '_CON');
+  assert.equal(sanitizeFileName('COM\u00b9'), '_COM\u00b9');
+  assert.equal(sanitizeFileName('Thumbs.db'), '_Thumbs.db');
+  assert.equal(sanitizeFileName('Live.Local'), 'Live_Local');
+  assert.equal(sanitizeFileName('\u3000Title\u3000'), 'Title');
+
+  assert.equal(mvTrackSpec({ RESOLUTION: '854x480', CODECS: 'avc1.64001f' }, { CHANNELS: '2' }), '480p');
+  assert.equal(mvTrackSpec({ RESOLUTION: '1920x1080', CODECS: 'hvc1.2.4', 'VIDEO-RANGE': 'SDR' }, { CHANNELS: '2' }), '1080p');
+  assert.equal(mvTrackSpec({ RESOLUTION: '3840x2160', CODECS: 'dvh1.05.06' }, { CHANNELS: '16/JOC' }), '4K Dolby Vision · Atmos');
+  assert.equal(mvTrackSpec({ RESOLUTION: '3840x2160', CODECS: 'hvc1.2.4', 'VIDEO-RANGE': 'PQ' }, { CHANNELS: '6' }), '4K HDR10 · 5.1');
+  assert.equal(mvTrackSpec({ direct: true, height: 1080 }, null, true), '1080p');
+
+  assert.equal(buildMvFileName({ artist: '张悬', title: '玫瑰色的你', spec: '480p', id: '578110588' }), '张悬 - 玫瑰色的你 [480p].mp4');
+  assert.equal(buildMvFileName({ artist: 'Deserts Chang', title: '玫瑰色的你', spec: '480p', id: '578110588' }), 'Deserts Chang - 玫瑰色的你 [480p].mp4');
+  assert.equal(buildMvFileName({ artist: 'AC/DC', title: 'Back In Black', spec: '1080p', id: '1' }), 'AC_DC - Back In Black [1080p].mp4');
+  assert.equal(buildMvFileName({ artist: 'Apple Music Presents', title: 'Interview / 访谈', spec: '1080p', id: '42', post: true }), 'Apple Music Presents - Interview _ 访谈 [1080p].mp4');
+  assert.equal(buildMvFileName({ artist: '', title: 'CON', spec: '', id: '1' }), '_CON.mp4');
+  assert.equal(buildMvFileName({ artist: '', title: '...', spec: '480p', id: '99' }), 'MV 99 [480p].mp4');
+
+  const longMv = buildMvFileName({ artist: '歌手', title: '长'.repeat(200), spec: '4K Dolby Vision · Atmos', id: '1' });
+  assert.ok(longMv.endsWith(' [4K Dolby Vision · Atmos].mp4'), `keeps spec and .mp4: ${longMv}`);
+  assert.ok(Buffer.byteLength(longMv, 'utf8') <= 255, `utf8 bytes <= 255: ${Buffer.byteLength(longMv, 'utf8')}`);
+  const emojiMv = buildMvFileName({ artist: '', title: '😀'.repeat(100), spec: '1080p', id: '1' });
+  assert.ok(emojiMv.endsWith(' [1080p].mp4'));
+  assert.ok(Buffer.byteLength(emojiMv, 'utf8') <= 255);
+  assert.ok(!/[\ud800-\udfff]/.test(emojiMv.replace(/😀/g, '')), 'no lone surrogates after truncation');
+
+  console.log('MV HLS: link validation, variants, defaults, key rotation, byte ranges, naming sanitization and malformed input passed.');
 })().catch(e => { console.error(e); process.exitCode = 1; });

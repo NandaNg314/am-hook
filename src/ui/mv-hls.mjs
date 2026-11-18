@@ -101,3 +101,95 @@ export async function fetchResource(resource, signal) {
   if (resource.range && bytes.length !== resource.range.length) throw new Error('Truncated media range');
   return bytes;
 }
+
+const FORBIDDEN_FILE_CHARS = /[\\/:*?"<>|\u0000-\u001f\u007f-\u009f]/g;
+const INVISIBLE_FILE_CHARS = /[\p{Cf}\ufdd0-\ufdef\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/gu;
+const RESERVED_FILE_NAME = /^((con|prn|aux|nul|clock\$|(com|lpt)[0-9\u00b9\u00b2\u00b3])(\..*)?|desktop\.ini|thumbs\.db)$/i;
+const SHELL_EXT_DOT = /\.(?=(lnk|local|\{.*\})$)/i;
+const UTF8_ENCODER = new TextEncoder();
+const MV_MAX_CHARS = 180;
+const MV_MAX_BYTES = 240;
+
+function cleanFilePart(value) {
+  return String(value ?? '')
+    .replace(INVISIBLE_FILE_CHARS, '')
+    .normalize('NFC')
+    .replace(FORBIDDEN_FILE_CHARS, '_')
+    .replace(INVISIBLE_FILE_CHARS, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function finalizeSegment(text) {
+  let s = text.replace(/^[.\s]+|[.\s]+$/g, '').replace(/^~|~$/g, '～').replace(SHELL_EXT_DOT, '_');
+  if (RESERVED_FILE_NAME.test(s)) s = `_${s}`;
+  return s || '_';
+}
+
+function truncateSegment(text, maxBytes, maxChars) {
+  let chars = [...text];
+  if (chars.length > maxChars) chars = chars.slice(0, maxChars);
+  while (chars.length && UTF8_ENCODER.encode(chars.join('')).length > maxBytes) chars.pop();
+  return finalizeSegment(chars.join(''));
+}
+
+/** 清洗单个文件名（不含扩展名）：NFC 规范化、去除控制/不可见字符、非法字符转下划线、处理首尾点与 ~、Windows 保留名与 UTF-8 字节安全截断 */
+export function sanitizeFileName(name, maxBytes = MV_MAX_BYTES, maxChars = MV_MAX_CHARS) {
+  const cleaned = cleanFilePart(name).replace(/^[.\s]+|[.\s]+$/g, '');
+  if (!cleaned) return '_';
+  const s = finalizeSegment(cleaned);
+  return (UTF8_ENCODER.encode(s).length > maxBytes || [...s].length > maxChars)
+    ? truncateSegment(cleaned, maxBytes, maxChars)
+    : s;
+}
+
+/** 安全解码 URL 路径里的 MV slug（`_` 或非法 percent-encoding 时返回空串） */
+export function decodeMvSlug(slug) {
+  if (!slug || slug === '_') return '';
+  try {
+    const decoded = decodeURIComponent(String(slug)).trim();
+    return decoded === '_' ? '' : decoded;
+  } catch {
+    return '';
+  }
+}
+
+/** 生成用于文件名后缀的规格标签（如 480p、1080p、4K Dolby Vision · Atmos） */
+export function mvTrackSpec(video, audio, post = false) {
+  if (!video) return '';
+  if (post || video.direct) return video.height ? `${video.height}p` : 'SD';
+  const height = Number(String(video.RESOLUTION || '').split('x')[1]) || 0;
+  const res = height >= 2160 ? '4K' : height >= 1440 ? '2K' : height ? `${height}p` : '';
+  const vc = String(video.CODECS || '');
+  const range = /^dv(h1|he)/.test(vc) ? 'Dolby Vision' : ({ PQ: 'HDR10', HLG: 'HLG' }[video['VIDEO-RANGE']] || '');
+  const videoPart = [res, range].filter(Boolean).join(' ');
+  const [channels, joc] = String(audio?.CHANNELS || '').split('/');
+  const audioPart = joc === 'JOC' ? 'Atmos' : (channels && channels !== '2' && channels !== '1') ? ({ 6: '5.1', 8: '7.1' }[channels] || `${channels}ch`) : '';
+  return [videoPart, audioPart].filter(Boolean).join(' · ');
+}
+
+/** 生成规范的 MV 下载文件名：{artist} - {title} [{spec}].mp4（超长时优先截断标题/艺人，始终保留 [{spec}].mp4 后缀） */
+export function buildMvFileName({ artist = '', title = '', spec = '', id = '', post = false, maxBytes = MV_MAX_BYTES, maxChars = MV_MAX_CHARS } = {}) {
+  let cleanArtist = cleanFilePart(artist).replace(/^[.\s]+|[.\s]+$/g, '');
+  let cleanTitle = cleanFilePart(title).replace(/^[.\s]+|[.\s]+$/g, '') || cleanFilePart(`${post ? 'Video' : 'MV'} ${id || ''}`.trim()) || 'MV';
+  const cleanSpec = cleanFilePart(spec).replace(/^[.\s]+|[.\s]+$/g, '');
+  const suffix = cleanSpec ? ` [${cleanSpec}]` : '';
+  // 为 .mp4（4 字节）与可能的全角 ～ / _ 前缀留出字节余量，保证总文件名 <= 255 UTF-8 字节
+  const stemMaxBytes = Math.max(16, maxBytes - 4);
+  const stemMaxChars = Math.max(16, maxChars - 4);
+  const compose = (a, t) => `${a ? `${a} - ` : ''}${t}${suffix}`;
+  const fits = (s) => UTF8_ENCODER.encode(s).length <= stemMaxBytes && [...s].length <= stemMaxChars;
+
+  let aChars = [...cleanArtist], tChars = [...cleanTitle];
+  while (!fits(compose(aChars.join(''), tChars.join('')))) {
+    if (tChars.length > 1 && (tChars.length >= aChars.length || aChars.length <= 1)) {
+      tChars.pop();
+    } else if (aChars.length > 0) {
+      aChars.pop();
+    } else {
+      break;
+    }
+  }
+  const stem = compose(aChars.join('').replace(/[.\s]+$/g, ''), tChars.join('').replace(/[.\s]+$/g, ''));
+  return `${sanitizeFileName(stem, stemMaxBytes, stemMaxChars)}.mp4`;
+}

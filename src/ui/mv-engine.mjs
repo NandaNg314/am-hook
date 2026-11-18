@@ -214,7 +214,7 @@ export async function collectGarbage() {
 }
 // Segment requests kept in flight while earlier segments are decrypted and written in order.
 const PREFETCH = 4;
-export async function downloadMV(id, video, audio, { signal, onProgress, onDefrag }) {
+export async function downloadMV(id, video, audio, { signal, onProgress, onDefrag, fileName } = {}) {
   if (!navigator.storage?.getDirectory) throw new Error('OPFS requires HTTPS or localhost and a supported browser');
   await collectGarbage();
   const root = await navigator.storage.getDirectory();
@@ -260,7 +260,8 @@ export async function downloadMV(id, video, audio, { signal, onProgress, onDefra
     onDefrag?.();
     await core.call('defrag', fragmented, name);
     signal.throwIfAborted();
-    const file = await (await root.getFileHandle(name)).getFile(); complete = true;
+    const opfsFile = await (await root.getFileHandle(name)).getFile(); complete = true;
+    const file = new File([opfsFile], fileName || `MV ${id}.mp4`, { type: 'video/mp4' });
     return { file, dispose: () => remove(root, name).finally(unlock) };
   } finally {
     signal.removeEventListener('abort', abort); core.close();
@@ -291,7 +292,7 @@ export class DirectPlayback {
 }
 // Streams a progressive MP4 to OPFS (same naming and locks as MV downloads, so collectGarbage covers it);
 // without OPFS (plain-HTTP LAN access) it falls back to an in-memory Blob.
-export async function downloadDirect(url, { signal, onProgress }) {
+export async function downloadDirect(url, { signal, onProgress, fileName } = {}) {
   const res = await fetch(url, { signal });
   if (!res.ok || !res.body) throw new Error(`Video HTTP ${res.status}`);
   const total = Number(res.headers.get('Content-Length')) || 0;
@@ -302,7 +303,7 @@ export async function downloadDirect(url, { signal, onProgress }) {
   const body = res.body.pipeThrough(progress, { signal });
   if (!navigator.storage?.getDirectory) {
     const file = await new Response(body).blob();
-    return { file: new File([file], 'video.mp4', { type: 'video/mp4' }), dispose: async () => {} };
+    return { file: new File([file], fileName || 'video.mp4', { type: 'video/mp4' }), dispose: async () => {} };
   }
   await collectGarbage();
   const root = await navigator.storage.getDirectory();
@@ -314,7 +315,8 @@ export async function downloadDirect(url, { signal, onProgress }) {
     if (quota && total && quota - (usage || 0) < total * 1.05) throw new Error('Not enough OPFS storage quota for this download');
     const handle = await root.getFileHandle(name, { create: true });
     await body.pipeTo(await handle.createWritable(), { signal });
-    const file = await handle.getFile(); complete = true;
+    const opfsFile = await handle.getFile(); complete = true;
+    const file = new File([opfsFile], fileName || 'video.mp4', { type: 'video/mp4' });
     return { file, dispose: () => remove(root, name).finally(unlock) };
   } finally {
     if (!complete) { await remove(root, name); unlock(); }

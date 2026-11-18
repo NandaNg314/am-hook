@@ -124,6 +124,11 @@ async function toggleLang(page) {
       });
       const page = await context.newPage(), errors = [];
       page.on('pageerror', e => errors.push(e.message));
+      await page.addInitScript(() => {
+        const orig = URL.createObjectURL;
+        window.__createdBlobNames = [];
+        URL.createObjectURL = (obj) => { window.__createdBlobNames.push(obj?.name || ''); return orig.call(URL, obj); };
+      });
       await page.goto('http://am.test/https://music.apple.com/us/post/42');
       await page.locator('#videos input').first().waitFor({ state: 'attached' });
       assert.equal(await page.locator('#title').textContent(), 'Interview / 访谈');
@@ -138,8 +143,38 @@ async function toggleLang(page) {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.locator('#download').click();
       await page.locator('#save').waitFor();
-      assert.match(await page.locator('#save').getAttribute('download'), /^Interview _ 访谈 \(42\)\.mp4$/);
+      assert.equal(await page.locator('#save').getAttribute('download'), 'Apple Music Presents - Interview _ 访谈 [1080p].mp4');
+      assert.deepEqual(await page.evaluate(() => window.__createdBlobNames), ['Apple Music Presents - Interview _ 访谈 [1080p].mp4']);
       assert.equal(await page.evaluate(async () => (await (await fetch(document.getElementById('save').href)).arrayBuffer()).byteLength), mp4.length);
+      assert.deepEqual(errors, []);
+      await context.close(); scenarios++;
+    }
+    // 外区（tr）打开华语 MV：中文模式补全 cn/us/hk/tw 简体艺人名与标题，英文模式保留英文艺人名
+    for (const lang of ['zh', 'en']) {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      await context.addInitScript(lang => localStorage.setItem('am-hook:lang', lang), lang);
+      await context.route('**/*', route => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/amp/v1/catalog/tr/music-videos/578110588') {
+          return route.fulfill({ json: { data: [{ id: '578110588', type: 'music-videos', attributes: {
+            name: '玫瑰色的你', artistName: 'Deserts Chang', releaseDate: '2012-08-15', genreNames: ['Mandopop'], durationInMillis: 296963,
+          }, relationships: { artists: { data: [{ id: '300117902', type: 'artists', attributes: { name: 'Deserts Chang', url: 'https://music.apple.com/tr/artist/deserts-chang/300117902' } }] } } }] } });
+        }
+        if (url.pathname === '/amp/v1/catalog/us/music-videos/578110588' && url.searchParams.get('l') === 'zh-Hans-CN') {
+          return route.fulfill({ json: { data: [{ id: '578110588', type: 'music-videos', attributes: {
+            name: '玫瑰色的你', artistName: '张悬', releaseDate: '2012-08-15', genreNames: ['国语流行'], durationInMillis: 296963,
+          }, relationships: { artists: { data: [{ id: '300117902', type: 'artists', attributes: { name: '张悬', url: 'https://music.apple.com/us/artist/%E5%BC%A0%E6%82%AC/300117902' } }] } } }] } });
+        }
+        if (url.pathname.startsWith('/amp/')) return route.fulfill({ status: 404, json: { errors: [] } });
+        if (url.pathname.startsWith('/parse/mv/')) return route.fulfill({ json: { code: 0, data: { masterBody, masterUrl: 'https://example.com/master.m3u8' } } });
+        return asset(route, url);
+      });
+      const page = await context.newPage(), errors = [];
+      page.on('pageerror', e => errors.push(e.message));
+      await page.goto('http://am.test/https://music.apple.com/tr/music-video/%E7%8E%AB%E7%91%B0%E8%89%B2%E7%9A%84%E4%BD%A0/578110588');
+      await page.locator('#videos input').first().waitFor({ state: 'attached' });
+      await page.waitForFunction((expected) => document.getElementById('artist')?.textContent === expected, lang === 'zh' ? '张悬' : 'Deserts Chang', { timeout: 5000 });
+      assert.equal(await page.locator('#title').textContent(), '玫瑰色的你');
       assert.deepEqual(errors, []);
       await context.close(); scenarios++;
     }
