@@ -561,7 +561,9 @@ fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body
 }
 
 /// 文本响应（master m3u8 / MV master）的读取上限，避免异常上游把超大 body 读进内存
-const MAX_TEXT_BYTES: usize = 1024 * 1024;
+// Apple master m3u8 可能非常大（实测 7–13MB，部分多语种/多音轨发行更大），
+// 上限只用于防异常上游，绝不能设成 1MiB 否则正常曲目会被拒。
+const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 /// 流式读取文本响应并限制总大小（不信任上游的 Content-Length）
 async fn read_text_limited(response: reqwest::Response, what: &str) -> Result<String, String> {
@@ -579,7 +581,10 @@ async fn read_text_limited(response: reqwest::Response, what: &str) -> Result<St
         }
         buf.extend_from_slice(&chunk);
     }
-    String::from_utf8(buf).map_err(|e| format!("{what}: invalid UTF-8: {e}"))
+    // 上游可能返回 M4P 二进制（audio/x-m4p）而不是 m3u8；用 lossy 转成文本，
+    // 让 parse_master_variants 返回 "No variants..."，触发 cloud-service 的 webplayback 回退。
+    // 严格 UTF-8 校验会把这个正常回退路径变成 500。
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 const MAX_GOFILE_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
