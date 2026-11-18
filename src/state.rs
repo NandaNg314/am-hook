@@ -21,12 +21,15 @@ pub enum KeyKind {
 }
 
 /// m3u8 中一个 BYTERANGE 段。`Track::segments[0]` 是 EXT-X-MAP 的 init 段，
-/// 其余分片按各自 `key` 决定使用固定模板、轨道模板或明文直通。
+/// 其余分片按各自 `key` 决定使用固定模板、轨道模板或明文直通；
+/// `KeyKind::Track` 时 `key_index` 指向 `Track::keys` 中该分片对应的密钥
+/// （多密钥轮换的 m3u8 里不同分片可能取到不同密钥）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Segment {
     pub offset: u64,
     pub length: u64,
     pub key: KeyKind,
+    pub key_index: u8,
 }
 
 impl Segment {
@@ -42,43 +45,21 @@ struct FetchState {
     retry_at_ms: u64,
 }
 
-/// 一个 media 轨道的上下文（对应一条 media m3u8 / media file）。
-pub struct Track {
-    pub adam_id: String,
-    pub uri: String,
-    pub fileuri: Arc<str>,
-    pub range1: String,
-    pub segments: Vec<Segment>,
-    pub total_size: u64,
-    pub(crate) init: OnceCell<Bytes>,
+/// 一个轨道密钥（`skd://...`）对应的模板获取状态。多密钥轮换的 m3u8 中
+/// 每个不同的 key URI 各占一个槽位，模板与失败退避互不影响。
+pub struct KeySlot {
+    uri: Arc<str>,
     template: watch::Sender<Option<Arc<Template>>>,
     fetch: Mutex<FetchState>,
-    last_accessed_ms: AtomicU64,
 }
 
-impl Track {
-    pub fn new(adam_id: String, uri: String, fileuri: String, range1: String, segments: Vec<Segment>) -> Self {
-        let total_size = segments.last().map_or(0, Segment::end);
-        Self {
-            adam_id,
-            uri,
-            fileuri: fileuri.into(),
-            range1,
-            segments,
-            total_size,
-            init: OnceCell::new(),
-            template: watch::Sender::new(None),
-            fetch: Mutex::default(),
-            last_accessed_ms: AtomicU64::new(now_ms()),
-        }
+impl KeySlot {
+    pub fn new(uri: &str) -> Self {
+        Self { uri: uri.into(), template: watch::Sender::new(None), fetch: Mutex::default() }
     }
 
-    pub fn touch(&self) {
-        self.last_accessed_ms.store(now_ms(), Ordering::Relaxed);
-    }
-
-    pub fn is_expired(&self, ttl: Duration) -> bool {
-        now_ms().saturating_sub(self.last_accessed_ms.load(Ordering::Relaxed)) > ttl.as_millis() as u64
+    pub fn uri(&self) -> &str {
+        &self.uri
     }
 
     pub fn template(&self) -> Option<Arc<Template>> {
@@ -89,22 +70,9 @@ impl Track {
         self.template.send_replace(Some(Arc::new(template)));
     }
 
-    pub async fn wait_template(&self, timeout: Duration) -> Result<Arc<Template>, String> {
-        let mut rx = self.template.subscribe();
-        let waited = tokio::time::timeout(timeout, async {
-            rx.wait_for(Option::is_some).await.map(|t| t.clone().expect("checked by wait_for"))
-        })
-        .await;
-        match waited {
-            Ok(Ok(t)) => Ok(t),
-            Ok(Err(_)) => Err("template channel closed".into()),
-            Err(_) => Err(format!("timed out waiting for decryption template (adamId={})", self.adam_id)),
-        }
-    }
-
-    /// 是否应当现在发起模板请求；返回 true 时调用方负责之后调用 `end_fetch`。
+    /// 是否应当现在为该密钥发起模板请求；返回 true 时调用方负责之后调用 `end_fetch`。
     pub(crate) fn begin_fetch(&self) -> bool {
-        if self.adam_id.is_empty() || self.uri.is_empty() || self.template.borrow().is_some() {
+        if self.uri.is_empty() || self.template.borrow().is_some() {
             return false;
         }
         let mut f = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,6 +96,111 @@ impl Track {
         f.retry_at_ms = now_ms() + backoff.as_millis() as u64;
         backoff
     }
+}
+
+/// 一个 media 轨道的上下文（对应一条 media m3u8 / media file）。
+pub struct Track {
+    pub adam_id: String,
+    /// 首个轨道密钥 URI（与 `keys[0]` 一致；没有轨道密钥时为空）
+    pub uri: String,
+    /// 轨道密钥槽位，按 m3u8 中出现顺序排列
+    pub keys: Vec<Arc<KeySlot>>,
+    pub fileuri: Arc<str>,
+    pub range1: String,
+    pub segments: Vec<Segment>,
+    pub total_size: u64,
+    /// EXT-X-MAP 出现时生效的密钥；init 段按明文处理，真被加密时 load_init 报错
+    pub init_key: KeyKind,
+    pub(crate) init: OnceCell<Bytes>,
+    last_accessed_ms: AtomicU64,
+}
+
+impl Track {
+    /// 单密钥轨道（没有轨道密钥时 `uri` 传空串）
+    pub fn new(adam_id: String, uri: String, fileuri: String, range1: String, segments: Vec<Segment>) -> Self {
+        let keys = if uri.is_empty() { Vec::new() } else { vec![Arc::new(KeySlot::new(&uri))] };
+        Self::with_keys(adam_id, fileuri, range1, keys, segments)
+    }
+
+    /// 多密钥轨道：`keys` 按 m3u8 中 key URI 出现顺序排列，分片的 `key_index` 指向它
+    pub fn with_keys(
+        adam_id: String,
+        fileuri: String,
+        range1: String,
+        keys: Vec<Arc<KeySlot>>,
+        segments: Vec<Segment>,
+    ) -> Self {
+        let total_size = segments.last().map_or(0, Segment::end);
+        Self {
+            adam_id,
+            uri: keys.first().map(|k| k.uri().to_string()).unwrap_or_default(),
+            keys,
+            fileuri: fileuri.into(),
+            range1,
+            segments,
+            total_size,
+            init_key: KeyKind::None,
+            init: OnceCell::new(),
+            last_accessed_ms: AtomicU64::new(now_ms()),
+        }
+    }
+
+    pub fn touch(&self) {
+        self.last_accessed_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    pub fn is_expired(&self, ttl: Duration) -> bool {
+        now_ms().saturating_sub(self.last_accessed_ms.load(Ordering::Relaxed)) > ttl.as_millis() as u64
+    }
+
+    pub fn template(&self) -> Option<Arc<Template>> {
+        self.template_for(0)
+    }
+
+    /// 指定密钥槽位的模板（未就绪时为 None）
+    pub fn template_for(&self, key_index: u8) -> Option<Arc<Template>> {
+        self.keys.get(key_index as usize).and_then(|k| k.template())
+    }
+
+    pub fn set_template(&self, template: Template) {
+        if let Some(slot) = self.keys.first() {
+            slot.set_template(template);
+        }
+    }
+
+    pub async fn wait_template(&self, timeout: Duration) -> Result<Arc<Template>, String> {
+        self.wait_template_for(0, timeout).await
+    }
+
+    /// 等待指定密钥槽位的模板：多密钥轮换时不同分片可能对应不同密钥，必须按分片取
+    pub async fn wait_template_for(&self, key_index: u8, timeout: Duration) -> Result<Arc<Template>, String> {
+        let Some(slot) = self.keys.get(key_index as usize) else {
+            return Err(format!("no decryption key #{key_index} (adamId={})", self.adam_id));
+        };
+        let mut rx = slot.template.subscribe();
+        let waited = tokio::time::timeout(timeout, async {
+            rx.wait_for(Option::is_some).await.map(|t| t.clone().expect("checked by wait_for"))
+        })
+        .await;
+        match waited {
+            Ok(Ok(t)) => Ok(t),
+            Ok(Err(_)) => Err("template channel closed".into()),
+            Err(_) => Err(format!("timed out waiting for decryption template (adamId={})", self.adam_id)),
+        }
+    }
+
+    /// 是否应当现在为*首个*密钥发起模板请求（后台监控用）；返回 true 时调用方负责之后调用 `end_fetch`。
+    pub(crate) fn begin_fetch(&self) -> bool {
+        if self.adam_id.is_empty() {
+            return false;
+        }
+        self.keys.first().is_some_and(|k| k.begin_fetch())
+    }
+
+    /// 结束首个密钥的模板请求；失败时指数退避（1s, 2s, 4s ... 最多 60s）。
+    pub(crate) fn end_fetch(&self, ok: bool) -> Duration {
+        self.keys.first().map_or(Duration::ZERO, |k| k.end_fetch(ok))
+    }
 
     /// 与字节区间 [start, end]（闭区间）相交的 segment 下标范围。
     pub fn segments_overlapping(&self, start: u64, end: u64) -> std::ops::Range<usize> {
@@ -139,6 +212,9 @@ impl Track {
 
 type TrackSlot = Arc<OnceCell<Arc<Track>>>;
 pub type SegmentKey = (Arc<str>, usize);
+
+/// `--hook` 代理同时处理的请求上限（含流式响应）
+pub const HOOK_MAX_CONCURRENCY: usize = 32;
 
 #[derive(Clone)]
 pub struct Config {
@@ -172,6 +248,8 @@ pub struct AppState {
     pub gofile_client: reqwest::Client,
     /// 限制并发 Gofile 流式代理上传数，防止连接/FD 耗尽
     pub gofile_upload_semaphore: Arc<tokio::sync::Semaphore>,
+    /// `--hook` 代理的全局并发上限：流式响应期间一直持有许可，避免无上限拉取 CDN
+    pub hook_semaphore: Arc<tokio::sync::Semaphore>,
     /// wrapper-lite 客户端（限速、限并发、鉴权）
     pub wrapper: crate::wrapper::Wrapper,
     /// fileuri -> 轨道。OnceCell 让并发请求同一轨道时只拉取/解析一次 m3u8。
@@ -258,6 +336,7 @@ impl AppState {
             cdn_client,
             gofile_client,
             gofile_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+            hook_semaphore: Arc::new(tokio::sync::Semaphore::new(HOOK_MAX_CONCURRENCY)),
             wrapper,
             tracks: Mutex::default(),
             segments: SegmentCache::new(cache_mb.max(16) * 1024 * 1024),
@@ -433,11 +512,54 @@ mod tests {
             "test_m.mp4".into(),
             "100@10".into(),
             vec![
-                Segment { offset: 0, length: 10, key: KeyKind::None },
-                Segment { offset: 10, length: 100, key: KeyKind::Fixed },
-                Segment { offset: 110, length: 50, key: KeyKind::Track },
+                Segment { offset: 0, length: 10, key: KeyKind::None, key_index: 0 },
+                Segment { offset: 10, length: 100, key: KeyKind::Fixed, key_index: 0 },
+                Segment { offset: 110, length: 50, key: KeyKind::Track, key_index: 0 },
             ],
         )
+    }
+
+    #[test]
+    fn test_multi_key_slots_are_independent() {
+        let keys = vec![Arc::new(KeySlot::new("skd://a/c6")), Arc::new(KeySlot::new("skd://b/c6"))];
+        let t = Track::with_keys(
+            "123".into(),
+            "test_m.mp4".into(),
+            "100@10".into(),
+            keys,
+            vec![
+                Segment { offset: 0, length: 10, key: KeyKind::None, key_index: 0 },
+                Segment { offset: 10, length: 100, key: KeyKind::Track, key_index: 1 },
+                Segment { offset: 110, length: 50, key: KeyKind::Track, key_index: 0 },
+            ],
+        );
+        let template = || {
+            temari::rounds::Template::new(
+                vec![0u8; 32],
+                [0u32; 2048],
+                temari::rounds::R1Entry { rdx: 0, rcx: 0, rax: 0, r9: 0, rbp: 0 },
+            )
+        };
+        assert_eq!(t.uri, "skd://a/c6", "uri 是首个密钥 URI");
+        assert_eq!(t.keys.len(), 2);
+        assert_eq!(t.segments[1].key_index, 1);
+
+        t.keys[1].set_template(template());
+        assert!(t.template_for(0).is_none());
+        assert!(t.template_for(1).is_some(), "第二个密钥的模板独立就绪");
+        assert!(t.template().is_none(), "template() 只看首个密钥");
+        t.set_template(template());
+        assert!(t.template_for(0).is_some());
+        assert!(t.template_for(2).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wait_template_for_unknown_slot_fails_fast() {
+        let t = track();
+        let Err(err) = t.wait_template_for(3, Duration::from_millis(10)).await else {
+            panic!("expected missing slot error");
+        };
+        assert!(err.contains("no decryption key #3"), "got {err}");
     }
 
     #[test]

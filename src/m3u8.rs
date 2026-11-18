@@ -1,11 +1,12 @@
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
+use tracing::warn;
 
 use am_mp4::FIXED_KEY_URI;
 
-use crate::state::{KeyKind, Segment, Track};
+use crate::state::{KeyKind, KeySlot, Segment, Track};
 
 static SONG_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https://music\.apple\.com/[a-z]{2}/song/[^/?#]+/([0-9]+)(?:[/?#]|$)").unwrap());
@@ -188,7 +189,7 @@ pub fn media_playlist_to_file(name: &str) -> String {
 }
 
 /// 解析 `LEN[@OFF]`，缺省 OFF 时接在 `next` 之后
-fn parse_byterange(value: &str, next: u64, key: KeyKind) -> Result<Segment, String> {
+fn parse_byterange(value: &str, next: u64, key: KeyKind, key_index: u8) -> Result<Segment, String> {
     let value = value.trim().trim_matches('"');
     let (len, off) = match value.split_once('@') {
         Some((l, o)) => (l, Some(o)),
@@ -199,11 +200,15 @@ fn parse_byterange(value: &str, next: u64, key: KeyKind) -> Result<Segment, Stri
         Some(o) => o.parse().map_err(|e| format!("Invalid BYTERANGE offset '{value}': {e}"))?,
         None => next,
     };
-    Ok(Segment { offset, length, key })
+    Ok(Segment { offset, length, key, key_index })
 }
 
 /// 解析 media m3u8：提取 adamId / key uri / fileuri / range1 与全部 segment 字节范围，
 /// 同时去掉 `#EXT-X-KEY` / `#EXT-X-SESSION-KEY`，返回 (轨道, 清理后的 m3u8)。
+///
+/// 每个分片记录它当时生效的 `EXT-X-KEY`：`METHOD=NONE` 为明文、固定密钥为 `Fixed`，
+/// 其余 SAMPLE-AES 密钥按 URI 去重后落成 `Track::keys` 的槽位下标，因此多密钥轮换的
+/// m3u8 里不同分片会取到不同槽位。其他 METHOD（AES-128 / SAMPLE-AES-CTR / 缺省）直接报错。
 pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, String), String> {
     let path = source_url.split('?').next().unwrap_or(source_url);
     let filename = path.rsplit('/').next().unwrap_or(path);
@@ -212,8 +217,25 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         .map(|c| c[1].to_string())
         .ok_or_else(|| format!("Could not find '_A<digits>_' in source URL: {source_url}"))?;
 
-    let mut uri = None;
+    // 登记一个轨道密钥 URI，返回它在 `Track::keys` 中的下标；相同 URI 复用同一槽位
+    fn key_slot(keys: &mut Vec<String>, uri: &str) -> Result<u8, String> {
+        if let Some(i) = keys.iter().position(|k| k == uri) {
+            return u8::try_from(i).map_err(|_| "too many distinct EXT-X-KEY URIs in media m3u8".to_string());
+        }
+        if keys.len() >= usize::from(u8::MAX) {
+            return Err("too many distinct EXT-X-KEY URIs in media m3u8".into());
+        }
+        keys.push(uri.to_string());
+        if keys.len() == 2 {
+            warn!(uri, slots = keys.len(), "Media m3u8 rotates EXT-X-KEY URIs; per-segment keys enabled");
+        }
+        Ok((keys.len() - 1) as u8)
+    }
+
+    let mut keys: Vec<String> = Vec::new();
     let mut current_key = KeyKind::None;
+    let mut current_key_index = 0u8;
+    let mut map_key = KeyKind::None;
     let mut fileuri = None;
     let mut range1 = None;
     let mut segments: Vec<Segment> = Vec::new();
@@ -224,23 +246,33 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
 
         if trimmed.starts_with("#EXT-X-KEY:") || trimmed.starts_with("#EXT-X-SESSION-KEY:") {
             let is_session = trimmed.starts_with("#EXT-X-SESSION-KEY:");
-            let (_, attrs) = trimmed.split_once(':').unwrap();
+            let Some((_, attrs)) = trimmed.split_once(':') else {
+                return Err(format!("Malformed EXT-X-KEY line: {trimmed}"));
+            };
             let attrs = parse_attributes(attrs);
-            let method = attrs.get("METHOD").copied();
+            let method = attrs.get("METHOD").copied().unwrap_or_default();
             let key_uri = attrs.get("URI").copied();
-            if method == Some("SAMPLE-AES") {
-                if let Some(u) = key_uri.filter(|u| *u != FIXED_KEY_URI) {
-                    uri.get_or_insert_with(|| u.to_string());
+            let kind = match method {
+                "NONE" => KeyKind::None,
+                // 固定测试密钥走预取模板，其余真实轨道密钥按 URI 分配槽位
+                "SAMPLE-AES" => match key_uri {
+                    Some(FIXED_KEY_URI) => KeyKind::Fixed,
+                    Some(_) => KeyKind::Track,
+                    None => return Err("EXT-X-KEY METHOD=SAMPLE-AES has no URI attribute".into()),
+                },
+                other => {
+                    let method = if other.is_empty() { "<missing>" } else { other };
+                    return Err(format!("unsupported EXT-X-KEY METHOD={method}"));
                 }
-            }
-            if !is_session {
-                current_key = if method == Some("NONE") || key_uri.is_none() {
-                    KeyKind::None
-                } else if key_uri == Some(FIXED_KEY_URI) {
-                    KeyKind::Fixed
-                } else {
-                    KeyKind::Track
-                };
+            };
+            if is_session {
+                // SESSION-KEY 只描述整个会话的密钥，不改变后续分片的密钥；仅登记槽位
+                if kind == KeyKind::Track {
+                    key_slot(&mut keys, key_uri.unwrap_or_default())?;
+                }
+            } else {
+                current_key = kind;
+                current_key_index = if kind == KeyKind::Track { key_slot(&mut keys, key_uri.unwrap_or_default())? } else { 0 };
             }
             continue;
         }
@@ -252,13 +284,15 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
             let attrs = parse_attributes(attrs);
             fileuri = attrs.get("URI").map(|s| s.to_string());
             let range = attrs.get("BYTERANGE").ok_or("EXT-X-MAP has no BYTERANGE")?;
-            segments.push(parse_byterange(range, 0, KeyKind::None)?);
+            // init 段本身按明文处理，但记下当时生效的密钥：真被加密时 load_init 会明确报错
+            map_key = current_key;
+            segments.push(parse_byterange(range, 0, KeyKind::None, 0)?);
         } else if let Some(value) = trimmed.strip_prefix("#EXT-X-BYTERANGE:") {
             if segments.is_empty() {
                 return Err("EXT-X-BYTERANGE before EXT-X-MAP".into());
             }
             let next = segments.last().map_or(0, Segment::end);
-            segments.push(parse_byterange(value, next, current_key)?);
+            segments.push(parse_byterange(value, next, current_key, current_key_index)?);
             range1.get_or_insert_with(|| value.trim().to_string());
         }
 
@@ -266,11 +300,10 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         cleaned.push('\n');
     }
 
-    let uri = if segments.iter().any(|s| s.key == KeyKind::Track) {
-        uri.ok_or("Could not find non-fixed SAMPLE-AES key URI in m3u8")?
-    } else {
-        uri.unwrap_or_default()
-    };
+    let uri = keys.first().cloned().unwrap_or_default();
+    if segments.iter().any(|s| s.key == KeyKind::Track) && uri.is_empty() {
+        return Err("Could not find non-fixed SAMPLE-AES key URI in m3u8".into());
+    }
     let fileuri = fileuri.ok_or("Could not find EXT-X-MAP URI in m3u8")?;
     let range1 = range1.ok_or("Could not find first EXT-X-BYTERANGE in m3u8")?;
 
@@ -283,7 +316,10 @@ pub fn parse_media_m3u8(source_url: &str, content: &str) -> Result<(Track, Strin
         expected = s.end();
     }
 
-    Ok((Track::new(adam_id, uri, fileuri, range1, segments), cleaned))
+    let keys: Vec<Arc<KeySlot>> = keys.iter().map(|u| Arc::new(KeySlot::new(u))).collect();
+    let mut track = Track::with_keys(adam_id, fileuri, range1, keys, segments);
+    track.init_key = map_key;
+    Ok((track, cleaned))
 }
 
 /// 把 `parse_media_m3u8` 清理后的 m3u8 转成通用写法：去掉 EXT-X-MAP / EXT-X-BYTERANGE，
@@ -343,14 +379,15 @@ mod tests {
         let (track, cleaned) = parse_media_m3u8(url, raw).unwrap();
         assert_eq!(track.adam_id, "1468058171");
         assert_eq!(track.uri, "skd://itunes.apple.com/p1263211745/c6");
+        assert_eq!(track.keys.len(), 1);
         assert_eq!(&*track.fileuri, "test_m.mp4");
         assert_eq!(track.range1, "1441673@1058");
         assert_eq!(
             track.segments,
             vec![
-                Segment { offset: 0, length: 1058, key: KeyKind::None },
-                Segment { offset: 1058, length: 1441673, key: KeyKind::Fixed },
-                Segment { offset: 1442731, length: 1441601, key: KeyKind::Track },
+                Segment { offset: 0, length: 1058, key: KeyKind::None, key_index: 0 },
+                Segment { offset: 1058, length: 1441673, key: KeyKind::Fixed, key_index: 0 },
+                Segment { offset: 1442731, length: 1441601, key: KeyKind::Track, key_index: 0 },
             ]
         );
         assert_eq!(track.total_size, 1442731 + 1441601);
@@ -366,12 +403,84 @@ mod tests {
         assert_eq!(
             track.segments,
             vec![
-                Segment { offset: 0, length: 1023, key: KeyKind::None },
-                Segment { offset: 1023, length: 1354182, key: KeyKind::Fixed },
-                Segment { offset: 1355205, length: 1519462, key: KeyKind::Fixed },
-                Segment { offset: 2874667, length: 1591907, key: KeyKind::Track },
+                Segment { offset: 0, length: 1023, key: KeyKind::None, key_index: 0 },
+                Segment { offset: 1023, length: 1354182, key: KeyKind::Fixed, key_index: 0 },
+                Segment { offset: 1355205, length: 1519462, key: KeyKind::Fixed, key_index: 0 },
+                Segment { offset: 2874667, length: 1591907, key: KeyKind::Track, key_index: 0 },
             ]
         );
+    }
+
+    /// `METHOD=NONE` 是显式声明明文，不需要任何模板
+    #[test]
+    fn test_parse_media_m3u8_method_none() {
+        let raw = "#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@15\nt_m.mp4\n#EXT-X-ENDLIST\n";
+        let (track, _) = parse_media_m3u8("P1_A2_x.m3u8", raw).unwrap();
+        assert_eq!(track.segments.len(), 3);
+        assert!(track.segments.iter().all(|s| s.key == KeyKind::None));
+        assert!(track.keys.is_empty(), "METHOD=NONE 不应登记密钥槽位");
+        assert!(track.uri.is_empty());
+        assert!(!track.begin_fetch(), "明文轨道不需要模板");
+    }
+
+    /// 全部分片都是固定测试密钥：只有 Fixed，没有轨道密钥槽位
+    #[test]
+    fn test_parse_media_m3u8_all_fixed_keys() {
+        let fixed = FIXED_KEY_URI;
+        let raw = format!(
+            "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"{fixed}\"\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@15\nt_m.mp4\n#EXT-X-ENDLIST\n"
+        );
+        let (track, _) = parse_media_m3u8("P1_A2_x.m3u8", &raw).unwrap();
+        assert!(track.segments[1..].iter().all(|s| s.key == KeyKind::Fixed && s.key_index == 0));
+        assert!(track.keys.is_empty());
+        assert!(track.uri.is_empty());
+        assert!(!track.begin_fetch());
+    }
+
+    /// 多密钥轮换：每个分片记录自己那个 key URI 的槽位，不再只保留第一个
+    #[test]
+    fn test_parse_media_m3u8_multi_track_key_rotation() {
+        let raw = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/p1/c6\"\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/p2/c6\"\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@15\nt_m.mp4\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/p1/c6\"\n#EXTINF:15,\n#EXT-X-BYTERANGE:5@20\nt_m.mp4\n#EXT-X-ENDLIST\n";
+        let (track, _) = parse_media_m3u8("P1_A2_x.m3u8", raw).unwrap();
+        assert_eq!(track.keys.len(), 2, "两个不同的 track URI 各占一个槽位");
+        assert_eq!(track.keys[0].uri(), "skd://itunes.apple.com/p1/c6");
+        assert_eq!(track.keys[1].uri(), "skd://itunes.apple.com/p2/c6");
+        assert_eq!(track.uri, "skd://itunes.apple.com/p1/c6", "uri 保持首个密钥");
+        assert_eq!(
+            track.segments.iter().map(|s| (s.key, s.key_index)).collect::<Vec<_>>(),
+            vec![(KeyKind::None, 0), (KeyKind::Track, 0), (KeyKind::Track, 1), (KeyKind::Track, 0)]
+        );
+    }
+
+    /// 非 SAMPLE-AES / 缺 METHOD 的密钥声明必须明确报错，不能静默当成轨道密钥
+    #[test]
+    fn test_parse_media_m3u8_rejects_unsupported_method() {
+        for (decl, expect) in [
+            ("#EXT-X-KEY:METHOD=AES-128,URI=\"https://x/k\"", "unsupported EXT-X-KEY METHOD=AES-128"),
+            ("#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI=\"skd://x/c6\"", "unsupported EXT-X-KEY METHOD=SAMPLE-AES-CTR"),
+            ("#EXT-X-KEY:URI=\"skd://x/c6\"", "unsupported EXT-X-KEY METHOD=<missing>"),
+            ("#EXT-X-KEY:METHOD=SAMPLE-AES", "has no URI attribute"),
+        ] {
+            let raw = format!("{decl}\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n");
+            let err = match parse_media_m3u8("P1_A2_x.m3u8", &raw) {
+                Ok(_) => panic!("expected error for {decl}"),
+                Err(e) => e,
+            };
+            assert!(err.contains(expect), "for {decl} got {err}");
+        }
+    }
+
+    /// EXT-X-MAP 出现时的密钥被记录下来（真被加密时 load_init 报错，而不是静默当明文）
+    #[test]
+    fn test_parse_media_m3u8_records_map_key() {
+        let raw = "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x/c6\"\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n";
+        let (track, _) = parse_media_m3u8("P1_A2_x.m3u8", raw).unwrap();
+        assert_eq!(track.init_key, KeyKind::Track);
+        assert_eq!(track.segments[0].key, KeyKind::None, "init 段仍按明文直通");
+
+        let raw = "#EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP:URI=\"t_m.mp4\",BYTERANGE=\"10@0\"\n#EXT-X-BYTERANGE:5@10\nt_m.mp4\n";
+        let (track, _) = parse_media_m3u8("P1_A2_x.m3u8", raw).unwrap();
+        assert_eq!(track.init_key, KeyKind::None);
     }
 
     #[test]

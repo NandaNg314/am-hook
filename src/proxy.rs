@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -77,13 +78,53 @@ pub async fn handle_proxy(State(state): State<Arc<AppState>>, method: Method, ur
     // 请求结果由请求日志输出，这里只在 debug 级别补充 Range / UA
     debug!(%method, ?kind, file = source::filename(&target), range = ?headers.get(RANGE), ua = ?headers.get(header::USER_AGENT), "Proxy request");
 
-    match kind {
+    // 全局并发上限：许可一直持有到流式响应结束，避免无上限地拉取 CDN
+    let permit = match acquire_hook_permit(&state).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+
+    let response = match kind {
         SourceKind::MasterPlaylist => forward(&state, method, &target, None, Some(M3U8_TYPE)).await,
         SourceKind::MediaPlaylist => handle_media_m3u8(&state, &target, byterange).await,
-        SourceKind::MediaFile => handle_media_file(state, method, target, &headers).await,
-        SourceKind::MediaSegment => handle_media_segment(state, method, &target, &headers).await,
+        SourceKind::MediaFile => handle_media_file(state.clone(), method, target, &headers).await,
+        SourceKind::MediaSegment => handle_media_segment(state.clone(), method, &target, &headers).await,
         SourceKind::Other => forward(&state, method, &target, headers.get(RANGE), None).await,
+    };
+    hold_permit(response, permit)
+}
+
+/// 取得 `--hook` 代理的全局并发许可：抢不到最多等 10s，仍失败返回 503（不无限排队）
+async fn acquire_hook_permit(state: &Arc<AppState>) -> Result<tokio::sync::OwnedSemaphorePermit, Response<Body>> {
+    if let Ok(permit) = state.hook_semaphore.clone().try_acquire_owned() {
+        return Ok(permit);
     }
+    match tokio::time::timeout(Duration::from_secs(10), state.hook_semaphore.clone().acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err(text(StatusCode::SERVICE_UNAVAILABLE, "Proxy concurrency limiter closed\n".into())),
+        Err(_) => Err(text(StatusCode::SERVICE_UNAVAILABLE, "Too many concurrent proxy requests, retry later\n".into())),
+    }
+}
+
+/// 让响应体持有并发许可，直到流结束（或响应/连接被丢弃）。
+/// 空 body（HEAD / 204 / 304）不包装，避免把它们变成 chunked 响应。
+fn hold_permit(response: Response<Body>, permit: tokio::sync::OwnedSemaphorePermit) -> Response<Body> {
+    let empty = matches!(response.status(), StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED)
+        || response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim() == "0");
+    if empty {
+        drop(permit);
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let stream = body.into_data_stream().map(move |chunk| {
+        let _held = &permit;
+        chunk
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
 }
 
 /// 原样流式转发（master m3u8 与其他白名单文件）
@@ -131,14 +172,45 @@ async fn fetch_text(state: &AppState, url: &str) -> Result<String, String> {
 }
 
 /// 注册（或复用已存在的）轨道并立即触发模板拉取
-async fn register_track(state: &Arc<AppState>, track: Track) -> Arc<Track> {
+async fn register_track(state: &Arc<AppState>, track: Track) -> Result<Arc<Track>, String> {
     let fileuri = track.fileuri.clone();
-    let track = state
-        .get_or_init_track(&fileuri, || async { Ok(track) })
-        .await
-        .expect("infallible init");
-    ensure_template(state, &track);
-    track
+    let track = state.get_or_init_track(&fileuri, || async { Ok(track) }).await?;
+    ensure_templates(state, &track);
+    Ok(track)
+}
+
+/// 轨道注册失败时的统一响应（502 + 日志，绝不 panic）
+fn track_init_failed(error: String) -> Response<Body> {
+    warn!(error, "Failed to register track");
+    text(StatusCode::BAD_GATEWAY, format!("Failed to register track: {error}\n"))
+}
+
+/// 为轨道的所有密钥槽位触发模板拉取：首个密钥沿用后台监控的路径，其余（多密钥轮换）
+/// 在这里补齐，同一槽位并发只发一次请求。
+fn ensure_templates(state: &Arc<AppState>, track: &Arc<Track>) {
+    ensure_template(state, track);
+    if track.adam_id.is_empty() {
+        return;
+    }
+    for slot in track.keys.iter().skip(1) {
+        if !slot.begin_fetch() {
+            continue;
+        }
+        let (state, track, slot) = (state.clone(), track.clone(), slot.clone());
+        tokio::spawn(async move {
+            match state.wrapper.fetch_key_template(&track.adam_id, slot.uri()).await {
+                Ok(template) => {
+                    slot.set_template(template);
+                    slot.end_fetch(true);
+                    info!(adam_id = %track.adam_id, uri = %slot.uri(), "Rotated key template ready");
+                }
+                Err(error) => {
+                    let retry_in = slot.end_fetch(false);
+                    warn!(adam_id = %track.adam_id, uri = %slot.uri(), error = %error, ?retry_in, "Rotated key template fetch failed");
+                }
+            }
+        });
+    }
 }
 
 /// Media m3u8：补齐轨道信息，返回去掉加密标记的 m3u8。
@@ -156,7 +228,9 @@ async fn handle_media_m3u8(state: &Arc<AppState>, target: &str, byterange: bool)
         adam_id = %track.adam_id, uri = %track.uri, fileuri = %track.fileuri,
         range1 = %track.range1, segments = track.segments.len(), "Media m3u8 parsed"
     );
-    register_track(state, track).await;
+    if let Err(e) = register_track(state, track).await {
+        return track_init_failed(e);
+    }
 
     let body = if byterange { cleaned } else { to_compat_playlist(&cleaned) };
     finish_response(Response::builder().header(CONTENT_TYPE, M3U8_TYPE), Body::from(body))
@@ -173,7 +247,7 @@ async fn resolve_track(state: &Arc<AppState>, target: &str) -> Result<Arc<Track>
             Ok(parse_media_m3u8(&m3u8_url, &raw)?.0)
         })
         .await?;
-    ensure_template(state, &track);
+    ensure_templates(state, &track);
     Ok(track)
 }
 
@@ -212,11 +286,21 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
 
     let segs = track.segments_overlapping(start, end);
 
-    // 请求区间内若存在需要轨道模板的分片且模板尚未就绪，先等模板，失败时返回明确错误码。
-    // 不能按分片下标判断：固定密钥 / 明文分片不需要轨道模板，等它只会白等 20 秒再 504。
-    let needs_track_template = track.segments[segs.clone()].iter().any(|s| s.key == KeyKind::Track);
-    if needs_track_template && track.template().is_none() {
-        if let Err(e) = track.wait_template(state.config.template_timeout).await {
+    // 请求区间内若存在需要轨道模板的分片且其模板尚未就绪，先等模板，失败时返回明确错误码。
+    // 不能按分片下标判断：固定密钥 / 明文分片不需要轨道模板，等它只会白等 20 秒再 504；
+    // 多密钥轮换时还要按各分片自己的密钥槽位分别等待。
+    let mut pending_keys: Vec<u8> = track.segments[segs.clone()]
+        .iter()
+        .filter(|s| s.key == KeyKind::Track)
+        .map(|s| s.key_index)
+        .collect();
+    pending_keys.sort_unstable();
+    pending_keys.dedup();
+    for key_index in pending_keys {
+        if track.template_for(key_index).is_some() {
+            continue;
+        }
+        if let Err(e) = track.wait_template_for(key_index, state.config.template_timeout).await {
             return text(StatusCode::GATEWAY_TIMEOUT, format!("Decryption template not ready: {e}\n"));
         }
     }
@@ -330,10 +414,10 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
         .segments
         .get_or_load((track.fileuri.clone(), idx), || async {
             let seg = track.segments[idx];
-            // 下载与等待模板并行；按 m3u8 中该分片实际声明的 EXT-X-KEY 决定是否需要轨道模板
+            // 下载与等待模板并行；按该分片实际声明的 EXT-X-KEY 取对应密钥槽位的模板
             let (raw, init, tmpl) = tokio::try_join!(download(state, target, seg.offset, seg.length), load_init(state, track, target), async {
                 if seg.key == KeyKind::Track {
-                    track.wait_template(state.config.template_timeout).await.map(Some)
+                    track.wait_template_for(seg.key_index, state.config.template_timeout).await.map(Some)
                 } else {
                     Ok(None)
                 }
@@ -345,7 +429,9 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
                     (KeyKind::None, _) => raw.to_vec(),
                     (KeyKind::Fixed, _) => decrypt_fragment(&raw, fixed_template())?,
                     (KeyKind::Track, Some(t)) => decrypt_fragment(&raw, &t)?,
-                    (KeyKind::Track, None) => unreachable!("template awaited above"),
+                    (KeyKind::Track, None) => {
+                        return Err(format!("decryption template missing for segment {idx} (key #{})", seg.key_index));
+                    }
                 };
                 if let Some(codec) = alac_track(&init) { repair_alac_fragment(&mut out, &codec)?; }
                 Ok::<_, String>(out)
@@ -362,8 +448,26 @@ async fn load_init(state: &AppState, track: &Track, target: &str) -> Result<Byte
     track.init.get_or_try_init(|| async {
         let seg = track.segments.first().ok_or("Track has no init segment")?;
         let raw = download(state, target, seg.offset, seg.length).await?;
+        // EXT-X-MAP 处已经声明了密钥时，init 段在实际流中仍是明文（moov 不参与 SAMPLE-AES）。
+        // 若字节形态不是合法的 fMP4 box，说明 init 真的被加密了：明确报错，而不是当明文继续走。
+        if track.init_key != KeyKind::None && !looks_like_plain_mp4(&raw) {
+            return Err(format!(
+                "EXT-X-MAP init segment looks encrypted (key={:?}), encrypted init segments are not supported",
+                track.init_key
+            ));
+        }
         Ok(Bytes::from(patch_init_segment(&raw)))
     }).await.cloned()
+}
+
+/// 明文的 fMP4 init 一定以 `ftyp` / `styp` / `moov` 等 box 开头（前 4 字节为大端长度）
+fn looks_like_plain_mp4(raw: &[u8]) -> bool {
+    const BOXES: [&[u8]; 7] = [b"ftyp", b"styp", b"moov", b"free", b"skip", b"wide", b"mdat"];
+    let Some(header) = raw.get(..8) else {
+        return false;
+    };
+    let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    size >= 8 && BOXES.iter().any(|b| *b == &header[4..8])
 }
 
 async fn download(state: &AppState, url: &str, offset: u64, length: u64) -> Result<Bytes, String> {
@@ -387,23 +491,44 @@ async fn download(state: &AppState, url: &str, offset: u64, length: u64) -> Resu
     if !status.is_success() {
         return Err(format!("Upstream returned HTTP {status} for segment @{offset}"));
     }
-    let mut body = resp.bytes().await.map_err(|e| format!("Failed to read segment: {e}"))?;
-    if status == StatusCode::OK && body.len() as u64 > length {
-        // 上游忽略了 Range，自行截取前需校验 offset + length 不越界
-        let start = usize::try_from(offset).map_err(|_| format!("Segment @{offset} offset out of range"))?;
-        let len = usize::try_from(length).map_err(|_| format!("Segment @{offset} length out of range"))?;
-        let end = start
-            .checked_add(len)
-            .ok_or_else(|| format!("Segment @{offset} range overflow"))?;
-        if end > body.len() {
-            return Err(format!(
-                "Segment @{offset} truncated 200 OK body: got {} expected at least {end}",
-                body.len()
-            ));
+
+    // 上游忽略 Range 返回 200 时整个文件是 40–80 MB：不能先 bytes() 收全量，
+    // 只流式读到 offset + length 为止（读到就断开，剩余部分丢弃）。
+    let full_body = status == StatusCode::OK;
+    if full_body {
+        if let Some(total) = resp.content_length() {
+            let need = offset.saturating_add(length);
+            if total < need {
+                return Err(format!("Segment @{offset} truncated 200 OK body: Content-Length {total} expected at least {need}"));
+            }
         }
-        body = body.slice(start..end);
+    }
+    let stop_at = if full_body { offset.checked_add(length).ok_or_else(|| format!("Segment @{offset} range overflow"))? } else { length };
+    let mut buf = Vec::with_capacity(usize::try_from(length.min(1 << 20)).unwrap_or(0));
+    let mut stream = resp.bytes_stream();
+    let mut read = 0u64;
+    while read < stop_at {
+        let Some(chunk) = stream.next().await else { break };
+        let chunk = chunk.map_err(|e| format!("Failed to read segment: {e}"))?;
+        let take = usize::try_from((stop_at - read).min(chunk.len() as u64)).unwrap_or(0);
+        buf.extend_from_slice(&chunk[..take]);
+        read += take as u64;
+    }
+    drop(stream);
+    let mut body = Bytes::from(buf);
+
+    if full_body {
+        // 200 全量响应：自行截取 [offset, offset+length)
+        let start = usize::try_from(offset).map_err(|_| format!("Segment @{offset} offset out of range"))?;
+        if body.len() <= start {
+            return Err(format!("Segment @{offset} truncated 200 OK body: got {} expected at least {}", body.len(), offset + length));
+        }
+        body = body.slice(start..);
     }
     if body.len() as u64 != length {
+        if full_body {
+            return Err(format!("Segment @{offset} truncated 200 OK body: got {} expected at least {}", read, offset + length));
+        }
         return Err(format!("Segment @{offset} size mismatch: got {} expected {length}", body.len()));
     }
     Ok(body)
@@ -500,5 +625,85 @@ mod tests {
         let err = download(&state, &format!("http://{addr}/seg"), 8, 5).await.unwrap_err();
         assert!(err.contains("truncated 200 OK body"), "got {err}");
         server.abort();
+    }
+
+    /// CDN 忽略 Range 返回 200 全量时，只截取需要的区间
+    #[tokio::test]
+    async fn test_download_slices_full_200_body() {
+        let app = axum::Router::new().route("/seg", axum::routing::get(|| async { "0123456789abcdefghij" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state = AppState::new("http://127.0.0.1:12340".into(), 60, 1);
+        let bytes = download(&state, &format!("http://{addr}/seg"), 8, 4).await.unwrap();
+        assert_eq!(&bytes[..], b"89ab");
+        server.abort();
+    }
+
+    /// 200 全量响应不能先收进内存：读够 offset+length 就停（后面的 chunk 永远不会结束）
+    #[tokio::test]
+    async fn test_download_200_ok_stops_reading_after_needed_range() {
+        let app = axum::Router::new().route(
+            "/seg",
+            axum::routing::get(|| async {
+                let chunks = futures::stream::iter(vec![Ok::<Bytes, std::io::Error>(Bytes::from_static(b"01234567"))])
+                    .chain(futures::stream::pending());
+                Response::new(Body::from_stream(chunks))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let state = AppState::new("http://127.0.0.1:12340".into(), 60, 1);
+        let got = tokio::time::timeout(Duration::from_secs(5), download(&state, &format!("http://{addr}/seg"), 0, 8)).await;
+        let bytes = got.expect("must stop after the needed range instead of reading the whole body").unwrap();
+        assert_eq!(&bytes[..], b"01234567");
+        server.abort();
+    }
+
+    #[test]
+    fn test_looks_like_plain_mp4() {
+        assert!(looks_like_plain_mp4(b"\x00\x00\x00\x18ftypmp42"));
+        assert!(looks_like_plain_mp4(b"\x00\x00\x00\x08moov"));
+        assert!(!looks_like_plain_mp4(b""), "空 body 不是合法 box");
+        assert!(!looks_like_plain_mp4(b"\x00\x00\x00\x04free"), "box size < 8");
+        assert!(!looks_like_plain_mp4(&[0xAB; 64]), "加密后的字节不是合法 box 头");
+    }
+
+    /// 轨道注册失败必须返回 502（旧实现会 panic）
+    #[tokio::test]
+    async fn test_register_track_error_returns_502() {
+        let resp = track_init_failed("track init failed".into());
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// 并发许可挂在 body 上：响应头与 body 原样透传
+    #[tokio::test]
+    async fn test_hold_permit_preserves_response() {
+        let state = Arc::new(AppState::new("http://127.0.0.1:12340".into(), 60, 1));
+        let permit = match acquire_hook_permit(&state).await {
+            Ok(permit) => permit,
+            Err(_) => panic!("permit must be available"),
+        };
+        assert_eq!(state.hook_semaphore.available_permits(), crate::state::HOOK_MAX_CONCURRENCY - 1);
+        let response = Response::builder()
+            .header(CONTENT_LENGTH, "5")
+            .body(Body::from("hello"))
+            .expect("response");
+        let response = hold_permit(response, permit);
+        assert_eq!(response.headers()[CONTENT_LENGTH], "5");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"hello");
+        assert_eq!(state.hook_semaphore.available_permits(), crate::state::HOOK_MAX_CONCURRENCY, "body 读完后许可归还");
+    }
+
+    #[tokio::test]
+    async fn test_hook_permit_closed_limiter_returns_503() {
+        let state = Arc::new(AppState::new("http://127.0.0.1:12340".into(), 60, 1));
+        state.hook_semaphore.close();
+        let response = acquire_hook_permit(&state).await.err().expect("closed limiter must fail");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
