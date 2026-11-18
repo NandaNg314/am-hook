@@ -14,8 +14,12 @@ export function mvLink(raw) {
   } catch { return null; }
 }
 function absolute(uri, base) {
-  const u = new URL(uri, base);
+  const baseUrl = new URL(base);
+  const u = new URL(uri, baseUrl);
   if (u.protocol !== 'https:') throw new Error('Expected an HTTPS media URL');
+  // Apple's mvod CDN signs media playlists with a directory-scoped ?accessKey=... token;
+  // relative init/segment URIs omit the query string and fail with 403 unless inherited.
+  if (u.origin === baseUrl.origin && !u.search && baseUrl.search) u.search = baseUrl.search;
   return u.href;
 }
 export function parseMaster(text, url) {

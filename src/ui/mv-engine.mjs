@@ -37,7 +37,7 @@ export function mime(track, video) {
 async function prepare(core, id, track, name, signal) {
   const res = await fetch(track.url, { signal });
   if (!res.ok) throw new Error(`Playlist HTTP ${res.status}`);
-  const playlist = parseMedia(await res.text(), track.url);
+  const playlist = parseMedia(await res.text(), res.url || track.url);
   const initRef = JSON.stringify(playlist.init);
   if (playlist.segments.some(s => JSON.stringify(s.init) !== initRef)) throw new Error('Changing initialization segments are not supported');
   const keys = new Map();
@@ -212,6 +212,8 @@ export async function collectGarbage() {
     for (const name of garbage) await root.removeEntry(name).catch(() => {});
   } catch { /* best effort */ }
 }
+// Segment requests kept in flight while earlier segments are decrypted and written in order.
+const PREFETCH = 4;
 export async function downloadMV(id, video, audio, { signal, onProgress, onDefrag }) {
   if (!navigator.storage?.getDirectory) throw new Error('OPFS requires HTTPS or localhost and a supported browser');
   await collectGarbage();
@@ -235,12 +237,23 @@ export async function downloadMV(id, video, audio, { signal, onProgress, onDefra
     await writer.write(init);
     const queue = streams.flatMap(s => s.segments.map(segment => ({ stream: s, segment })))
       .sort((a, b) => a.segment.start - b.segment.start || (a.stream.name === 'video' ? -1 : 1));
-    let sequence = 1, bytes = init.length, done = 0;
-    for (const { stream, segment } of queue) {
+    const pending = new Map();
+    let ahead = 0;
+    const fetchNext = () => {
+      const { stream, segment } = queue[ahead];
+      const raw = segment === stream.segments[0] ? Promise.resolve(stream.firstRaw) : fetchResource(segment, signal);
+      raw.catch(() => {}); // awaited below; an abort must not surface as an unhandled rejection
+      pending.set(ahead++, raw);
+    };
+    let sequence = 1, bytes = init.length;
+    for (let i = 0; i < queue.length; i++) {
+      while (ahead < queue.length && ahead < i + PREFETCH) fetchNext();
+      const raw = await pending.get(i); pending.delete(i);
       signal.throwIfAborted();
-      const data = await fragment(core, stream, segment, signal, true, sequence);
+      const { stream, segment } = queue[i];
+      const data = await core.call('fragment', stream.name, raw, stream.keys.get(segment.key) || new Uint8Array(16), true, sequence);
       sequence += moofCount(data); await writer.write(data); bytes += data.length;
-      onProgress(++done / queue.length, bytes);
+      onProgress((i + 1) / queue.length, bytes);
     }
     signal.throwIfAborted(); await writer.close(); writer = null;
     // Rewrite the interleaved fragments as a progressive MP4 (ftyp, moov, mdat).

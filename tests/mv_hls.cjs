@@ -43,7 +43,24 @@ next.m4s
   assert.deepEqual(media.segments[1].range, { offset: 110, length: 20 });
   assert.equal(media.segments[0].key, 'data:;base64,AAAA');
   assert.equal(media.segments[2].key, 'data:;base64,BBBB');
-  assert.equal(media.init.url, 'https://example.test/path/init.mp4');
+  assert.equal(media.init.url, 'https://example.test/path/init.mp4?token=1');
+  assert.equal(media.segments[2].url, 'https://example.test/path/next.m4s?token=1');
+  // CDN accessKey query parameter must be inherited verbatim by relative init/segments,
+  // without overriding a URI's own query string or leaking to a different origin.
+  const signed = 'https://mvod.itunes.apple.com/itunes-assets/v4/dir/audio.m3u8?accessKey=1797_sig_%2Fdir%2F_abc%2B1%3D%3D';
+  const signedMedia = parseMedia(`#EXTM3U
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:2,
+seg1.m4s
+#EXTINF:2,
+seg2.m4s?own=1
+#EXTINF:2,
+https://other.cdn.test/seg3.m4s
+#EXT-X-ENDLIST`, signed);
+  assert.equal(signedMedia.init.url, 'https://mvod.itunes.apple.com/itunes-assets/v4/dir/init.mp4?accessKey=1797_sig_%2Fdir%2F_abc%2B1%3D%3D');
+  assert.equal(signedMedia.segments[0].url, 'https://mvod.itunes.apple.com/itunes-assets/v4/dir/seg1.m4s?accessKey=1797_sig_%2Fdir%2F_abc%2B1%3D%3D');
+  assert.equal(signedMedia.segments[1].url, 'https://mvod.itunes.apple.com/itunes-assets/v4/dir/seg2.m4s?own=1');
+  assert.equal(signedMedia.segments[2].url, 'https://other.cdn.test/seg3.m4s');
   assert.throws(() => parseMedia(playlist.replace('#EXT-X-ENDLIST', ''), base), /completed/);
   assert.throws(() => parseMedia(playlist.replace('20\nmedia.mp4', '20\nother.mp4'), base), /offset/);
   assert.throws(() => parseMedia(playlist.replace('#EXTINF:4,', '#EXT-X-DISCONTINUITY\n#EXTINF:4,'), base), /Discontinuous/);
