@@ -222,7 +222,9 @@ impl ResponseCache {
     }
 
     fn put(&self, url: &str, upstream: Arc<Upstream>) {
-        if !upstream.status.is_success() || upstream.body.len() > self.capacity {
+        // capacity 为 0（--amp-cache-mb 0）表示完全关闭响应缓存：
+        // 否则 0 字节的 2xx 响应会因 len() == 0 绕过容量判断被缓存下来。
+        if self.capacity == 0 || !upstream.status.is_success() || upstream.body.len() > self.capacity {
             return;
         }
         let mut guard = self.lru.lock().unwrap_or_else(|e| e.into_inner());

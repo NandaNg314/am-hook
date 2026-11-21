@@ -91,6 +91,20 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     views: 'appears-on,more-by-artist,related-videos,other-versions,you-might-also-like,audio-extras,video-extras',
   };
 
+  /**
+   * 曲目关系分页参数：首次 tracks 请求的字段由 ALBUM_PARAMS 决定，后续用 next 链接翻页时
+   * 若不显式带上同样的 include，多语补全（英/日/中）拿到的曲目会缺关系字段。
+   * 之前这里引用了未定义的 TRACK_PARAMS，被外层 catch 静默吞掉，导致第 2 页起的元数据补全直接中断。
+   * 刻意不覆盖 fields[songs]：next 链接自带的字段列表（含 discNumber/audioLocale 等）必须保留，
+   * 用一份手写字段清单覆盖反而会丢字段、让多碟专辑的分碟序号退化。
+   */
+  const TRACK_PARAMS = {
+    'include[songs]': 'artists,composers,albums',
+    'include[music-videos]': 'artists',
+    'include[playlists]': 'curator',
+    'fields[artists]': 'name,url',
+  };
+
   async function amp(path, params) {
     const url = new URL('/amp' + path, location.origin);
     // 值为 undefined 的参数不传（如地区不支持当前语言时的 l）
@@ -771,6 +785,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
 
     batchAbortController = new AbortController();
+    // SPA 切走页面时立刻中止批量任务：否则后台会继续抓取/解密/触发浏览器下载
+    if (signal.aborted) batchAbortController.abort();
+    else signal.addEventListener('abort', () => { try { batchAbortController?.abort(); } catch {} }, { once: true });
     const batchSig = batchAbortController.signal;
 
     if (batchCard) batchCard.hidden = false;
@@ -1076,6 +1093,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
 
     batchAbortController = new AbortController();
+    // SPA 切走页面时立刻中止批量任务：否则后台会继续抓取/解密/触发浏览器下载
+    if (signal.aborted) batchAbortController.abort();
+    else signal.addEventListener('abort', () => { try { batchAbortController?.abort(); } catch {} }, { once: true });
     const batchSig = batchAbortController.signal;
 
     if (batchCard) batchCard.hidden = false;

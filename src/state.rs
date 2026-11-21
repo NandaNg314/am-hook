@@ -9,12 +9,24 @@ use lru::LruCache;
 use temari::rounds::Template;
 use tokio::sync::{watch, OnceCell};
 
+/// 每个分片在 m3u8 中对应的加密密钥类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    /// `METHOD=NONE` 或无 `#EXT-X-KEY`，无需解密
+    None,
+    /// 预取固定模板（`skd://itunes.apple.com/P000000000/s1/e1`）
+    Fixed,
+    /// 轨道真实模板（需向 wrapper 请求）
+    Track,
+}
+
 /// m3u8 中一个 BYTERANGE 段。`Track::segments[0]` 是 EXT-X-MAP 的 init 段，
-/// `[1]` 是第一个 frag（即 range1，使用内嵌固定模板），其余使用轨道模板。
+/// 其余分片按各自 `key` 决定使用固定模板、轨道模板或明文直通。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Segment {
     pub offset: u64,
     pub length: u64,
+    pub key: KeyKind,
 }
 
 impl Segment {
@@ -326,7 +338,15 @@ pub fn is_allowed_cdn_url(raw: &str) -> bool {
 pub struct SegmentCache {
     lru: Mutex<(LruCache<SegmentKey, Bytes>, usize)>,
     capacity: usize,
-    inflight: Mutex<HashMap<SegmentKey, Arc<OnceCell<Bytes>>>>,
+    inflight: Mutex<HashMap<SegmentKey, InflightEntry>>,
+}
+
+/// 同一 segment 的并发去重条目。
+/// `waiters` 必须引用计数：只用 Arc 指针相等判定时，后来的等待者先被取消
+/// 就会把「仍在加载」的条目删掉，导致其他请求重复拉取上游并重复解密。
+struct InflightEntry {
+    cell: Arc<OnceCell<Bytes>>,
+    waiters: usize,
 }
 
 impl SegmentCache {
@@ -375,11 +395,18 @@ impl SegmentCache {
         if let Some(hit) = self.get(&key) {
             return Ok(hit);
         }
-        let cell = self.inflight.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
+        let cell = {
+            let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = inflight.entry(key.clone()).or_insert_with(|| InflightEntry {
+                cell: Arc::new(OnceCell::new()),
+                waiters: 0,
+            });
+            entry.waiters += 1;
+            entry.cell.clone()
+        };
         let _guard = SegmentInflightGuard {
             inflight: &self.inflight,
             key: key.clone(),
-            cell: cell.clone(),
         };
         let result = cell.get_or_try_init(load).await.cloned();
         if let Ok(data) = &result {
@@ -390,15 +417,23 @@ impl SegmentCache {
 }
 
 struct SegmentInflightGuard<'a> {
-    inflight: &'a Mutex<HashMap<SegmentKey, Arc<OnceCell<Bytes>>>>,
+    inflight: &'a Mutex<HashMap<SegmentKey, InflightEntry>>,
     key: SegmentKey,
-    cell: Arc<OnceCell<Bytes>>,
 }
 
 impl Drop for SegmentInflightGuard<'_> {
     fn drop(&mut self) {
         let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
-        if inflight.get(&self.key).is_some_and(|c| Arc::ptr_eq(c, &self.cell)) {
+        let should_remove = match inflight.get_mut(&self.key) {
+            Some(entry) => {
+                entry.waiters = entry.waiters.saturating_sub(1);
+                // 只有所有等待者（含正在执行 load 的请求）都结束时才移除，
+                // 避免后来者取消时误删仍加载中的 key。
+                entry.waiters == 0
+            }
+            None => false,
+        };
+        if should_remove {
             inflight.remove(&self.key);
         }
     }
@@ -420,7 +455,11 @@ mod tests {
             "skd://test".into(),
             "test_m.mp4".into(),
             "100@10".into(),
-            vec![Segment { offset: 0, length: 10 }, Segment { offset: 10, length: 100 }, Segment { offset: 110, length: 50 }],
+            vec![
+                Segment { offset: 0, length: 10, key: KeyKind::None },
+                Segment { offset: 10, length: 100, key: KeyKind::Fixed },
+                Segment { offset: 110, length: 50, key: KeyKind::Track },
+            ],
         )
     }
 

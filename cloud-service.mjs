@@ -675,23 +675,6 @@ function writeFileExclusive(dir, baseName, data, trackPrefix = '') {
   throw new Error(`无法为 ${baseName} 分配唯一文件名（同名过多）`);
 }
 
-/**
- * 给目录内文件取一个不冲突的名字（不实际创建，仅计算），用于歌词等附属文件。
- */
-function uniqueNameInDir(dir, baseName, trackPrefix = '') {
-  const ext = path.extname(baseName);
-  const stem = baseName.slice(0, baseName.length - ext.length);
-  const exists = (n) => fs.existsSync(path.join(dir, n));
-  if (!exists(baseName)) return baseName;
-  if (trackPrefix && !exists(`${trackPrefix}${baseName}`)) return `${trackPrefix}${baseName}`;
-  // 重名时保留已有前缀，序号插在扩展名之前，确保与音频文件仍能一眼配对
-  for (let n = 2; n <= 999; n++) {
-    const cand = `${stem} (${n})${ext}`;
-    if (!exists(cand)) return cand;
-  }
-  return baseName;
-}
-
 /* ==================== TTML 纯净 LRC 转换 ==================== */
 
 function parseTimeToSeconds(timeStr) {
@@ -1004,27 +987,32 @@ function buildBilingualLrc(ttmlContent, targetLang = 'zh-Hans-CN') {
   // 中文原文不翻成外语
   if (rootLang.startsWith('zh') && !target.startsWith('zh')) return null;
 
-  // 1. 提取翻译块：优先目标语言（zh-Hans），退回任意 language、排除自动生成
+  // 1. 提取翻译块：先精确匹配目标语言，再按 base 匹配（同 base 有多种写法时优先与目标同脚本）。
+  //    旧逻辑按文档顺序「第一个 base 匹配就锁定」，zh-Hant 排在 zh-Hans 前面时会错误选到繁体。
   let translationBlock = '';
   const translationRegex = /<translation\b[^>]*xml:lang=["']([^"']+)["'][^>]*>([\s\S]*?)<\/translation>/gi;
   const allTranslations = [];
   let tMatch;
   while ((tMatch = translationRegex.exec(ttmlContent)) !== null) {
-    const lang = (tMatch[1] || '').toLowerCase();
+    const lang = (tMatch[1] || '').toLowerCase().replace(/_/g, '-');
     const auto = /\bautomaticallyCreated=["'](true|1)["']/i.test(tMatch[0]);
-    const body = tMatch[2];
-    allTranslations.push({ lang, auto, body });
-    const langBase = lang.split('-')[0];
-    const wantBase = targetLang.split('-')[0];
-    if (!translationBlock && lang === targetLang.toLowerCase() && !auto) {
-      translationBlock = body;
-    } else if (!translationBlock && langBase === wantBase && !auto) {
-      translationBlock = body;
-    }
+    allTranslations.push({ lang, auto, body: tMatch[2] });
+  }
+  const targetBase = target.split('-')[0];
+  const targetScript = script(target);
+  const usableTranslations = allTranslations.filter((t) => !t.auto);
+  const exactHit = usableTranslations.find((t) => t.lang === target);
+  if (exactHit) {
+    translationBlock = exactHit.body;
+  } else {
+    const baseMatches = usableTranslations.filter((t) => t.lang.split('-')[0] === targetBase);
+    // 同 base 的 zh-Hant / zh-Hans：只选与目标脚本一致的那份，找不到才退回第一份
+    const chosen = baseMatches.find((t) => script(t.lang) === targetScript) || baseMatches[0];
+    if (chosen) translationBlock = chosen.body;
   }
   if (!translationBlock) {
     // 退回首个非自动翻译
-    const fallback = allTranslations.find((t) => !t.auto) || allTranslations[0];
+    const fallback = usableTranslations[0] || allTranslations[0];
     translationBlock = fallback ? fallback.body : '';
   }
   if (!translationBlock) {
@@ -1692,48 +1680,61 @@ function stripBitrateBox(input) {
  *
  * 返回 null 表示通过，否则返回问题描述字符串。
  */
-function validateDefragged(buf) {
-  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
-
-  const topKinds = [];
-  let p = 0;
-  while (p + 8 <= b.length) {
+/** 按 ISO BMFF box 结构遍历 [start, end) 范围内的同级 box（不搜索裸字节，避免命中 udta/mdat 内容） */
+function listBoxes(b, start, end) {
+  const out = [];
+  let p = start;
+  while (p + 8 <= end) {
     let size = b.readUInt32BE(p);
     const kind = b.toString('latin1', p + 4, p + 8);
     let hdr = 8;
-    if (size === 1) { size = Number(b.readBigUInt64BE(p + 8)); hdr = 16; }
-    else if (size === 0) size = b.length - p;
-    if (size < hdr || p + size > b.length) break;
-    topKinds.push(kind);
+    if (size === 1) {
+      if (p + 16 > end) break;
+      size = Number(b.readBigUInt64BE(p + 8));
+      hdr = 16;
+    } else if (size === 0) {
+      size = end - p;
+    }
+    if (size < hdr || p + size > end) break;
+    out.push({ kind, pos: p, size, hdr });
     p += size;
   }
+  return out;
+}
+
+function validateDefragged(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+
+  const top = listBoxes(b, 0, b.length);
+  const topKinds = top.map((x) => x.kind);
 
   if (!topKinds.includes('moov')) return '缺少 moov';
   if (topKinds.includes('moof')) return '仍残留 moof 分片';
   if (!topKinds.includes('mdat')) return '缺少 mdat';
 
-  // 找第一个音频轨的 stbl
-  const moovEl = b.indexOf(Buffer.from('moov', 'latin1'));
-  const stblEl = b.indexOf(Buffer.from('stbl', 'latin1'), moovEl);
-  if (stblEl < 4) return '未找到 stbl';
+  // 通过 box 树定位 stbl：不能用 indexOf('stbl') 裸搜，
+  // 前置 udta 标签（歌名/歌词等）里出现 "stbl" 子串时会被误判成 box，导致合法文件被判损坏。
+  const moov = top.find((x) => x.kind === 'moov');
+  let stbl = null;
+  const findStbl = (parent) => {
+    for (const box of listBoxes(b, parent.pos + parent.hdr, parent.pos + parent.size)) {
+      if (box.kind === 'stbl') { stbl = box; return true; }
+      if (box.kind === 'trak' || box.kind === 'mdia' || box.kind === 'minf') {
+        if (findStbl(box)) return true;
+      }
+    }
+    return false;
+  };
+  if (!findStbl(moov)) return '未找到 stbl';
 
-  const stblPos = stblEl - 4;
-  const stblSize = b.readUInt32BE(stblPos);
-  if (stblSize < 8 || stblPos + stblSize > b.length) return 'stbl 尺寸非法';
+  const stblPos = stbl.pos;
+  const stblSize = stbl.size;
 
   const kids = new Set();
   let sizes = null;
-  let q = stblPos + 8;
-  while (q + 8 <= stblPos + stblSize) {
-    let size = b.readUInt32BE(q);
-    const kind = b.toString('latin1', q + 4, q + 8);
-    let hdr = 8;
-    if (size === 1) { size = Number(b.readBigUInt64BE(q + 8)); hdr = 16; }
-    else if (size === 0) size = (stblPos + stblSize) - q;
-    if (size < hdr) return `stbl 内 ${kind} 尺寸非法`;
-    kids.add(kind);
-    if (kind === 'stsz') sizes = { pos: q, size };
-    q += size;
+  for (const box of listBoxes(b, stblPos + stbl.hdr, stblPos + stblSize)) {
+    kids.add(box.kind);
+    if (box.kind === 'stsz') sizes = { pos: box.pos, size: box.size };
   }
 
   for (const need of ['stsd', 'stts', 'stsc', 'stsz']) {
@@ -1898,7 +1899,17 @@ function renderNameTemplate(template, meta = {}, quality = '') {
     .replace(/_{2,}/g, '_')
     .trim();
 
-  return sanitizeFilename(cleaned || renderNameTemplate(DEFAULT_TRACK_TEMPLATE, meta, quality));
+  return sanitizeFilename(cleaned || fallbackRenderName(map));
+}
+
+/**
+ * 模板渲染为空时的兜底文件名。
+ * 注意：绝不能回落到 renderNameTemplate(DEFAULT_TRACK_TEMPLATE, ...) ——
+ * 当 artist/title 同时缺失时默认模板同样渲染为空，会无限自递归直到 RangeError。
+ */
+function fallbackRenderName(map) {
+  const parts = [map.artist, map.title, map.album].map((s) => String(s || '').trim()).filter(Boolean);
+  return parts.length ? parts.join(' - ') : 'Untitled';
 }
 
 /**
@@ -2016,7 +2027,28 @@ async function fetchCencFmp4(m3u8Url, encOut) {
 
 /* ==================== 核心转存处理 ==================== */
 
-async function finalizeBatchSession({
+/**
+ * 同一 batchId 的 finalize 必须互斥：客户端重试、或 isLastTrack 提前触发时，
+ * 两个 zip_pack.py 同时写同一个 .zip 会产出损坏文件，先结束的还会把 sessionDir 删掉。
+ * 重复请求直接复用进行中的 Promise，不重复打包。
+ */
+const _finalizeInFlight = new Map();
+async function finalizeBatchSession(opts) {
+  const key = String(opts?.batchId || '');
+  if (!key) return _finalizeBatchSessionCore(opts);
+  const existing = _finalizeInFlight.get(key);
+  if (existing) {
+    console.warn(`[Cloud-Transfer] batch ${key} 的打包请求已在执行，复用进行中的结果`);
+    return existing;
+  }
+  const p = _finalizeBatchSessionCore(opts).finally(() => {
+    if (_finalizeInFlight.get(key) === p) _finalizeInFlight.delete(key);
+  });
+  _finalizeInFlight.set(key, p);
+  return p;
+}
+
+async function _finalizeBatchSessionCore({
   batchId,
   sessionDir,
   zipFilename,
@@ -2058,15 +2090,22 @@ async function finalizeBatchSession({
       const groups = groupFilesByLimit(sessionFileSizes, limitBytes);
       const baseName = finalZipName.replace(/\.zip$/i, '');
       const zipParts = [];
-      for (let i = 0; i < groups.length; i++) {
-        const partPath = resolveSafeTmpPath(`${batchId}.part${i + 1}.zip`, { isFileName: true });
-        const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
-        const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
-        await packZipFolder(sessionDir, partPath, partFiles);
-        const partStat = fs.statSync(partPath);
-        const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
-        zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: partFiles.length, trackFiles });
-        console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
+      try {
+        for (let i = 0; i < groups.length; i++) {
+          const partPath = resolveSafeTmpPath(`${batchId}.part${i + 1}.zip`, { isFileName: true });
+          const partName = groups.length > 1 ? `${baseName} [part ${i + 1}].zip` : finalZipName;
+          const partFiles = errorLogName ? [...groups[i], errorLogName] : groups[i];
+          await packZipFolder(sessionDir, partPath, partFiles);
+          const partStat = fs.statSync(partPath);
+          const trackFiles = groups[i].filter((name) => /\.(m4a|mp3|flac)$/i.test(name)).length;
+          zipParts.push({ filePath: partPath, fileName: partName, fileSize: partStat.size, totalFiles: partFiles.length, trackFiles });
+          console.log(`[Cloud-Transfer] 📦 全辑 ZIP 分卷 ${i + 1}/${groups.length} 本地就绪: ${partName} (大小: ${(partStat.size / (1024 * 1024)).toFixed(1)}MB, ${groups[i].length} 个文件含 ${trackFiles} 首音频)`);
+        }
+      } catch (err) {
+        // 任一卷打包失败：已产出的半截分卷与会话目录都不再可用，就地清理避免磁盘泄漏
+        for (const p of zipParts) { try { fs.rmSync(p.filePath, { force: true }); } catch {} }
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+        throw err;
       }
       const tEnd = performance.now();
       return {
@@ -2140,28 +2179,36 @@ async function finalizeBatchSession({
     }
   }
 
-  await packZipFolder(sessionDir, zipFilePath);
-
   if (noUpload) {
-    const zipStat = fs.statSync(zipFilePath);
-    const tEnd = performance.now();
-    console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
-    return {
-      local: true,
-      isZip: true,
-      sessionDir,
-      zipFilePath,
-      zipFileName: finalZipName,
-      fileSize: zipStat.size,
-      totalFiles: files.length,
-      album: meta.album || '',
-      qualityName: chosenFormatName,
-      qualityFallback: qualityFallback || undefined,
-      elapsedMs: Math.round(tEnd - t0)
-    };
+    // 打包必须放在清理逻辑之内：packZipFolder 超时/失败时若直接抛错，
+    // sessionDir 与半截 .zip 会永久残留（cleanupStaleSessions 只清特定前缀）
+    try {
+      await packZipFolder(sessionDir, zipFilePath);
+      const zipStat = fs.statSync(zipFilePath);
+      const tEnd = performance.now();
+      console.log(`[Cloud-Transfer] 📦 全辑 ZIP 本地就绪: ${finalZipName} (大小: ${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 耗时: ${((tEnd - t0) / 1000).toFixed(2)}s)`);
+      return {
+        local: true,
+        isZip: true,
+        sessionDir,
+        zipFilePath,
+        zipFileName: finalZipName,
+        fileSize: zipStat.size,
+        totalFiles: files.length,
+        album: meta.album || '',
+        qualityName: chosenFormatName,
+        qualityFallback: qualityFallback || undefined,
+        elapsedMs: Math.round(tEnd - t0)
+      };
+    } catch (err) {
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+      throw err;
+    }
   }
 
   try {
+    await packZipFolder(sessionDir, zipFilePath);
     const zipStat = fs.statSync(zipFilePath);
     console.log(`[Cloud-Transfer] 全辑 ZIP 封装完成 (${(zipStat.size / (1024 * 1024)).toFixed(1)}MB, 共 ${files.length} 个文件)，正在直传 Gofile (流式直传，零内存压力)...`);
 
@@ -2531,7 +2578,12 @@ async function processTransfer(body, { signal } = {}) {
   console.log(`[Cloud-Transfer] 资源获取完成 (${((tFetch - t0) / 1000).toFixed(2)}s, 音频大小: ${(rawAudioBuf.length / (1024 * 1024)).toFixed(1)}MB)`);
 
   // ==================== 元数据按用户语言精准分流 (en: 英文标签 / zh: 华语转简中、外语保原名) ====================
-  const splitArtists = (s) => String(s || '').split(/(\s*(?:,|&|\/|feat\.|ft\.)\s*)/i).filter((x) => x && !/^[\s,&/]*$/.test(x));
+  // 拆分多艺人：分隔符本身（, & / feat. ft.）必须一并丢弃，否则会被当成「艺人片段」参与
+  // 目录查询，甚至拼出 "A &  feat.  & B" 这种畸形艺人名。
+  const splitArtists = (s) => String(s || '')
+    .split(/(\s*(?:,|&|\/|feat\.|ft\.)\s*)/i)
+    .map((x) => x.trim())
+    .filter((x) => x && !/^(?:,|&|\/|feat\.|ft\.)$/i.test(x));
   const hasChinese = (t) => /[\u4e00-\u9fa5]/.test(t || '');
   const hasLatin = (t) => /[a-z]/i.test(t || '');
   const catalogLangFor = (sf, wantEn) => {
@@ -2815,30 +2867,36 @@ async function processTransfer(body, { signal } = {}) {
         const audioExt = path.extname(finalM4aName);
         const audioStem = finalM4aName.slice(0, finalM4aName.length - audioExt.length);
         const lyrExt = path.extname(finalLyricsName);
+        // 直接沿用音频词干；真正的排他创建与去重交给 writeTextExclusive（原子），
+        // 这里再用 existsSync 预判只会在并发下产生与音频不对应的歌词名。
         finalLyricsName = `${audioStem}${lyrExt}`;
-        if (fs.existsSync(path.join(sessionDir, finalLyricsName))) {
-          finalLyricsName = uniqueNameInDir(sessionDir, finalLyricsName, '');
-        }
       }
       console.log(`[Cloud-Transfer] ⚠️ 检测到同名曲目，已自动重命名避免覆盖: ${finalM4aName}`);
     }
 
+    // 歌词等附属文件同样用排他创建（wx）落盘：existsSync 判重与写入之间存在并发窗口，
+    // 批量转存 3 线程同时写同名歌词时会互相覆盖；候选耗尽必须抛错，不能静默放弃。
     const writeTextExclusive = (baseName, content, label) => {
-      const firstCand = fs.existsSync(path.join(sessionDir, baseName))
-        ? uniqueNameInDir(sessionDir, baseName, '')
-        : baseName;
-      for (let trySeq = 0; trySeq < 5; trySeq++) {
-        const cand = trySeq === 0 ? firstCand : uniqueNameInDir(sessionDir, baseName, trackPrefix);
+      const ext = path.extname(baseName);
+      const stem = baseName.slice(0, baseName.length - ext.length);
+      const extraPrefix = (trackPrefix && !stem.startsWith(trackPrefix)) ? trackPrefix : '';
+      const candidates = function* () {
+        // 音频已唯一化时 baseName 自带配对前缀，优先保证与音频同名
+        yield baseName;
+        for (let n = 2; n <= 999; n++) yield `${extraPrefix}${stem} (${n})${ext}`;
+      };
+      for (const cand of candidates()) {
         try {
           const fd = fs.openSync(path.join(sessionDir, cand), 'wx');
           try { fs.writeFileSync(fd, content, 'utf8'); } finally { fs.closeSync(fd); }
           console.log(`[Cloud-Transfer] ${label}: ${cand} 到 session: ${batchId}`);
-          return;
+          return cand;
         } catch (err) {
           if (err.code === 'EEXIST') continue;
           throw err;
         }
       }
+      throw new Error(`无法为歌词文件 ${baseName} 分配唯一名称（同名过多）`);
     };
 
     if (finalLyricsName && lyricsContent) {
@@ -2910,7 +2968,14 @@ async function processTransfer(body, { signal } = {}) {
     const rawSingleZip = `${renderZipTemplate(zipTemplate, meta, quality, 1)}.zip`;
     const finalZipName = sanitizeFilename(isEn ? rawSingleZip : toSimplifiedChinese(rawSingleZip));
     const zipFilePath = `${singleDir}.zip`;
-    await packZipFolder(singleDir, zipFilePath);
+    try {
+      await packZipFolder(singleDir, zipFilePath);
+    } catch (err) {
+      // 打包失败/超时：单曲临时目录与半截 zip 立即清理，避免残留
+      try { fs.rmSync(singleDir, { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(zipFilePath, { force: true }); } catch {}
+      throw err;
+    }
 
     if (noUpload) {
       try { fs.rmSync(singleDir, { recursive: true, force: true }); } catch {}
@@ -3437,7 +3502,7 @@ function readJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   setSafeCorsHeaders(req, res);
 
   if (req.method === 'OPTIONS') {
@@ -3446,7 +3511,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  // 畸形 Host / URL 会让 new URL 抛错：这里就地返回 400，避免 async handler 变成未处理拒绝、连接挂死
+  let u;
+  try {
+    u = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'error', error: 'Bad request URL' }));
+    return;
+  }
 
   if (req.method === 'GET' && u.pathname === '/ping') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3885,6 +3958,18 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ status: 'error', error: 'Not found' }));
+}
+
+const server = http.createServer((req, res) => {
+  // 请求处理是 async：任何未捕获异常（如畸形 Host/URL）都必须转成 500 响应，
+  // 否则 Promise 拒绝被全局守护吞掉，客户端连接会一直挂起等待。
+  handleRequest(req, res).catch((err) => {
+    console.error('[am-cloud] 请求处理异常:', err);
+    try {
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      if (!res.writableEnded) res.end(JSON.stringify({ status: 'error', error: 'Internal server error' }));
+    } catch {}
+  });
 });
 
 /* ==================== 磁盘与临时会话自动清理 ==================== */
@@ -3969,7 +4054,11 @@ function cleanupStaleSessions() {
     const maxAge = 15 * 60 * 1000; // 15 分钟自动过期：Hi-Res 大文件堆积快，30 分钟易撑满磁盘
     const entries = fs.readdirSync(tmpDir);
     for (const entry of entries) {
-      if (((entry.startsWith('album_') || entry.startsWith('playlist_') || entry.startsWith('am_single_')) && entry.endsWith('.zip')) ||
+      // 批次 .zip 产物：<batchId>.zip / <batchId>.partN.zip。
+      // 旧逻辑只认 album_/playlist_/am_single_ 前缀，其它合法 batchId（如 artist_、smoke_）
+      // 打包失败时留下的半截包永远不会被清理。这里按「批次前缀 + zip 后缀」识别。
+      const isBatchZip = /^(?:album|playlist|artist|song|batch|disc|discography|am_single|smoke)[A-Za-z0-9_.-]*\.(?:part\d+\.)?zip$/i.test(entry);
+      if (isBatchZip ||
           (entry.startsWith('am_defrag_') && entry.endsWith('.m4a')) ||
           entry.startsWith('am_tg_') ||
           // 临时歌词文件：原先无任何清理逻辑，会长期堆积

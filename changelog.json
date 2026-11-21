@@ -1,12 +1,48 @@
 {
-  "latestVersion": "2.11",
-  "date": "2026-11-18",
-  "oneLinerVersion": "2.11",
+  "latestVersion": "2.12",
+  "date": "2026-11-21",
+  "oneLinerVersion": "2.12",
   "oneLiner": {
-    "zh": "Web 与云端下载全面加固：超大专辑完整分页、配额失败/取消自动退还、杜比/无损音质精准匹配与稳定性提升",
-    "en": "Web & cloud download hardening: full pagination on large albums, automatic quota refunds on failure/cancel, accurate Dolby/Lossless matching and better reliability"
+    "zh": "修复单曲/专辑下载的多处必现崩溃与状态卡死，加固云端批量打包与临时文件清理，并修正歌词语言与 Telegram 审批卡片",
+    "en": "Fixed reproducible crashes and stuck download states, hardened cloud batch packaging and temp-file cleanup, and corrected lyrics language selection and Telegram approval cards"
   },
   "releases": [
+    {
+      "version": "2.12",
+      "date": "2026-11-21",
+      "oneLiner": {
+        "zh": "修复单曲/专辑下载的多处必现崩溃与状态卡死，加固云端批量打包与临时文件清理，并修正歌词语言与 Telegram 审批卡片",
+        "en": "Fixed reproducible crashes and stuck download states, hardened cloud batch packaging and temp-file cleanup, and corrected lyrics language selection and Telegram approval cards"
+      },
+      "title": {
+        "zh": "稳定性修复：下载锁、歌词、批量转存与 Telegram",
+        "en": "Stability Fixes: Download Locks, Lyrics, Batch Transfers & Telegram"
+      },
+      "items": {
+        "zh": [
+          "📀 大专辑多语元数据补全：英/日/中三语分页不再从第 2 页起静默中断，100 首以上专辑的曲目名与艺人名可以完整本地化",
+          "📝 单曲「下载独立歌词」修复：点击不再直接崩溃，没有歌词时会给出明确提示",
+          "☁️ Gofile 转存锁修复：成功或失败都会即时释放曲目状态，失败就地提示；配额不足或预扣异常时进度条立刻复位，不再卡在「准备中」",
+          "🧩 云端批量转存加固：同批次重复打包会复用进行中的任务，避免两个打包进程同写一个压缩包造成损坏；打包失败时清理半截 ZIP 与临时目录；并发同名歌词改为原子写入并自动编号，不再互相覆盖",
+          "🎚️ 音频容器校验修复：封面与标签文本里出现特定字节序列时，不再误判合法音频为损坏而拒绝交付",
+          "🎤 多艺人拆分修复：正确过滤 feat./ft. 连接词，不再把连接词当作艺名去查询，也不会拼出「A & feat. & B」这种错误艺人名",
+          "🇨🇳 歌词语言选择修复：官方同时提供繁体与简体两版时优先选用简体；日区重试后的元数据地区也返回正确值",
+          "🤖 Telegram 稳定性：歌单超量审批卡恢复可发送（修复 64 字节回调上限）；整专辑仅下载歌词失败会明确报错；私聊投递失败不再扣除配额；批量下载异常退出不再残留临时目录",
+          "🌐 网页端体验：切换页面会立即中止后台批量任务；请求异常统一返回明确错误，而不是让连接一直挂起"
+        ],
+        "en": [
+          "📀 Large-album localization: English/Japanese/Chinese track pagination no longer stops silently after page 2, so 100+ track albums localize completely",
+          "📝 Lyrics-only download for a single track no longer crashes on click and shows a clear message when no lyrics exist",
+          "☁️ Gofile transfer unlocking: track state is released on both success and failure with an inline error, and quota failures reset the progress bar instead of leaving it stuck on Preparing",
+          "🧩 Cloud batch hardening: duplicate packaging requests for the same batch reuse one in-flight job so two ZIP writers can never corrupt the archive; failed packaging cleans up partial ZIPs and temp dirs; concurrent same-name lyric files are written atomically with unique suffixes instead of overwriting each other",
+          "🎚️ Stricter audio verification: valid files are no longer rejected as corrupt when cover or tag text happens to contain a box-like byte sequence",
+          "🎤 Multi-artist parsing: feat./ft. connectors are filtered out instead of being treated as artist names or producing names like A & feat. & B",
+          "🇨🇳 Lyrics language choice: Simplified is preferred for zh-Hans targets when both Traditional and Simplified translations exist, and retried Japan-storefront lookups now report the correct storefront",
+          "🤖 Telegram reliability: playlist approval cards can be sent again (64-byte callback limit fixed); lyrics-only album failures report an error; failed private delivery no longer charges quota; aborted batch downloads no longer leave temp dirs behind",
+          "🌐 Web experience: leaving a page now aborts background batch work, and unhandled request errors return a clear response instead of hanging the connection"
+        ]
+      }
+    },
     {
       "version": "2.11",
       "date": "2026-11-18",
@@ -26,7 +62,8 @@
           "🇭🇰 粤语与繁中歌词修复：本机下载开启中文翻译时，粤语/繁中原词不再被跳过，且会自动整理多余的汉字间距",
           "📝 清晰直观的提示与命名：修复专辑/歌单弹窗“内嵌歌词格式”文字标错；长歌名和 Emoji 截断时完整保留文件扩展名",
           "☁️ 云端上传更稳健：Gofile 节点波动或返回异常时自动重选节点重试，大包分卷传输更加稳定",
-          "🎬 网页端 MV 播放与下载修复：解决部分带签名 MV 分片请求返回 403 的问题，并加入分片预取提升下载速度；同时规范 MV 下载文件名为「歌手 - 歌名 [清晰度].mp4」，修复外区华语 MV 繁简与艺人名显示及部分浏览器落盘为临时 UUID 文件名的问题"
+          "🎬 网页端 MV 播放与下载修复：解决部分带签名 MV 分片请求返回 403 的问题，并加入分片预取提升下载速度；同时规范 MV 下载文件名为「歌手 - 歌名 [清晰度].mp4」，修复外区华语 MV 繁简与艺人名显示及部分浏览器落盘为临时 UUID 文件名的问题",
+          "🔧 云端转存与 TG 音频解密修复：解决部分曲目在服务端多段预取密钥切换处（约 15 秒位置）出现解码卡顿/中断的问题"
         ],
         "en": [
           "📀 Complete large-album pagination: albums with over 100 tracks now load every page cleanly when localized for Japanese, Chinese or English",
@@ -35,7 +72,8 @@
           "🇭🇰 Cantonese & Traditional Chinese lyrics: local bilingual downloads now translate zh-Hant tracks to Simplified Chinese and remove extra spaces between CJK characters",
           "📝 Clearer UI labels & safer filenames: fixed the mislabeled embedded-lyrics selector in album/playlist modals, and long filenames/emoji now truncate cleanly without stripping file extensions",
           "☁️ More resilient cloud uploads: Gofile transfers automatically switch nodes and retry on transient errors",
-          "🎬 Web MV playback, download & naming fix: fixed HTTP 403 errors on signed MV segments with segment prefetching, normalized MV filenames to \"Artist - Title [Spec].mp4\" (preventing temporary UUID filenames), and improved Chinese/English metadata localization across storefronts"
+          "🎬 Web MV playback, download & naming fix: fixed HTTP 403 errors on signed MV segments with segment prefetching, normalized MV filenames to \"Artist - Title [Spec].mp4\" (preventing temporary UUID filenames), and improved Chinese/English metadata localization across storefronts",
+          "🔧 Cloud & Telegram audio decryption fix: resolved playback stuttering/dropouts around the 15-second mark on tracks using multiple consecutive prefetch-keyed HLS segments"
         ]
       }
     },

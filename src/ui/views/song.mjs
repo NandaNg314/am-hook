@@ -556,13 +556,16 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           const errJson = await consumeRes.json().catch(() => null);
           toast(errJson?.error || (isEn ? '⚠️ Daily transfer quota exceeded' : '⚠️ 今日转存配额不足，无法进行本机下载'));
           downloads.delete(id);
+          showDownload(id);
           return;
         }
         const consumeJson = await consumeRes.json().catch(() => null);
         localReservationId = consumeJson?.data?.reservationId || null;
       } catch (err) {
         toast(isEn ? `⚠️ Quota check failed: ${err.message}` : `⚠️ 配额预扣失败: ${err.message}`);
+        // 释放下载锁并隐藏进度条，否则该曲目会一直显示「准备中」且再次点击提示忙碌
         downloads.delete(id);
+        showDownload(id);
         return;
       }
     }
@@ -635,10 +638,20 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
 
         toast(isEn ? '🎉 Successfully transferred to Gofile!' : '🎉 已成功转存至 Gofile！');
         showGofileResult(resJson.data.downloadPage, `${meta.artist} - ${meta.title} [${v.info.name}]`);
+        // Gofile 分支同样走本地下载的收尾逻辑：成功也必须释放锁并隐藏进度条，
+        // 否则转存一次后该曲目被永久锁死（再次点击提示忙碌、关闭页面一直弹 beforeunload）
+        downloads.delete(id);
+        showDownload(id);
         return;
       } catch (err) {
         clearInterval(progressTimer);
-        throw err;
+        // 失败同样要解锁，并把错误就地提示（调用方未 await，抛出去只会变成未处理的 Promise 拒绝）
+        downloads.delete(id);
+        showDownload(id);
+        const msg = (err && err.message) || String(err);
+        if (err && err.name === 'AbortError') toast(t('dl.cancelled'));
+        else showAlert('error', () => t('dl.failed', { msg }));
+        return;
       }
     }
 
@@ -891,18 +904,23 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
           toast(isEn ? 'Fetching lyrics...' : '正在获取歌词...');
           const o = getLyricsOptions();
           const translateOn = o.translateOn;
-          const data = await fetchLyricsData(adamId, translateOn && !meta.isChinese, toSimplified, {
-            ruby: Boolean(o.rubyOn),
-            rubyMode: o.rubyMode || 'roman',
-          });
-          if (!data || !data.hasLyrics) { toast(isEn ? 'No lyrics available (instrumental)' : '暂无歌词或此曲为纯音乐'); return; }
-          // 优先按外置格式数组下载；未选外置则按当前内嵌格式下载一个
-          const fmts = o.saveFormats.length ? o.saveFormats : [(o.embedMode === 'ttml' && data.ttml) ? 'ttml' : 'lrc'];
-          for (const f of fmts) {
-            if (f === 'ttml' && data.ttml) downloadLyricsFile(data.ttml, 'ttml', meta.artist, meta.title);
-            else if (f === 'lrc' && data.lrc) downloadLyricsFile(data.lrc, 'lrc', meta.artist, meta.title);
+          try {
+            const data = await fetchLyricsDataShared(adamId, translateOn && !meta.isChinese, toSimplified, {
+              ruby: Boolean(o.rubyOn),
+              rubyMode: o.rubyMode || 'roman',
+            });
+            if (!data || !data.hasLyrics) { toast(isEn ? 'No lyrics available (instrumental)' : '暂无歌词或此曲为纯音乐'); return; }
+            // 优先按外置格式数组下载；未选外置则按当前内嵌格式下载一个
+            const fmts = o.saveFormats.length ? o.saveFormats : [(o.embedMode === 'ttml' && data.ttml) ? 'ttml' : 'lrc'];
+            for (const f of fmts) {
+              if (f === 'ttml' && data.ttml) downloadLyricsFile(data.ttml, 'ttml', meta.artist, meta.title);
+              else if (f === 'lrc' && data.lrc) downloadLyricsFile(data.lrc, 'lrc', meta.artist, meta.title);
+            }
+            toast(isEn ? 'Lyrics download started' : '已开始下载歌词');
+          } catch (err) {
+            const msg = (err && err.message) || String(err);
+            toast(isEn ? `⚠️ Failed to fetch lyrics: ${msg}` : `⚠️ 获取歌词失败：${msg}`);
           }
-          toast(isEn ? 'Lyrics download started' : '已开始下载歌词');
         },
       },
     ];

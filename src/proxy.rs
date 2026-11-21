@@ -17,7 +17,7 @@ use crate::m3u8::{
 use crate::log;
 use crate::monitor::ensure_template;
 use crate::source::{self, SourceKind};
-use crate::state::{is_allowed_cdn_url, AppState, Track};
+use crate::state::{is_allowed_cdn_url, AppState, KeyKind, Track};
 use crate::ui::app_handler;
 
 const M3U8_TYPE: &str = "application/vnd.apple.mpegurl; charset=utf-8";
@@ -107,7 +107,12 @@ async fn forward(
     };
 
     let mut builder = Response::builder().status(resp.status());
+    // Builder::header 是「追加」语义：若上游已带 Content-Type，再 append 会发出两个同名头。
+    // 需要覆盖时跳过透传，只在最后设置一次。
     for name in [CONTENT_TYPE, CONTENT_LENGTH, CONTENT_RANGE, ACCEPT_RANGES, header::LAST_MODIFIED, header::ETAG] {
+        if content_type.is_some() && name == CONTENT_TYPE {
+            continue;
+        }
         if let Some(v) = resp.headers().get(&name) {
             builder = builder.header(name, v);
         }
@@ -212,8 +217,10 @@ async fn handle_media_file(state: Arc<AppState>, method: Method, target: String,
 
     let segs = track.segments_overlapping(start, end);
 
-    // 首个需要轨道模板的 segment 若就是第一块输出，先等模板就绪，失败时还能返回正常的错误码
-    if segs.start >= 2 && track.template().is_none() {
+    // 本次响应里只要有分片依赖轨道模板，就先等模板就绪再发状态码；
+    // 否则（例如首个 frag 就是 KeyKind::Track）会先发出 200/206，再在流中途断开，
+    // 播放器只能看到「连接被重置」而不是明确的 504。
+    if track.template().is_none() && segs.clone().any(|i| track.segments[i].key == KeyKind::Track) {
         if let Err(e) = track.wait_template(state.config.template_timeout).await {
             return text(StatusCode::GATEWAY_TIMEOUT, format!("Decryption template not ready: {e}\n"));
         }
@@ -328,9 +335,9 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
         .segments
         .get_or_load((track.fileuri.clone(), idx), || async {
             let seg = track.segments[idx];
-            // 下载与等待模板并行
+            // 下载与等待模板并行；按 m3u8 中该分片实际声明的 EXT-X-KEY 决定是否需要轨道模板
             let (raw, init, tmpl) = tokio::try_join!(download(state, target, seg.offset, seg.length), load_init(state, track, target), async {
-                if idx >= 2 {
+                if seg.key == KeyKind::Track {
                     track.wait_template(state.config.template_timeout).await.map(Some)
                 } else {
                     Ok(None)
@@ -339,11 +346,12 @@ async fn load_segment(state: &AppState, track: &Arc<Track>, target: &str, idx: u
 
             // 解密是 CPU 密集操作（内部用 temari 线程池并行），不能占用 async worker
             let out = tokio::task::spawn_blocking(move || {
-                let mut out = match (idx, tmpl) {
-                    (1, _) => decrypt_fragment(&raw, fixed_template()),
-                    (_, Some(t)) => decrypt_fragment(&raw, &t),
-                    (_, None) => unreachable!("template awaited above"),
-                }?;
+                let mut out = match (seg.key, tmpl) {
+                    (KeyKind::None, _) => raw.to_vec(),
+                    (KeyKind::Fixed, _) => decrypt_fragment(&raw, fixed_template())?,
+                    (KeyKind::Track, Some(t)) => decrypt_fragment(&raw, &t)?,
+                    (KeyKind::Track, None) => unreachable!("template awaited above"),
+                };
                 if let Some(codec) = alac_track(&init) { repair_alac_fragment(&mut out, &codec)?; }
                 Ok::<_, String>(out)
             })
@@ -406,8 +414,9 @@ async fn download(state: &AppState, url: &str, offset: u64, length: u64) -> Resu
     Ok(body)
 }
 
-/// 解析单段 Range，返回 (start, end 闭区间, 是否部分响应)；不可满足时返回 None。
-/// 无法识别或多段的 Range 按规范忽略，返回整个文件。
+/// 解析单段 Range，返回 (start, end 闭区间, 是否部分响应)。
+/// - 无法识别/多段/语法畸形 → 按规范忽略，返回整个文件；
+/// - 语法合法但确实越界 → None（调用方回 416 + Content-Range: bytes */total）。
 fn parse_range(header: Option<&HeaderValue>, total: u64) -> Option<(u64, u64, bool)> {
     let full = Some((0, total.saturating_sub(1), false));
     let Some(spec) = header.and_then(|v| v.to_str().ok()).and_then(|s| s.trim().strip_prefix("bytes=")) else {
@@ -418,18 +427,29 @@ fn parse_range(header: Option<&HeaderValue>, total: u64) -> Option<(u64, u64, bo
     }
     let Some((a, b)) = spec.split_once('-') else { return full };
     let (a, b) = (a.trim(), b.trim());
+    // "bytes=-" 既无起点也无终点，视为畸形头，忽略
+    if a.is_empty() && b.is_empty() {
+        return full;
+    }
     if total == 0 {
         return None;
     }
     let (start, end) = if a.is_empty() {
-        let n: u64 = b.parse().ok()?;
+        let Ok(n) = b.parse::<u64>() else { return full };
         if n == 0 {
             return None;
         }
         (total.saturating_sub(n), total - 1)
     } else {
-        let start: u64 = a.parse().ok()?;
-        let end = if b.is_empty() { total - 1 } else { b.parse::<u64>().ok()?.min(total - 1) };
+        let Ok(start) = a.parse::<u64>() else { return full };
+        let end = if b.is_empty() {
+            total - 1
+        } else {
+            match b.parse::<u64>() {
+                Ok(v) => v.min(total - 1),
+                Err(_) => return full,
+            }
+        };
         (start, end)
     };
     (start <= end && start < total).then_some((start, end, true))

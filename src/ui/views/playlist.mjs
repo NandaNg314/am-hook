@@ -662,6 +662,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
 
     batchAbortController = new AbortController();
+    // SPA 切走页面时立刻中止批量任务，避免后台继续抓取/解密/下载
+    if (signal.aborted) batchAbortController.abort();
+    else signal.addEventListener('abort', () => { try { batchAbortController?.abort(); } catch {} }, { once: true });
     const batchSig = batchAbortController.signal;
 
     const plName = (playlist && playlist.attributes && playlist.attributes.name) || (isEn ? 'Apple Music Playlist' : 'Apple Music 歌单');
@@ -977,6 +980,9 @@ export function mount({ root, url, signal, player, navigate, onLangChange, toast
     }
 
     batchAbortController = new AbortController();
+    // SPA 切走页面时立刻中止批量任务，避免后台继续抓取/解密/下载
+    if (signal.aborted) batchAbortController.abort();
+    else signal.addEventListener('abort', () => { try { batchAbortController?.abort(); } catch {} }, { once: true });
     const batchSig = batchAbortController.signal;
 
     const plName = (playlist && playlist.attributes && playlist.attributes.name) || (isEn ? 'Apple Music Playlist' : 'Apple Music 歌单');

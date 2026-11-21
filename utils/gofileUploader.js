@@ -86,85 +86,132 @@ function formatZipFilename(taskType, info = {}) {
   return `${sanitizeFilename(info.name || 'Archive')}.zip`;
 }
 
+/** 32 位 ZIP 字段上限：原生实现不支持 ZIP64，超出必须显式报错，不能静默写出损坏包 */
+const ZIP32_MAX = 0xFFFFFFFF;
+const ZIP_ENTRY_MAX = 0xFFFF;
+
+/** 从任意偏移开始把整个 Buffer 写完（fs.write 可能短写） */
+async function writeAll(fd, buf, position) {
+  let written = 0;
+  while (written < buf.length) {
+    const { bytesWritten } = await fd.write(buf, written, buf.length - written, position + written);
+    if (!bytesWritten) throw new Error('ZIP 写入失败：磁盘未写入任何字节');
+    written += bytesWritten;
+  }
+}
+
 /**
  * 创建标准 ZIP 压缩包 (原生 Node.js 实现，零外部依赖，跨平台高兼容)
- * @param {Array<{ name: string, data: Buffer }>} fileList 文件平铺列表
+ *
+ * 采用「逐条目写盘」而非把所有条目拼成一个大 Buffer：
+ * 几十 GB 的专辑包以前会整包驻留堆内存并触发 OOM。
+ * 条目数据支持 `{ name, data }`（内存 Buffer）或 `{ name, path }`（按需读取）两种形式。
+ *
+ * @param {Array<{ name: string, data?: Buffer|string, path?: string }>} fileList 文件平铺列表
  * @param {string} destZipPath 目标 .zip 路径
  */
 async function createZipArchive(fileList, destZipPath) {
-  const localHeaders = [];
+  if (!Array.isArray(fileList) || fileList.length === 0) {
+    throw new Error('createZipArchive: 文件列表为空，拒绝生成 0 条目 ZIP');
+  }
+  if (fileList.length > ZIP_ENTRY_MAX) {
+    throw new Error(`ZIP 条目数 ${fileList.length} 超过 ${ZIP_ENTRY_MAX}，请分卷打包`);
+  }
+
+  await fs.promises.mkdir(path.dirname(destZipPath), { recursive: true });
+  const fd = await fs.promises.open(destZipPath, 'w');
   const centralRecords = [];
   let currentOffset = 0;
 
-  for (const file of fileList) {
-    const rawData = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
-    const uncompressedSize = rawData.length;
-    const crc = calculateCrc32(rawData);
+  try {
+    for (const file of fileList) {
+      // 只把「当前这一首」读进内存，避免整包聚合
+      const rawData = file.path
+        ? await fs.promises.readFile(file.path)
+        : (Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data));
+      const uncompressedSize = rawData.length;
+      const crc = calculateCrc32(rawData);
 
-    // 采用 DEFLATE 压缩
-    const compressedData = zlib.deflateRawSync(rawData);
-    const compressedSize = compressedData.length;
-    const filenameBuf = Buffer.from(file.name.replace(/\\/g, '/'), 'utf8');
+      // 采用 DEFLATE 压缩
+      const compressedData = zlib.deflateRawSync(rawData);
+      const compressedSize = compressedData.length;
+      const filenameBuf = Buffer.from(String(file.name || 'untitled').replace(/\\/g, '/'), 'utf8');
 
-    // 1. Local File Header (30 字节 + 名字 + 压缩内容)
-    const localHeader = Buffer.alloc(30);
-    localHeader.writeUInt32LE(0x04034b50, 0); // Signature
-    localHeader.writeUInt16LE(20, 4);          // Version needed (2.0)
-    localHeader.writeUInt16LE(0x0800, 6);      // General purpose bit flag (UTF-8)
-    localHeader.writeUInt16LE(8, 8);           // Compression method (Deflate)
-    localHeader.writeUInt16LE(0, 10);          // Last mod time
-    localHeader.writeUInt16LE(0, 12);          // Last mod date
-    localHeader.writeUInt32LE(crc, 14);        // CRC-32
-    localHeader.writeUInt32LE(compressedSize, 18);   // Compressed size
-    localHeader.writeUInt32LE(uncompressedSize, 22); // Uncompressed size
-    localHeader.writeUInt16LE(filenameBuf.length, 26); // Filename length
-    localHeader.writeUInt16LE(0, 28);          // Extra field length
+      if (uncompressedSize >= ZIP32_MAX || compressedSize >= ZIP32_MAX) {
+        throw new Error(`单个文件超过 4GB 上限（原生打包不支持 ZIP64），请使用分卷打包`);
+      }
+      if (filenameBuf.length > ZIP_ENTRY_MAX) {
+        throw new Error(`ZIP 文件名过长: ${file.name}`);
+      }
 
-    const fullLocalEntry = Buffer.concat([localHeader, filenameBuf, compressedData]);
-    localHeaders.push(fullLocalEntry);
+      // 1. Local File Header (30 字节 + 名字 + 压缩内容)
+      const localHeader = Buffer.alloc(30);
+      localHeader.writeUInt32LE(0x04034b50, 0); // Signature
+      localHeader.writeUInt16LE(20, 4);          // Version needed (2.0)
+      localHeader.writeUInt16LE(0x0800, 6);      // General purpose bit flag (UTF-8)
+      localHeader.writeUInt16LE(8, 8);           // Compression method (Deflate)
+      localHeader.writeUInt16LE(0, 10);          // Last mod time
+      localHeader.writeUInt16LE(0, 12);          // Last mod date
+      localHeader.writeUInt32LE(crc, 14);        // CRC-32
+      localHeader.writeUInt32LE(compressedSize, 18);   // Compressed size
+      localHeader.writeUInt32LE(uncompressedSize, 22); // Uncompressed size
+      localHeader.writeUInt16LE(filenameBuf.length, 26); // Filename length
+      localHeader.writeUInt16LE(0, 28);          // Extra field length
 
-    // 2. Central Directory Record (46 字节 + 名字)
-    const centralRecord = Buffer.alloc(46);
-    centralRecord.writeUInt32LE(0x02014b50, 0); // Signature
-    centralRecord.writeUInt16LE(20, 4);         // Version made by
-    centralRecord.writeUInt16LE(20, 6);         // Version needed
-    centralRecord.writeUInt16LE(0x0800, 8);     // Bit flag (UTF-8)
-    centralRecord.writeUInt16LE(8, 10);         // Compression method
-    centralRecord.writeUInt16LE(0, 12);         // Time
-    centralRecord.writeUInt16LE(0, 14);         // Date
-    centralRecord.writeUInt32LE(crc, 16);       // CRC-32
-    centralRecord.writeUInt32LE(compressedSize, 20);
-    centralRecord.writeUInt32LE(uncompressedSize, 24);
-    centralRecord.writeUInt16LE(filenameBuf.length, 28);
-    centralRecord.writeUInt16LE(0, 30);         // Extra field length
-    centralRecord.writeUInt16LE(0, 32);         // Comment length
-    centralRecord.writeUInt16LE(0, 34);         // Disk number start
-    centralRecord.writeUInt16LE(0, 36);         // Internal attributes
-    centralRecord.writeUInt32LE(0, 38);         // External attributes
-    centralRecord.writeUInt32LE(currentOffset, 42); // Relative offset of local header
+      const fullLocalEntry = Buffer.concat([localHeader, filenameBuf, compressedData]);
+      // 必须在真正写入前判断整包是否会越过 4GB：否则中央目录里的偏移量会被截断成垃圾
+      if (currentOffset + fullLocalEntry.length >= ZIP32_MAX) {
+        throw new Error(`ZIP 体积超过 4GB 上限（原生打包不支持 ZIP64），请使用分卷打包`);
+      }
+      await writeAll(fd, fullLocalEntry, currentOffset);
 
-    centralRecords.push(Buffer.concat([centralRecord, filenameBuf]));
-    currentOffset += fullLocalEntry.length;
+      // 2. Central Directory Record (46 字节 + 名字)
+      const centralRecord = Buffer.alloc(46);
+      centralRecord.writeUInt32LE(0x02014b50, 0); // Signature
+      centralRecord.writeUInt16LE(20, 4);         // Version made by
+      centralRecord.writeUInt16LE(20, 6);         // Version needed
+      centralRecord.writeUInt16LE(0x0800, 8);     // Bit flag (UTF-8)
+      centralRecord.writeUInt16LE(8, 10);         // Compression method
+      centralRecord.writeUInt16LE(0, 12);         // Time
+      centralRecord.writeUInt16LE(0, 14);         // Date
+      centralRecord.writeUInt32LE(crc, 16);       // CRC-32
+      centralRecord.writeUInt32LE(compressedSize, 20);
+      centralRecord.writeUInt32LE(uncompressedSize, 24);
+      centralRecord.writeUInt16LE(filenameBuf.length, 28);
+      centralRecord.writeUInt16LE(0, 30);         // Extra field length
+      centralRecord.writeUInt16LE(0, 32);         // Comment length
+      centralRecord.writeUInt16LE(0, 34);         // Disk number start
+      centralRecord.writeUInt16LE(0, 36);         // Internal attributes
+      centralRecord.writeUInt32LE(0, 38);         // External attributes
+      centralRecord.writeUInt32LE(currentOffset, 42); // Relative offset of local header
+
+      centralRecords.push(Buffer.concat([centralRecord, filenameBuf]));
+      currentOffset += fullLocalEntry.length;
+    }
+
+    const allCentralRecords = Buffer.concat(centralRecords);
+    const cdOffset = currentOffset;
+    if (cdOffset >= ZIP32_MAX || allCentralRecords.length >= ZIP32_MAX) {
+      throw new Error('ZIP 中央目录超过 4GB 上限（不支持 ZIP64），请使用分卷打包');
+    }
+
+    // 3. End of Central Directory Record (22 字节)
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);       // Signature
+    eocd.writeUInt16LE(0, 4);                // Number of this disk
+    eocd.writeUInt16LE(0, 6);                // Disk where central directory starts
+    eocd.writeUInt16LE(fileList.length, 8);  // Number of central directory records on this disk
+    eocd.writeUInt16LE(fileList.length, 10); // Total number of central directory records
+    eocd.writeUInt32LE(allCentralRecords.length, 12); // Size of central directory
+    eocd.writeUInt32LE(cdOffset, 16);        // Offset of start of central directory
+    eocd.writeUInt16LE(0, 20);               // Comment length
+
+    await writeAll(fd, allCentralRecords, cdOffset);
+    await writeAll(fd, eocd, cdOffset + allCentralRecords.length);
+  } finally {
+    await fd.close();
   }
 
-  const allLocalEntries = Buffer.concat(localHeaders);
-  const allCentralRecords = Buffer.concat(centralRecords);
-
-  // 3. End of Central Directory Record (22 字节)
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);       // Signature
-  eocd.writeUInt16LE(0, 4);                // Number of this disk
-  eocd.writeUInt16LE(0, 6);                // Disk where central directory starts
-  eocd.writeUInt16LE(fileList.length, 8);  // Number of central directory records on this disk
-  eocd.writeUInt16LE(fileList.length, 10); // Total number of central directory records
-  eocd.writeUInt32LE(allCentralRecords.length, 12); // Size of central directory
-  eocd.writeUInt32LE(allLocalEntries.length, 16);   // Offset of start of central directory
-  eocd.writeUInt16LE(0, 20);               // Comment length
-
-  const finalZipBuffer = Buffer.concat([allLocalEntries, allCentralRecords, eocd]);
-  
-  await fs.promises.mkdir(path.dirname(destZipPath), { recursive: true });
-  await fs.promises.writeFile(destZipPath, finalZipBuffer);
   return destZipPath;
 }
 
@@ -177,9 +224,8 @@ async function packageDirectoryToZip(sourceDir, destZipPath) {
 
   for (const entry of entries) {
     if (entry.isFile()) {
-      const filePath = path.join(sourceDir, entry.name);
-      const data = await fs.promises.readFile(filePath);
-      fileList.push({ name: entry.name, data });
+      // 只登记路径，由 createZipArchive 逐条按需读取，避免整目录同时驻留内存
+      fileList.push({ name: entry.name, path: path.join(sourceDir, entry.name) });
     }
   }
 
@@ -193,7 +239,8 @@ async function packageDirectoryToZip(sourceDir, destZipPath) {
 async function getGofileServer() {
   try {
     const res = await fetch('https://api.gofile.io/servers', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      signal: AbortSignal.timeout(8000)
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -220,11 +267,23 @@ async function uploadZipToGofile(zipFilePath, serverName, options = {}) {
   const server = serverName || (await getGofileServer());
   const uploadUrl = `https://${server}.gofile.io/contents/uploadfile`;
 
-  const fileData = await fs.promises.readFile(zipFilePath);
   const fileName = path.basename(zipFilePath);
+  let statSize = 0;
+  try { statSize = (await fs.promises.stat(zipFilePath)).size; } catch {}
+  // 无超时的 fetch 在网络半死时会永久挂住（TG 侧表现为任务永远「准备中」）
+  const timeoutMs = options.timeoutMs
+    || Math.min(1800000, Math.max(120000, 120000 + Math.ceil(statSize / (512 * 1024)) * 1000));
+
+  // 优先用 fs.openAsBlob（Node 19.8+）流式上传：不再把整个 .zip readFile 进堆内存
+  let fileBlob;
+  if (typeof fs.openAsBlob === 'function') {
+    fileBlob = await fs.openAsBlob(zipFilePath, { type: 'application/zip' });
+  } else {
+    const fileData = await fs.promises.readFile(zipFilePath);
+    fileBlob = new Blob([fileData], { type: 'application/zip' });
+  }
 
   const form = new FormData();
-  const fileBlob = new Blob([fileData], { type: 'application/zip' });
   form.append('file', fileBlob, fileName);
 
   if (options.token) {
@@ -237,16 +296,23 @@ async function uploadZipToGofile(zipFilePath, serverName, options = {}) {
   const res = await fetch(uploadUrl, {
     method: 'POST',
     body: form,
-    headers: options.headers || {}
+    headers: options.headers || {},
+    signal: AbortSignal.timeout(timeoutMs)
   });
 
   if (!res.ok) {
     throw new Error(`Gofile upload failed: HTTP ${res.status} ${res.statusText}`);
   }
 
-  const json = await res.json();
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Gofile upload error: 非 JSON 响应: ${String(text).slice(0, 200)}`);
+  }
   if (json.status !== 'ok') {
-    throw new Error(`Gofile upload error: ${json.message || JSON.stringify(json)}`);
+    throw new Error(`Gofile upload error: ${json.message || JSON.stringify(json).slice(0, 200)}`);
   }
 
   const downloadPage = json.data?.downloadPage;
@@ -305,8 +371,18 @@ async function processGofileDelivery({ files, zipFilename, customUploader }) {
     await fs.promises.mkdir(taskWorkDir, { recursive: true });
 
     const fileEntries = [];
+    const usedNames = new Set();
     for (const f of files) {
-      const cleanName = sanitizeFilename(f.filename);
+      const baseName = sanitizeFilename(f.filename);
+      const ext = path.extname(baseName);
+      const stem = baseName.slice(0, baseName.length - ext.length);
+      // 同名文件（不同专辑的同名曲目等）必须去重：否则磁盘上后写覆盖先写、
+      // ZIP 内出现重复条目，解压时同样互相覆盖，用户会凭空少歌且无任何报错。
+      let cleanName = baseName;
+      for (let n = 2; usedNames.has(cleanName.toLowerCase()); n++) {
+        cleanName = `${stem} (${n})${ext}`;
+      }
+      usedNames.add(cleanName.toLowerCase());
       const filePath = path.join(taskWorkDir, cleanName);
       const data = Buffer.isBuffer(f.content) ? f.content : Buffer.from(f.content);
       await fs.promises.writeFile(filePath, data);

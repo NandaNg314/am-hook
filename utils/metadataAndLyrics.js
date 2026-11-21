@@ -228,10 +228,12 @@ async function fetchSongMetadata(trackId, options = {}) {
   }
 
   let result = await requestSong(primarySf, targetLang);
+  let usedSf = primarySf;
 
   // 2. 若使用 jp 遇到 404，回退至 defaultStorefront，但依然保留 l=ja-JP
   if (result.status === 404 && primarySf !== defaultStorefront) {
     result = await requestSong(defaultStorefront, targetLang);
+    usedSf = defaultStorefront;
   }
 
   // 3. 若之前没有 hint，根据获取到的 attributes.name 重新判定语言
@@ -246,11 +248,13 @@ async function fetchSongMetadata(trackId, options = {}) {
       const retryResult = await requestSong(retrySf, targetLang);
       if (retryResult.status === 200 && retryResult.data) {
         result = retryResult;
+        usedSf = retrySf;
       } else if (retrySf !== defaultStorefront) {
         // 回退至原 storefront
         const fallback = await requestSong(defaultStorefront, targetLang);
         if (fallback.status === 200 && fallback.data) {
           result = fallback;
+          usedSf = defaultStorefront;
         }
       }
     }
@@ -268,7 +272,7 @@ async function fetchSongMetadata(trackId, options = {}) {
     albumName: attrs.albumName || '',
     artwork: attrs.artwork,
     durationInMillis: attrs.durationInMillis || 0,
-    storefront: primarySf,
+    storefront: usedSf,
     lang: targetLang,
     rawAttributes: attrs
   };
