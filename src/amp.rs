@@ -479,7 +479,7 @@ async fn forward(state: &AppState, url: String, ttl: Duration) -> Response<Body>
         .header(CACHE_CONTROL, cache)
         .header("server-timing", timing)
         .body(Body::from(upstream.body.clone()))
-        .unwrap();
+        .unwrap_or_else(|e| error(StatusCode::INTERNAL_SERVER_ERROR, &format!("failed to build response: {e}")));
     log::note(response, note)
 }
 
@@ -497,7 +497,8 @@ fn error(status: StatusCode, msg: &str) -> Response<Body> {
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
         .header(CACHE_CONTROL, "no-store")
         .body(Body::from(json!({ "code": 1, "msg": msg }).to_string()))
-        .unwrap();
+        // 响应构造失败时退化为空响应，绝不 panic（这个函数本身用于兜底）
+        .unwrap_or_else(|_| Response::new(Body::empty()));
     log::note(response, msg)
 }
 

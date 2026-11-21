@@ -536,7 +536,8 @@ function buildAlbumCacheKey(albumId, quality, deliveryMode, isEn, opts = {}) {
 }
 
 function buildAlbumLyricsCacheKey(albumId, wantFormats, opts = {}) {
-  const fmts = Array.isArray(wantFormats) ? wantFormats.join('') : String(wantFormats || '');
+  // 顺序无关：['ttml','lrc'] 与 ['lrc','ttml'] 必须命中同一个缓存键
+  const fmts = Array.isArray(wantFormats) ? [...wantFormats].sort().join('') : String(wantFormats || '');
   const delivery = opts.deliveryMode === 'zip' ? 'zip' : 'media';
   const base = `alyr_${albumId}_${fmts}_${delivery}${opts.isEn ? '_en' : ''}${opts.needTranslate ? '_tr' : ''}${opts.needRuby ? `_rb_${opts.rubyMode || 'roman'}` : ''}`;
   const parts = buildCacheVariantParts(opts, {
@@ -917,7 +918,7 @@ class UserQuotaManager {
     if (count > remaining) {
       return { ok: false, reserved: false, reason: 'insufficient', current: record.songCount, max: DAILY_TRACK_QUOTA, remaining };
     }
-    record.songCount += count;
+    record.songCount = Math.min(DAILY_TRACK_QUOTA, record.songCount + count);
     this.saveState();
     return { ok: true, reserved: true, reservedCount: count, current: record.songCount, max: DAILY_TRACK_QUOTA, remaining: DAILY_TRACK_QUOTA - record.songCount };
   }
@@ -936,11 +937,15 @@ class UserQuotaManager {
 
   /**
    * 增量计数（兼容旧调用点）。统一计入曲目池。
+   * 必须 clamp 到每日上限：部分路径（如拿不到专辑曲目数的艺人批量）会以「预扣 0 首」起步，
+   * 结算时再由本函数补扣，若不 clamp 就能一路越过 DAILY_TRACK_QUOTA。
    */
   incrementQuota(userId, count = 1) {
     if (this.isOwner(userId)) return;
     const record = this.getRecord(userId);
-    record.songCount += Math.max(0, Math.floor(Number(count) || 0));
+    const add = Math.max(0, Math.floor(Number(count) || 0));
+    if (!add) return;
+    record.songCount = Math.min(DAILY_TRACK_QUOTA, record.songCount + add);
     this.saveState();
   }
 
@@ -1632,6 +1637,8 @@ async function pMap(items, concurrency, mapperFn) {  const results = new Array(i
  * - 2~10 首: 100% 聚合成 1 个气泡 (单张整洁卡片，贴合常规专辑视觉诉求)
  * - 11~14 首: 严格均分成 2 个气泡 (例如 11首拆为 6+5, 12首拆为 6+6, 14首拆为 7+7)
  * - >14 首: 均分为 3~N 个气泡，每组严格控制在 5~7 首黄金平衡区间，杜绝单包超大 (800MB~1GB) 导致频道频控卡死
+ * 注意：这里只按曲目数规划「下载分组」；发送前还会由 splitFilesBySize() 按真实体积二次切组，
+ * 因为 10 首 Hi-Res 可能高达 1~2GB，单次 sendMediaGroup 必然超时或被 TG 拒绝。
  */
 function planAlbumChunks(total) {
   if (total <= 0) return [];
@@ -1650,6 +1657,51 @@ function planAlbumChunks(total) {
     chunks.push(base + (i < rem ? 1 : 0));
   }
   return chunks;
+}
+
+/**
+ * sendMediaGroup 单组体积上限（字节）。默认 1.2GB：
+ * 一组成员合计超过该体积就提前切组，避免「10 首长 Hi-Res = 1~2GB」在单次请求里上传超时/被拒。
+ * 可用环境变量 TG_MEDIA_GROUP_MAX_BYTES 覆盖（<=0 表示不按体积切分，仅按条数）。
+ */
+const TG_MEDIA_GROUP_MAX_BYTES = (() => {
+  const raw = parseInt(process.env.TG_MEDIA_GROUP_MAX_BYTES || '', 10);
+  if (Number.isFinite(raw)) return raw > 0 ? raw : Infinity;
+  return Math.floor(1.2 * 1024 * 1024 * 1024);
+})();
+
+/**
+ * 按累计体积把已下载曲目切成多个媒体组（纯函数）。
+ * - 条数上限默认 10（Telegram sendMediaGroup 硬限制）；
+ * - 累计 fileSize 超过 maxBytes 时提前切组；单首本身超限也独占一组（由上传层决定降级）；
+ * - 保持输入顺序，绝不丢曲目。
+ * @param {Array<{fileSize?: number, size?: number}>} files
+ * @param {number} maxBytes
+ * @param {number} maxCount
+ * @returns {Array<Array<object>>}
+ */
+function splitFilesBySize(files, maxBytes = TG_MEDIA_GROUP_MAX_BYTES, maxCount = 10) {
+  const list = Array.isArray(files) ? files : [];
+  if (!list.length) return [];
+  const limitBytes = Number(maxBytes) > 0 ? Number(maxBytes) : Infinity;
+  const limitCount = Number(maxCount) > 0 ? Math.floor(Number(maxCount)) : 10;
+  const groups = [];
+  let current = [];
+  let currentBytes = 0;
+  for (const f of list) {
+    const size = Math.max(0, Number(f?.fileSize ?? f?.size ?? 0) || 0);
+    const overflowBytes = current.length > 0 && currentBytes + size > limitBytes;
+    const overflowCount = current.length >= limitCount;
+    if (overflowBytes || overflowCount) {
+      groups.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(f);
+    currentBytes += size;
+  }
+  if (current.length) groups.push(current);
+  return groups;
 }
 
 // ==================== Telegram API 封装 (含网络重试与限流退避) ====================
@@ -1696,13 +1748,20 @@ async function tgCall(method, body = {}, maxRetries = 3, timeoutMs = 60000) {
           await new Promise(r => setTimeout(r, waitSec * 1000));
           continue;
         }
-        throw new Error(`Telegram API [${method}] 错误: ${data.description || '未知错误'}`);
+        // 永久性错误（400 Bad Request / 403 Forbidden 等）：重试毫无意义，
+        // 典型如 bot was blocked、user is deactivated、message to copy not found。
+        // 直接标记 permanent 抛出，避免白等 3 轮退避。
+        const permErr = new Error(`Telegram API [${method}] 错误: ${data.description || '未知错误'}`);
+        permErr.permanent = true;
+        permErr.tgDescription = String(data.description || '');
+        throw permErr;
       }
       return data.result;
     } catch (err) {
       if (err.message.includes('message is not modified') || err.message.includes('query is too old')) {
         return null;
       }
+      if (err.permanent) throw err;
       const m = err.message.match(/retry after (\d+)/i);
       const waitMs = m ? (parseInt(m[1], 10) + 2) * 1000 : 1000 * attempt;
       console.warn(`[Telegram API] 调用 ${method} 异常 (第 ${attempt}/${maxRetries} 次): ${err.message}`);
@@ -4265,6 +4324,9 @@ async function ensureLyricsFiles(cacheKey, cached, wantFormats, details, opts = 
         const fresh = db.get(cacheKey);
         if (fresh) {
           fresh.lyricsFiles = lf;
+          // 必须同步 lyricsFormats：否则下次缓存命中时仍判定「缺该格式歌词」，
+          // 每个用户都重复向 cloud-service 归档同一份歌词。
+          fresh.lyricsFormats = ['lrc', 'ttml'].filter((f) => lf[f]?.groupMsgId);
           db.set(cacheKey, fresh);
         }
       }
@@ -4276,6 +4338,22 @@ async function ensureLyricsFiles(cacheKey, cached, wantFormats, details, opts = 
     results[f] = lf[f]?.groupMsgId ? lf[f] : null;
   }
   return results;
+}
+
+/**
+ * 取「归档音频消息附带的歌词消息 ID」列表，用于批量秒传时连同音频一起 copyMessages。
+ * 缺 groupMsgId 的格式按需走 ensureLyricsFiles 补生成并归档，绝不发裸 file_id。
+ */
+async function resolveArchivedLyricMsgIds(cacheKey, cached, formats, details, lyricOpts = {}) {
+  const list = Array.isArray(formats) ? formats : [];
+  if (!list.length) return [];
+  const lf = normalizeCachedLyrics(cached);
+  const missing = list.filter((f) => !lf[f]?.groupMsgId);
+  if (!missing.length) {
+    return list.map((f) => lf[f]?.groupMsgId).filter(Boolean);
+  }
+  const results = await ensureLyricsFiles(cacheKey, cached, list, details, lyricOpts);
+  return list.map((f) => results[f]?.groupMsgId).filter(Boolean);
 }
 
 // 歌词交付意图解析：内嵌开关（efmt）即用户对「歌词要不要+以什么格式给」的唯一选择，
@@ -4346,6 +4424,20 @@ async function handleDownload(chatId, messageId, details, quality, needLrc, isZi
             from_chat_id: AUTHORIZED_GROUP_ID,
             message_id: cached.groupMsgId
           });
+          // 外置歌词是独立消息，copyMessage 音频不会带上它们；
+          // 必须与 4122-4155 的「拆开补发」分支行为对齐，逐个补复制歌词消息。
+          if (!isZip) {
+            const lyricMsgIds = await resolveArchivedLyricMsgIds(cacheKey, cached, saveLyricsFormats, details, lyricOpts);
+            for (const lyricMsgId of lyricMsgIds) {
+              try {
+                await tgCall('copyMessage', {
+                  chat_id: chatId,
+                  from_chat_id: AUTHORIZED_GROUP_ID,
+                  message_id: lyricMsgId
+                });
+              } catch {}
+            }
+          }
           copySuccess = true;
         } else if (cached.audioFileId) {
           // 拆开重发：只发音频，歌词按当前勾选从归档频道 copyMessage 补发（绝不用裸 file_id 调 sendDocument）
@@ -4837,6 +4929,16 @@ async function handleMultiTrackDownload(chatId, messageId, albumData, trackIds, 
                   : saveLyricsFormats.length === 0);
               if (sameLyrics) {
                 allMsgIds.push(cached.groupMsgId);
+                // 外置歌词消息独立于音频，必须一并收集，否则勾了外置 LRC 只收到音频
+                if (!isZip) {
+                  const lyricMsgIds = await resolveArchivedLyricMsgIds(cacheKey, cached, saveLyricsFormats, {
+                    songId: track.id,
+                    title: cached.title || track.name,
+                    artist: cached.artist || track.artistName || albumData.artistName,
+                    album: cached.album || albumData.name,
+                  }, lyricOpts);
+                  allMsgIds.push(...lyricMsgIds);
+                }
                 hitHandled = true;
               } else if (!isZip && cached.audioFileId) {
                 fileIdSends.push({ kind: 'audio', fileId: cached.audioFileId, title: cached.title, artist: cached.artist, album: cached.album });
@@ -5224,11 +5326,11 @@ async function handleArtistAlbumsDownload(chatId, messageId, artistId, quality =
       let downloadedTracks = 0;
       // 整单额度预留：按待下载专辑的曲目总数从严预留，不够则直接拒绝（不会开始任何下载）。
       // 获批的普通用户：审批本身就是放行，不再受每日额度限制。
-      // trackCount 缺失时按每张至少 1 首估算：否则 plannedTracks 为 0 → 不建预留台账，
-      // 子调用又都是 deferQuotaSettle，最终整批下载变成 0 扣费。
+      // trackCount 缺失时退化为 tracks.length，完全没有详情则至少按 1 首/张估算，
+      // 绝不允许「预扣 0 首」直接放行（真正的兜底是 incrementQuota 的 clamp）。
       const plannedTracks = toDownload.reduce((s, al) => {
-        const n = Number(al.trackCount);
-        return s + (Number.isFinite(n) && n > 0 ? n : 1);
+        const n = Number(al.trackCount || 0) || (Array.isArray(al.tracks) ? al.tracks.length : 0);
+        return s + Math.max(1, n);
       }, 0);
       const batchReserve = (!isAdmin && approved)
         ? { ok: true, reserved: false, reservationId: null, current: 0, max: 0, remaining: Infinity }
@@ -6637,107 +6739,127 @@ ${artistTag} ${albumTag} #${typeLabel}ZIP`)
             }
           }
 
-          const chunkCaption = safeCaption(
-`💿 <b>${escapeHtml(albumData.name)} (${group.startNum}-${group.endNum}/${totalTracks})</b>
+          const buildChunkCaption = (startNum, endNum) => safeCaption(
+`💿 <b>${escapeHtml(albumData.name)} (${startNum}-${endNum}/${totalTracks})</b>
 👤 ${isEn ? 'Artist' : '艺人'}：${escapeHtml(albumData.artistName)}
 🎧 ${isEn ? 'Format' : '规格'}：${escapeHtml(quality)}
 
 ${artistTag} ${albumTag} #${typeLabel}`);
 
-          if (chunkDownloadedFiles.length === 1) {
-            const f = chunkDownloadedFiles[0];
-            const audioFields = {
-              chat_id: AUTHORIZED_GROUP_ID,
-              caption: chunkCaption,
-              parse_mode: 'HTML',
-              title: f.title,
-              performer: f.artist || albumData.artistName,
-              duration: f.duration || 0
-            };
-            if (f.thumbFilePath && fs.existsSync(f.thumbFilePath)) {
-              audioFields.thumbnailPath = f.thumbFilePath;
-            }
-            try {
-              const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
-              if (audioRes && audioRes.message_id) {
-                allGroupMsgIds.push(audioRes.message_id);
-              } else {
-                hasSendFailure = true;
-              }
-            } catch (singleSendErr) {
-              hasSendFailure = true;
-              console.error(`[TG-Bot] 单曲发送曲目 ${f.fileName} 失败: ${singleSendErr.message}`);
-            }
-          } else {
-            const mediaArray = [];
-            const filesMap = {};
+          const chunkCaption = buildChunkCaption(group.startNum, group.endNum);
 
-            chunkDownloadedFiles.forEach((f, idx) => {
-              const attachKey = `audio_${idx}`;
-              const thumbKey = `thumb_${idx}`;
-              const itemObj = {
-                type: 'audio',
-                media: isLocalApi ? `file://${path.resolve(f.audioFilePath)}` : `attach://${attachKey}`,
+          const sendSubGroup = async (subFiles, isSplit) => {
+            const subStart = Number(subFiles[0]?.orderIndex || group.startNum);
+            const subEnd = Number(subFiles[subFiles.length - 1]?.orderIndex || group.endNum);
+            const subCaption = isSplit ? buildChunkCaption(subStart, subEnd) : chunkCaption;
+
+            if (subFiles.length === 1) {
+              const f = subFiles[0];
+              const audioFields = {
+                chat_id: AUTHORIZED_GROUP_ID,
+                caption: subCaption,
+                parse_mode: 'HTML',
                 title: f.title,
                 performer: f.artist || albumData.artistName,
-                duration: f.duration || 0,
-                ...(idx === 0 ? { caption: chunkCaption, parse_mode: 'HTML' } : {})
+                duration: f.duration || 0
               };
-
               if (f.thumbFilePath && fs.existsSync(f.thumbFilePath)) {
-                itemObj.thumbnail = isLocalApi ? `file://${path.resolve(f.thumbFilePath)}` : `attach://${thumbKey}`;
-                filesMap[thumbKey] = {
-                  filePath: f.thumbFilePath,
-                  fileName: 'thumb.jpg'
-                };
+                audioFields.thumbnailPath = f.thumbFilePath;
               }
-
-              mediaArray.push(itemObj);
-              filesMap[attachKey] = {
-                filePath: f.audioFilePath,
-                fileName: f.fileName
-              };
-            });
-
-            let groupRes = null;
-            try {
-              groupRes = await tgSendMediaGroup(AUTHORIZED_GROUP_ID, mediaArray, filesMap);
-            } catch (groupErr) {
-              console.warn(`[TG-Bot] sendMediaGroup 失败，降级为逐首单曲上传: ${groupErr.message}`);
-            }
-
-            if (Array.isArray(groupRes) && groupRes.length > 0) {
-              allGroupMsgIds.push(...groupRes.map(m => m.message_id));
-              if (groupRes.length < chunkDownloadedFiles.length) hasSendFailure = true;
+              try {
+                const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
+                if (audioRes && audioRes.message_id) {
+                  allGroupMsgIds.push(audioRes.message_id);
+                } else {
+                  hasSendFailure = true;
+                }
+              } catch (singleSendErr) {
+                hasSendFailure = true;
+                console.error(`[TG-Bot] 单曲发送曲目 ${f.fileName} 失败: ${singleSendErr.message}`);
+              }
             } else {
-              console.log(`[TG-Bot] 正在逐首发送合辑曲目至频道 (${chunkDownloadedFiles.length} 首)...`);
-              for (let trackIdx = 0; trackIdx < chunkDownloadedFiles.length; trackIdx++) {
-                const f = chunkDownloadedFiles[trackIdx];
-                const singleCaption = trackIdx === 0 ? chunkCaption : '';
-                const audioFields = {
-                  chat_id: AUTHORIZED_GROUP_ID,
-                  ...(singleCaption ? { caption: singleCaption, parse_mode: 'HTML' } : {}),
+              const mediaArray = [];
+              const filesMap = {};
+
+              subFiles.forEach((f, idx) => {
+                const attachKey = `audio_${idx}`;
+                const thumbKey = `thumb_${idx}`;
+                const itemObj = {
+                  type: 'audio',
+                  media: isLocalApi ? `file://${path.resolve(f.audioFilePath)}` : `attach://${attachKey}`,
                   title: f.title,
                   performer: f.artist || albumData.artistName,
-                  duration: f.duration || 0
+                  duration: f.duration || 0,
+                  ...(idx === 0 ? { caption: subCaption, parse_mode: 'HTML' } : {})
                 };
+
                 if (f.thumbFilePath && fs.existsSync(f.thumbFilePath)) {
-                  audioFields.thumbnailPath = f.thumbFilePath;
+                  itemObj.thumbnail = isLocalApi ? `file://${path.resolve(f.thumbFilePath)}` : `attach://${thumbKey}`;
+                  filesMap[thumbKey] = {
+                    filePath: f.thumbFilePath,
+                    fileName: 'thumb.jpg'
+                  };
                 }
-                try {
-                  const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
-                  if (audioRes && audioRes.message_id) {
-                    allGroupMsgIds.push(audioRes.message_id);
-                  } else {
-                    hasSendFailure = true;
+
+                mediaArray.push(itemObj);
+                filesMap[attachKey] = {
+                  filePath: f.audioFilePath,
+                  fileName: f.fileName
+                };
+              });
+
+              let groupRes = null;
+              try {
+                groupRes = await tgSendMediaGroup(AUTHORIZED_GROUP_ID, mediaArray, filesMap);
+              } catch (groupErr) {
+                console.warn(`[TG-Bot] sendMediaGroup 失败，降级为逐首单曲上传: ${groupErr.message}`);
+              }
+
+              if (Array.isArray(groupRes) && groupRes.length > 0) {
+                allGroupMsgIds.push(...groupRes.map(m => m.message_id));
+                if (groupRes.length < subFiles.length) hasSendFailure = true;
+              } else {
+                console.log(`[TG-Bot] 正在逐首发送合辑曲目至频道 (${subFiles.length} 首)...`);
+                for (let trackIdx = 0; trackIdx < subFiles.length; trackIdx++) {
+                  const f = subFiles[trackIdx];
+                  const singleCaption = trackIdx === 0 ? subCaption : '';
+                  const audioFields = {
+                    chat_id: AUTHORIZED_GROUP_ID,
+                    ...(singleCaption ? { caption: singleCaption, parse_mode: 'HTML' } : {}),
+                    title: f.title,
+                    performer: f.artist || albumData.artistName,
+                    duration: f.duration || 0
+                  };
+                  if (f.thumbFilePath && fs.existsSync(f.thumbFilePath)) {
+                    audioFields.thumbnailPath = f.thumbFilePath;
                   }
-                  await new Promise(r => setTimeout(r, 2500));
-                } catch (sendErr) {
-                  hasSendFailure = true;
-                  console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
+                  try {
+                    const audioRes = await tgSendFile('sendAudio', 'audio', f.audioFilePath, f.fileName, audioFields);
+                    if (audioRes && audioRes.message_id) {
+                      allGroupMsgIds.push(audioRes.message_id);
+                    } else {
+                      hasSendFailure = true;
+                    }
+                    await new Promise(r => setTimeout(r, 2500));
+                  } catch (sendErr) {
+                    hasSendFailure = true;
+                    console.error(`[TG-Bot] 逐首发送曲目 ${f.fileName} 失败: ${sendErr.message}`);
+                  }
                 }
               }
             }
+          };
+
+          // 体积切组：按 fileSize 累计，超过上限（默认 1.2GB）提前切组，避免单次请求搬运 1~2GB
+          const sendGroups = splitFilesBySize(chunkDownloadedFiles, TG_MEDIA_GROUP_MAX_BYTES, 10);
+          if (sendGroups.length > 1) {
+            const limitLabel = Number.isFinite(TG_MEDIA_GROUP_MAX_BYTES)
+              ? `${(TG_MEDIA_GROUP_MAX_BYTES / (1024 * 1024)).toFixed(0)}MB`
+              : '∞';
+            console.log(`[TG-Bot] 组 [${chunkIdx + 1}] 共 ${chunkDownloadedFiles.length} 首，按体积上限 ${limitLabel} 拆为 ${sendGroups.length} 个媒体组归档`);
+          }
+          for (const subFiles of sendGroups) {
+            await sendSubGroup(subFiles, sendGroups.length > 1);
           }
 
           if (saveLyricsFormats.length > 0) {
@@ -8309,6 +8431,32 @@ ${quotaText}
     const isOwner = String(chatId) === String(OWNER_USER_ID);
     const session = userSessions.get(sessionKey);
 
+    // 更新推送开关：不再提示 / 重新开启
+    if (data === 'noupdate' || data === 'yesupdate') {
+      const off = data === 'noupdate';
+      db.set(`noupdate_${chatId}`, off ? '1' : '0');
+      await tgCall('answerCallbackQuery', {
+        callback_query_id: cb.id,
+        text: off
+          ? (isEn ? 'Update notices disabled' : '已关闭更新推送')
+          : (isEn ? 'Update notices enabled' : '已重新开启更新推送'),
+      });
+      try {
+        await tgCall('editMessageReplyMarkup', {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [[
+              off
+                ? { text: isEn ? '🔔 Enable update notices' : '🔔 重新开启更新推送', callback_data: 'yesupdate' }
+                : { text: isEn ? '🔕 Stop update notices' : '🔕 不再提示更新', callback_data: 'noupdate' },
+            ]],
+          },
+        });
+      } catch {}
+      return;
+    }
+
     // 处理更新日志查看回调 (支持 latest 与 history 两种模式)
     if (data.startsWith('show_changelog')) {
       const parts = data.split(':');
@@ -9598,6 +9746,149 @@ function cleanupStaleTgTempDirs() {
   } catch {}
 }
 
+// ==================== 主动更新推送 ====================
+const UPDATE_PUSH_STATE = path.join(__dirname, 'tg_update_push_state.json');
+
+/** 从本地偏好键反推所有与 bot 交互过的 chatId（排除已关闭推送的用户） */
+function listKnownChatIds() {
+  const ids = new Set();
+  const re = /^(?:seen_ver_|lang_|taglang_|nametpl_|ziptpl_)(\d+)$/;
+  for (const key of Object.keys(db.data.items || {})) {
+    if (key.startsWith('noupdate_')) continue;
+    const m = key.match(re);
+    if (m) ids.add(m[1]);
+  }
+  return [...ids];
+}
+
+function buildUpdatePush(chatId) {
+  const cl = loadChangelog();
+  const lang = getUserLang(chatId);
+  const isEn = lang === 'en';
+  const v = cl.latestVersion;
+  // changelog.json 的要点在 releases[0].items，顶层 items 是历史遗留字段（可能不存在）
+  const rel = (Array.isArray(cl.releases) ? cl.releases[0] : null) || {};
+  const line = (isEn ? (rel.oneLiner?.en || cl.oneLiner?.en) : (rel.oneLiner?.zh || cl.oneLiner?.zh)) || '';
+  const items = ((isEn ? rel.items?.en : rel.items?.zh) || (isEn ? cl.items?.en : cl.items?.zh) || [])
+    .slice(0, 4)
+    .map((x) => `• ${escapeHtml(x)}`)
+    .join('\n');
+  const text = isEn
+    ? `📢 <b>v${escapeHtml(v)} Update</b>\n\n${escapeHtml(line)}\n\n${items}\n\n<i>Send /changelog for the full history</i>`
+    : `📢 <b>v${escapeHtml(v)} 更新</b>\n\n${escapeHtml(line)}\n\n${items}\n\n<i>发送 /changelog 查看完整更新记录</i>`;
+  return {
+    text,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: isEn ? '🔕 Stop update notices' : '🔕 不再提示更新', callback_data: 'noupdate' },
+      ]],
+    },
+  };
+}
+
+/** 版本变化时给所有历史用户推送一次更新说明（分批限流，失败跳过） */
+
+/**
+ * 读取推送状态。兼容旧格式 {version, done:true}：
+ * 新格式为 {version, doneIds:[...]}，逐用户记录，重启后只补发未完成的人。
+ */
+function loadUpdatePushState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(UPDATE_PUSH_STATE, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 原子落盘（tmp + rename）：避免写一半被重启/断电打断，留下坏 JSON 导致整批重发 */
+function saveUpdatePushState(state) {
+  const tmp = `${UPDATE_PUSH_STATE}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 1), 'utf8');
+    fs.renameSync(tmp, UPDATE_PUSH_STATE);
+  } catch (e) {
+    console.warn('[UpdatePush] 状态落盘失败:', e.message);
+  }
+}
+
+/** 网络/限流类失败可以下次启动再补发；其余（400 参数错、403 被封）重试也不会成功 */
+function isRetryablePushError(message) {
+  return /retry after|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|network|fetch failed|请求超时/i.test(String(message || ''));
+}
+
+async function pushChangelogToUsers() {
+  try {
+    const cl = loadChangelog();
+    const ver = String(cl.latestVersion || '');
+    if (!ver) return;
+    const raw = loadUpdatePushState();
+    const sameVersion = String(raw.version || '') === ver;
+    // 旧状态文件只有 done:true（无 doneIds）：同版本视为已完成，保持原行为
+    if (sameVersion && raw.done === true && !Array.isArray(raw.doneIds)) {
+      console.log(`[UpdatePush] v${ver} 已推送过，跳过`);
+      return;
+    }
+    const doneIds = new Set(sameVersion && Array.isArray(raw.doneIds) ? raw.doneIds.map(String) : []);
+    let ok = Number(raw.ok) || 0;
+    let fail = Number(raw.fail) || 0;
+    const allIds = listKnownChatIds();
+    const pending = allIds.filter((id) => !doneIds.has(String(id)) && db.get(`push_blocked_${id}`) !== '1');
+    if (!pending.length) {
+      console.log(`[UpdatePush] v${ver} 无待推送用户（已完成 ${doneIds.size}/${allIds.length}），跳过`);
+      saveUpdatePushState({ version: ver, doneIds: [...doneIds], done: true, pushedAt: Date.now(), ok, fail });
+      return;
+    }
+    console.log(`[UpdatePush] 开始推送 v${ver} 给 ${pending.length} 个用户（已跳过 ${allIds.length - pending.length} 个已完成/已拒收）`);
+    for (let i = 0; i < pending.length; i += 20) {
+      const batch = pending.slice(i, i + 20);
+      await Promise.all(batch.map(async (chatId) => {
+        const key = String(chatId);
+        if (db.get(`noupdate_${chatId}`) === '1') {
+          doneIds.add(key);
+          return;
+        }
+        try {
+          const msg = buildUpdatePush(chatId);
+          await tgCall('sendMessage', {
+            chat_id: chatId,
+            text: msg.text,
+            parse_mode: 'HTML',
+            reply_markup: msg.reply_markup,
+            disable_web_page_preview: true,
+          });
+          ok++;
+          doneIds.add(key);
+        } catch (e) {
+          const msgText = String(e?.message || '');
+          if (/blocked|chat not found|bot was blocked|deactivated/i.test(msgText)) {
+            // 用户已拉黑 / 注销：记账后永久跳过，后续版本不再浪费调用
+            db.set(`push_blocked_${chatId}`, '1');
+            doneIds.add(key);
+            fail++;
+          } else if (isRetryablePushError(msgText)) {
+            // 网络/限流：保持未完成，下次启动继续补发
+            fail++;
+            console.warn(`[UpdatePush] ${chatId} 暂时失败，稍后补发: ${msgText}`);
+          } else {
+            // 其余永久性错误（400 参数/无权限等）：重试无意义，记为已完成避免死循环
+            fail++;
+            doneIds.add(key);
+            console.warn(`[UpdatePush] ${chatId} 失败（不再重试）: ${msgText}`);
+          }
+        }
+      }));
+      // 每批立即原子落盘：进程重启后只补发剩余用户
+      saveUpdatePushState({ version: ver, doneIds: [...doneIds], pushedAt: Date.now(), ok, fail });
+      if (i + 20 < pending.length) await new Promise((r) => setTimeout(r, 1200));
+    }
+    saveUpdatePushState({ version: ver, doneIds: [...doneIds], done: true, pushedAt: Date.now(), ok, fail });
+    console.log(`[UpdatePush] v${ver} 推送完成 ok=${ok} fail=${fail} 待补发=${pending.filter((id) => !doneIds.has(String(id))).length}`);
+  } catch (e) {
+    console.warn('[UpdatePush] 推送异常:', e.message);
+  }
+}
+
 // ==================== 主轮询守护 ====================
 async function startBot() {
   console.log(`[TG-Bot] 🤖 EnkinoAMDBot (v2.3 黄金平衡流式传输与高可用版) 正在启动...`);
@@ -9610,6 +9901,9 @@ async function startBot() {
   try {
     const me = await tgCall('getMe');
     console.log(`[TG-Bot] ✔ 机器人鉴权成功: @${me.username} (${me.first_name})`);
+
+    // 版本变化时向所有历史用户推送更新说明（延迟 15s，避开启动高峰）
+    setTimeout(() => { pushChangelogToUsers().catch(() => {}); }, 15000).unref?.();
 
     // 注册 Telegram 原生指令菜单（普通用户 5 个常用指令；站长专属叠加全套运维指令）
     try {

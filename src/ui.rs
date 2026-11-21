@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 use crate::log;
@@ -169,7 +170,7 @@ async fn fetch_mv_master(client: &reqwest::Client, master_url: &str) -> Response
     };
     // Resolve relative track URLs against the final CDN URL after any redirects.
     let master_url = response.url().to_string();
-    let master_body = match response.text().await {
+    let master_body = match read_text_limited(response, "MV master playlist").await {
         Ok(body) => body,
         Err(_) => return gateway_error("Failed to read MV master playlist"),
     };
@@ -478,7 +479,7 @@ pub async fn master_handler(
         Ok(response) => response,
         Err(error) => return upstream_error("failed to fetch master m3u8 from Apple", error),
     };
-    let master_body = match master_response.text().await {
+    let master_body = match read_text_limited(master_response, "master m3u8").await {
         Ok(text) => text,
         Err(error) => return upstream_error("failed to read master m3u8", error),
     };
@@ -559,6 +560,33 @@ fn upstream_error(message: &str, error: impl std::fmt::Display) -> Response<Body
     log::note(internal_error(message), format!("{message}: {error}"))
 }
 
+/// 文本响应（master m3u8 / MV master）的读取上限，避免异常上游把超大 body 读进内存
+// Apple master m3u8 可能非常大（实测 7–13MB，部分多语种/多音轨发行更大），
+// 上限只用于防异常上游，绝不能设成 1MiB 否则正常曲目会被拒。
+const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// 流式读取文本响应并限制总大小（不信任上游的 Content-Length）
+async fn read_text_limited(response: reqwest::Response, what: &str) -> Result<String, String> {
+    if let Some(len) = response.content_length() {
+        if len > MAX_TEXT_BYTES as u64 {
+            return Err(format!("{what} too large: {len} bytes"));
+        }
+    }
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("{what}: {e}"))?;
+        if buf.len().saturating_add(chunk.len()) > MAX_TEXT_BYTES {
+            return Err(format!("{what} too large (> {MAX_TEXT_BYTES} bytes)"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    // 上游可能返回 M4P 二进制（audio/x-m4p）而不是 m3u8；用 lossy 转成文本，
+    // 让 parse_master_variants 返回 "No variants..."，触发 cloud-service 的 webplayback 回退。
+    // 严格 UTF-8 校验会把这个正常回退路径变成 500。
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 const MAX_GOFILE_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 fn is_same_origin_request(headers: &HeaderMap) -> bool {
@@ -567,15 +595,17 @@ fn is_same_origin_request(headers: &HeaderMap) -> bool {
             return false;
         }
     }
-    if let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) {
+    let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok());
+    let forwarded_host = headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()).map(str::trim);
+    // Origin 与 X-Forwarded-Host 都缺失时无从判断是否同源，按拒绝处理（旧实现直接放行）
+    if origin.is_none() && forwarded_host.is_none() {
+        return false;
+    }
+    if let Some(origin) = origin {
         let Ok(origin_url) = reqwest::Url::parse(origin) else {
             return false;
         };
-        let host_hdr = headers
-            .get("x-forwarded-host")
-            .or_else(|| headers.get(axum::http::header::HOST))
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim);
+        let host_hdr = forwarded_host.or_else(|| headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).map(str::trim));
         if let Some(expected_host) = host_hdr {
             let Some(origin_host) = origin_url.host_str() else {
                 return false;
@@ -668,7 +698,16 @@ pub async fn gofile_upload_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("multipart/form-data");
 
-    let stream = body.into_data_stream();
+    let mut streamed = 0u64;
+    let stream = body.into_data_stream().map(move |chunk| {
+        let chunk = chunk?;
+        streamed = streamed.saturating_add(chunk.len() as u64);
+        // 分块上传（无 Content-Length）也要有硬上限：超限即中断，不把超量数据转给 Gofile
+        if streamed > MAX_GOFILE_UPLOAD_BYTES {
+            return Err(axum::Error::new(std::io::Error::other("upload exceeds 4 GiB limit")));
+        }
+        Ok(chunk)
+    });
     let reqwest_body = reqwest::Body::wrap_stream(stream);
 
     match state
@@ -748,28 +787,52 @@ mod tests {
     #[tokio::test]
     async fn test_gofile_upload_origin_and_size_checks() {
         let state = Arc::new(AppState::new("http://127.0.0.1:12340".into(), 60, 1));
+        let upload = |state: Arc<AppState>, headers: HeaderMap| async move {
+            gofile_upload_handler(
+                State(state),
+                axum::extract::Query([("server".into(), "store1".into())].into()),
+                headers,
+                Body::empty(),
+            )
+            .await
+        };
+
         let mut cross = HeaderMap::new();
         cross.insert("sec-fetch-site", "cross-site".parse().unwrap());
-        let resp = gofile_upload_handler(
-            State(state.clone()),
-            axum::extract::Query([("server".into(), "store1".into())].into()),
-            cross,
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(upload(state.clone(), cross).await.status(), StatusCode::FORBIDDEN);
 
+        // Origin 与 X-Forwarded-Host 同时缺失：无从判断同源，必须拒绝
+        let mut anonymous = HeaderMap::new();
+        anonymous.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        assert_eq!(upload(state.clone(), anonymous).await.status(), StatusCode::FORBIDDEN);
+
+        // Origin 与 Host 不一致
+        let mut mismatch = HeaderMap::new();
+        mismatch.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        mismatch.insert(axum::http::header::ORIGIN, "https://evil.example".parse().unwrap());
+        mismatch.insert("x-forwarded-host", "am.example".parse().unwrap());
+        assert_eq!(upload(state.clone(), mismatch).await.status(), StatusCode::FORBIDDEN);
+
+        // 同源但声明体积超限
         let mut huge = HeaderMap::new();
         huge.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        huge.insert(axum::http::header::ORIGIN, "https://am.example".parse().unwrap());
+        huge.insert("x-forwarded-host", "am.example".parse().unwrap());
         huge.insert(axum::http::header::CONTENT_LENGTH, (MAX_GOFILE_UPLOAD_BYTES + 1).to_string().parse().unwrap());
-        let resp = gofile_upload_handler(
-            State(state),
-            axum::extract::Query([("server".into(), "store1".into())].into()),
-            huge,
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(upload(state, huge).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn test_read_text_limited_rejects_oversized_body() {
+        let app = axum::Router::new().route("/big", axum::routing::get(|| async { "x".repeat(MAX_TEXT_BYTES + 1) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let response = reqwest::get(format!("http://{addr}/big")).await.unwrap();
+        let err = read_text_limited(response, "master m3u8").await.unwrap_err();
+        assert!(err.contains("too large"), "got {err}");
+        server.abort();
     }
 }
 
